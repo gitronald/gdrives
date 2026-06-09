@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+## [0.5.8] - 2026-06-09
+
+First release published to PyPI.
+
+### Added
+
+- PyPI publishing via GitHub Actions trusted publishing (OIDC), gated on the `PUBLISH_ENABLED` repository variable; `gdrives` is now installable from PyPI.
+
 ## [0.5.7] - 2026-06-09
 
 ### Changed
