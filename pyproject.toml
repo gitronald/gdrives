@@ -1,0 +1,92 @@
+[project]
+name = "gdrives"
+version = "0.5.7"
+description = ""
+authors = [
+    {name = "gitronald", email = "gitronald@users.noreply.github.com"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "google-api-python-client",
+    "google-auth-oauthlib",
+    "python-dotenv>=1.2.2",
+    "typer",
+]
+readme = "README.md"
+license = "MIT"
+
+[project.urls]
+repository = "https://github.com/gitronald/gdrives"
+
+[project.scripts]
+gdrives = "gdrives.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gdrives"]
+
+[tool.hatch.build.targets.sdist]
+# Ship only what a PyPI consumer needs. Root-anchored (leading "/") so bare
+# filenames don't glob at every depth — this keeps internal plan files
+# (.planners/), guides (docs/), the .claude/ holder, tests, and tooling out of
+# the published sdist.
+only-include = [
+    "/gdrives",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit",
+    "pyrefly>=1.0.0",
+    "pytest>=9.0.3",
+    "pytest-cov",
+    "ruff>=0.15.16",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # isort (import sorting)
+    "UP",   # pyupgrade (modern Python idioms)
+]
+
+[tool.pyrefly]
+preset = "strict"
+python-version = "3.11"
+project-includes = ["."]
+project-excludes = ["**/__pycache__", "**/.venv"]
+# tests import shared helpers as bare modules (e.g. `from helpers import ...`),
+# matching pytest's `pythonpath = ["tests"]`; let pyrefly resolve them too.
+search-path = ["tests"]
+
+# tests/ stays type-checked (imports, undefined names, type mismatches),
+# but the implicit-any check is relaxed there so unannotated pytest fixture
+# params (e.g. `def test_x(tmp_path):`) don't force annotations.
+[[tool.pyrefly.sub-config]]
+matches = "tests/**"
+
+[tool.pyrefly.sub-config.errors]
+implicit-any = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "--cov=gdrives --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["gdrives"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
