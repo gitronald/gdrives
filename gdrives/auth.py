@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
+# Write scope for the Sheets API (spreadsheets.values.update/append/clear). Kept
+# separate from the read-only default so read commands never request write
+# access; write commands opt in explicitly (see build_sheets_service).
+SHEETS_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
 NO_CREDENTIALS_MESSAGE = (
     "Error: no Google Drive credentials found. Set up one of:\n"
     "  - OAuth: put gdrives_credentials.json in $GOOGLE_CONFIG_DIR "
@@ -34,9 +39,18 @@ def _config_dir() -> Path | None:
     return Path(value) if value else None
 
 
-def _token_path() -> Path | None:
+def _token_path(scopes: list[str] | None = None) -> Path | None:
+    """Return the OAuth token path for the given scopes, or None if unconfigured.
+
+    Write scopes get a distinct token file (``gdrives_token_rw.json``) so
+    requesting write access never clobbers — or forces a re-consent of — the
+    shared read-only token. The read-only default keeps ``gdrives_token.json``.
+    """
     config_dir = _config_dir()
-    return config_dir / "gdrives_token.json" if config_dir else None
+    if config_dir is None:
+        return None
+    name = "gdrives_token.json" if scopes in (None, SCOPES) else "gdrives_token_rw.json"
+    return config_dir / name
 
 
 def _credentials_path() -> Path | None:
@@ -76,14 +90,16 @@ def _write_token(token_path: Path, creds: Any) -> None:
         logger.warning("could not persist OAuth token to %s", token_path)
 
 
-def authenticate_oauth():
+def authenticate_oauth(scopes: list[str] | None = None):
     """Authenticate with Google Drive via OAuth client secrets flow.
 
     Returns None when OAuth is not configured (GOOGLE_CONFIG_DIR unset, no client
     secrets file, or no interactive terminal to complete the browser flow), so
-    authenticate() can fall through to other methods.
+    authenticate() can fall through to other methods. ``scopes`` defaults to the
+    read-only Drive scope; write commands pass a broader set.
     """
-    token_path = _token_path()
+    scopes = scopes or SCOPES
+    token_path = _token_path(scopes)
     credentials_path = _credentials_path()
     if token_path is None or credentials_path is None:
         return None
@@ -94,7 +110,7 @@ def authenticate_oauth():
 
     creds = None
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -107,13 +123,13 @@ def authenticate_oauth():
         # flow when there's no client secrets file or no interactive terminal.
         if not credentials_path.exists() or not _is_interactive():
             return None
-        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
         creds = flow.run_local_server(port=0, open_browser=False)
         _write_token(token_path, creds)
     return creds
 
 
-def authenticate_service_account():
+def authenticate_service_account(scopes: list[str] | None = None):
     """Authenticate with Google Drive via a service account key file.
 
     Returns None when no key file is configured or present.
@@ -123,39 +139,53 @@ def authenticate_service_account():
     sa_path = _service_account_path()
     if sa_path is None or not sa_path.exists():
         return None
-    return Credentials.from_service_account_file(str(sa_path), scopes=SCOPES)
+    return Credentials.from_service_account_file(str(sa_path), scopes=scopes or SCOPES)
 
 
-def authenticate_adc():
+def authenticate_adc(scopes: list[str] | None = None):
     """Authenticate with Google Drive via Application Default Credentials."""
     import google.auth
 
-    creds, _ = google.auth.default(scopes=SCOPES)
+    creds, _ = google.auth.default(scopes=scopes or SCOPES)
     return creds
 
 
-def authenticate():
+def authenticate(scopes: list[str] | None = None):
     """Authenticate with Google Drive.
 
     Tries OAuth, then a service account key, then Application Default
     Credentials (e.g. `gcloud auth application-default login`). Raises a
-    helpful SystemExit if none are configured.
+    helpful SystemExit if none are configured. ``scopes`` defaults to read-only
+    Drive access; pass a write scope (e.g. SHEETS_WRITE_SCOPES) for write ops.
     """
-    creds = authenticate_oauth()
+    creds = authenticate_oauth(scopes)
     if creds:
         return creds
-    creds = authenticate_service_account()
+    creds = authenticate_service_account(scopes)
     if creds:
         return creds
     try:
-        return authenticate_adc()
+        return authenticate_adc(scopes)
     except google.auth.exceptions.GoogleAuthError:
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
 
 
-def build_drive_service():
+def build_drive_service(scopes: list[str] | None = None):
     """Authenticate and return a Drive v3 service."""
     from googleapiclient.discovery import build
 
-    creds = authenticate()
+    creds = authenticate(scopes)
     return build("drive", "v3", credentials=creds)
+
+
+def build_sheets_service(scopes: list[str] | None = None):
+    """Authenticate and return a Sheets v4 service.
+
+    Defaults to the read-only Drive scope (enough for ``spreadsheets.values.get``
+    and reusing the shared read-only token). Pass SHEETS_WRITE_SCOPES for the
+    update/append/clear operations, which persist a separate write token.
+    """
+    from googleapiclient.discovery import build
+
+    creds = authenticate(scopes)
+    return build("sheets", "v4", credentials=creds)

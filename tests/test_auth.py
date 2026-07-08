@@ -96,35 +96,43 @@ class TestAuthenticateServiceAccount:
 class TestAuthenticate:
     def test_prefers_oauth(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda: sentinel)
+        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: sentinel)
         monkeypatch.setattr(
             auth,
             "authenticate_service_account",
-            lambda: pytest.fail("must not reach service account"),
+            lambda scopes=None: pytest.fail("must not reach service account"),
         )
         assert auth.authenticate() is sentinel
 
     def test_falls_back_to_service_account(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda: None)
-        monkeypatch.setattr(auth, "authenticate_service_account", lambda: sentinel)
+        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
         monkeypatch.setattr(
-            auth, "authenticate_adc", lambda: pytest.fail("must not reach adc")
+            auth, "authenticate_service_account", lambda scopes=None: sentinel
+        )
+        monkeypatch.setattr(
+            auth,
+            "authenticate_adc",
+            lambda scopes=None: pytest.fail("must not reach adc"),
         )
         assert auth.authenticate() is sentinel
 
     def test_falls_through_to_adc(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda: None)
-        monkeypatch.setattr(auth, "authenticate_service_account", lambda: None)
-        monkeypatch.setattr(auth, "authenticate_adc", lambda: sentinel)
+        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None: None
+        )
+        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: sentinel)
         assert auth.authenticate() is sentinel
 
     def test_helpful_error_when_no_credentials(self, monkeypatch):
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda: None)
-        monkeypatch.setattr(auth, "authenticate_service_account", lambda: None)
+        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None: None
+        )
 
-        def raise_default_error():
+        def raise_default_error(scopes=None):
             raise google.auth.exceptions.DefaultCredentialsError("none found")
 
         monkeypatch.setattr(auth, "authenticate_adc", raise_default_error)
@@ -134,10 +142,12 @@ class TestAuthenticate:
     def test_helpful_error_on_any_google_auth_error_from_adc(self, monkeypatch):
         # Not only DefaultCredentialsError — any google.auth error (e.g. a stale
         # ADC refresh failure) yields the helpful message, not a raw traceback.
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda: None)
-        monkeypatch.setattr(auth, "authenticate_service_account", lambda: None)
+        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None: None
+        )
 
-        def raise_refresh_error():
+        def raise_refresh_error(scopes=None):
             raise google.auth.exceptions.RefreshError("stale adc")
 
         monkeypatch.setattr(auth, "authenticate_adc", raise_refresh_error)
@@ -271,14 +281,14 @@ class TestAuthenticateAdc:
         assert auth.authenticate_adc() is creds
 
 
-# -- build_drive_service --
+# -- build_drive_service / build_sheets_service --
 
 
 class TestBuildDriveService:
     def test_builds_v3_with_authenticated_creds(self, monkeypatch):
         creds = object()
         service = object()
-        monkeypatch.setattr(auth, "authenticate", lambda: creds)
+        monkeypatch.setattr(auth, "authenticate", lambda scopes=None: creds)
         rec = {}
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
@@ -287,3 +297,42 @@ class TestBuildDriveService:
         assert auth.build_drive_service() is service
         assert rec["a"] == ("drive", "v3")
         assert rec["k"]["credentials"] is creds
+
+
+class TestBuildSheetsService:
+    def test_builds_v4_with_authenticated_creds(self, monkeypatch):
+        creds = object()
+        service = object()
+        rec = {}
+        monkeypatch.setattr(
+            auth, "authenticate", lambda scopes=None: rec.update(scopes=scopes) or creds
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda *a, **k: rec.update(a=a, k=k) or service,
+        )
+        assert auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES) is service
+        assert rec["a"] == ("sheets", "v4")
+        assert rec["k"]["credentials"] is creds
+        assert rec["scopes"] == auth.SHEETS_WRITE_SCOPES
+
+
+# -- _token_path scope split --
+
+
+class TestTokenPathScopes:
+    def test_readonly_default_uses_shared_token(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
+        assert auth._token_path() == Path("/tmp/cfg/gdrives_token.json")
+        assert auth._token_path(auth.SCOPES) == Path("/tmp/cfg/gdrives_token.json")
+
+    def test_write_scope_uses_separate_token(self, monkeypatch):
+        # Write access must not clobber (or re-consent) the read-only token.
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
+        assert auth._token_path(auth.SHEETS_WRITE_SCOPES) == Path(
+            "/tmp/cfg/gdrives_token_rw.json"
+        )
+
+    def test_none_when_config_unset(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
+        assert auth._token_path(auth.SHEETS_WRITE_SCOPES) is None

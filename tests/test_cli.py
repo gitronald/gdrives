@@ -169,3 +169,130 @@ class TestShowDrives:
         assert "My Drive (root)" in out.out
         assert "Team (sd)" in out.out
         assert "Saved to" in out.err
+
+
+class TestSheetsGet:
+    def test_delegates_aligned_by_default(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_get",
+            lambda source, range_, *, output, delimiter, aligned: rec.update(
+                s=source, r=range_, o=output, d=delimiter, a=aligned
+            ),
+        )
+        cli.sheets_get("SID", "Sheet1!A1:B2")
+        assert rec == {"s": "SID", "r": "Sheet1!A1:B2", "o": None, "d": ",", "a": True}
+
+    def test_tsv_sets_delimiter_and_unaligns(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.sheets.run_get", lambda *a, **k: rec.update(k=k))
+        cli.sheets_get("SID", "A1:B2", tsv_out=True)
+        assert rec["k"]["delimiter"] == "\t"
+        assert rec["k"]["aligned"] is False
+
+    def test_csv_prints_unaligned_with_comma(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.sheets.run_get", lambda *a, **k: rec.update(k=k))
+        cli.sheets_get("SID", "A1:B2", csv_out=True)
+        assert rec["k"]["delimiter"] == ","
+        assert rec["k"]["aligned"] is False
+
+    def test_csv_and_tsv_mutually_exclusive(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_get("SID", csv_out=True, tsv_out=True)
+        assert exc.value.code == 1
+        assert "mutually exclusive" in capsys.readouterr().err
+
+    def test_value_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise ValueError("spreadsheet has no tabs to read")
+
+        monkeypatch.setattr("gdrives.sheets.run_get", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_get("SID")
+        assert exc.value.code == 1
+        assert "Error: spreadsheet has no tabs" in capsys.readouterr().err
+
+
+class TestSheetsUpdate:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_update",
+            lambda source, range_, values_file, *, raw: rec.update(
+                s=source, r=range_, vf=values_file, raw=raw
+            ),
+        )
+        cli.sheets_update("SID", "Sheet1!A1:B2", values_file="data.csv", raw=True)
+        assert rec == {"s": "SID", "r": "Sheet1!A1:B2", "vf": "data.csv", "raw": True}
+
+    def test_path_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise DrivePathError("file 'missing' not found in Drive")
+
+        monkeypatch.setattr("gdrives.sheets.run_update", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_update("My Drive/missing", "A1", values_file="d.csv")
+        assert exc.value.code == 1
+        assert "Error: file 'missing' not found" in capsys.readouterr().err
+
+
+class TestSheetsAppend:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_append",
+            lambda source, range_, values_file, *, raw: rec.update(
+                s=source, r=range_, vf=values_file, raw=raw
+            ),
+        )
+        cli.sheets_append("SID", "Sheet1!A1", values_file="data.csv")
+        assert rec == {"s": "SID", "r": "Sheet1!A1", "vf": "data.csv", "raw": False}
+
+
+class TestSheetsClear:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_clear",
+            lambda source, range_, *, yes: rec.update(s=source, r=range_, yes=yes),
+        )
+        cli.sheets_clear("SID", "Sheet1!A1:C10", yes=True)
+        assert rec == {"s": "SID", "r": "Sheet1!A1:C10", "yes": True}
+
+
+class TestSheetsSet:
+    def test_parses_match_and_set_pairs(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_set",
+            lambda source, match, updates, *, tab, raw, allow_multiple: rec.update(
+                s=source, m=match, u=updates, tab=tab, raw=raw, all=allow_multiple
+            ),
+        )
+        cli.sheets_set(
+            "SID",
+            match=["year=2026", "id=C300"],
+            set_=["status=paid", "amount=250"],
+            tab="Sheet1",
+            all_=True,
+            raw=True,
+        )
+        assert rec == {
+            "s": "SID",
+            "m": {"year": "2026", "id": "C300"},
+            "u": {"status": "paid", "amount": "250"},
+            "tab": "Sheet1",
+            "raw": True,
+            "all": True,
+        }
+
+    def test_bad_pair_exits_1(self, monkeypatch, capsys):
+        # A --set without '=' is a ValueError, surfaced by the shared error seam.
+        monkeypatch.setattr(
+            "gdrives.sheets.run_set", lambda *a, **k: pytest.fail("must not run")
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_set("SID", match=["id=C300"], set_=["noequals"])
+        assert exc.value.code == 1
+        assert "COLUMN=VALUE" in capsys.readouterr().err

@@ -1,11 +1,11 @@
 ---
 id: 1
 slug: sheets-read-write
-status: active
+status: done
 branch: feature/sheets-read-write
 created: 2026-07-07T18:55:26-07:00
-concluded:
-pr:
+concluded: 2026-07-07T20:44:31-07:00
+pr: https://github.com/gitronald/gdrives/pull/8
 ---
 
 # Read and update Google Sheets values via the Sheets API
@@ -148,3 +148,99 @@ send rows as-is (Sheets pads with blanks).
   cell / small range? Start with `--values-file`; add inline later if wanted.
 - Should `pull_values` optionally coerce to typed values (`valueRenderOption`)?
   Default `FORMATTED_VALUE` (strings, matches the UI); expose the option later.
+
+## Log
+
+Implemented on branch `feature/sheets-read-write` (PR #8), following the
+implementation order above. Resolutions to the open questions:
+
+- **Scopes / write token** — took the recommended split: threaded a `scopes`
+  argument through `authenticate*` / `build_drive_service`, added
+  `build_sheets_service(scopes=...)` and a `SHEETS_WRITE_SCOPES` constant.
+  `_token_path(scopes)` returns `gdrives_token.json` for the read-only default
+  and `gdrives_token_rw.json` for any write scope, so existing read-only users
+  are never re-consented. Reads reuse the read-only token (Sheets `values.get`
+  works under `drive.readonly`); only `sheets-update`/`-append`/`-clear` request
+  `spreadsheets`.
+- **CLI shape** — flat commands (`sheets-get`, `sheets-update`, `sheets-append`,
+  `sheets-clear`), matching the existing `show-drives` style.
+- **`sheets-update` input** — `--values-file` (local CSV) only, as recommended;
+  inline `--value` deferred.
+- **`valueRenderOption`** — not exposed; defaults to `FORMATTED_VALUE` (strings).
+- **Range default** — a range-less `sheets-get` reads the first tab (via
+  `list_tabs`).
+- **Source resolver** — `resolve_spreadsheet_id` accepts URL / bare ID / Drive
+  path (path via `resolve_path(..., allow_files=True)`), shared by every `run_*`.
+
+Docs: `.claude/CLAUDE.md` is gitignored in this repo, so its package-structure
+and Commands updates are local only (not in the PR); `README.md` and
+`docs/setup-oauth.md` carry the shared write-scope documentation. Reworded the
+former "only ever requests read-only access" claims to reflect the opt-in write
+scope. Checks clean: `ruff check`, `ruff format --check`, `pyrefly check`
+(strict), and `pytest` (252 passed, 100% coverage).
+
+### Follow-ups landed in the same PR
+
+- **Live integration tests** (`tests/test_sheets_integration.py`): a
+  service-account-gated suite exercising `list_tabs`/`pull`/`update`/`append`/
+  `clear` (and USER_ENTERED vs RAW) against a real spreadsheet. Runs only when a
+  service account is available and `GDRIVES_TEST_SPREADSHEET_ID` is set (kept out
+  of the code since this is a public repo); otherwise skips, so CI stays green.
+  Each test creates and deletes its own uniquely-named tab. Registered an
+  `integration` pytest marker.
+- **Conditional row updates** (`sheets-set`): find rows by header-named column
+  value(s) and set other columns — the read-locate-write pattern behind
+  "update the row where id=X." Added `column_letter`, `a1_quote`, `find_rows`,
+  `batch_update_values` (wraps `values.batchUpdate` for scattered writes),
+  `set_by_match`, `parse_pairs`, and `run_set`, plus the `sheets-set` CLI command.
+  Supports composite AND keys (repeat `--match`), multiple target columns (repeat
+  `--set`), and multi-row updates (`--all`); refuses on 0 or >1 matches otherwise,
+  so a keyed update never rewrites the wrong row. Unit-tested with the fake
+  service (extended with `batchUpdate`) and integration-tested live (composite
+  key + multi-column, `--all` multi-row, ambiguity refusal). Verified the CLI
+  end-to-end against the service account. Final suite: 292 passed, 10 skipped,
+  100% coverage.
+
+### Review follow-up (close, 2026-07-07)
+
+Ran the xhigh code-review gate over the PR diff (10 finder angles + adversarial
+verify), posted the results to PR #8, and fixed the two actionable correctness
+findings at the source, each with a paired regression test:
+
+- **Unquoted default tab** (`run_get`): a range-less `sheets-get` interpolated
+  the first tab's raw title into the A1 range, so a tab named `Q3 Budget` sent
+  `range='Q3 Budget'` and drew a Sheets 400. Now wraps it with `a1_quote`, like
+  every other tab-name path. Test: `test_default_range_quotes_tab_with_spaces`.
+- **stdout CSV line endings**: `csv.writer(sys.stdout)` kept csv's default
+  `\r\n` terminator against a text stream, leaving a stray CR (`\r\r\n` on
+  Windows). Now forces `lineterminator="\n"`; the file path was already
+  `newline=""`-safe. Test: `test_delimited_stdout_uses_plain_newlines`.
+
+Conscious no-ops (documented in the PR comment, not blocking): keyed lookups
+compare `FORMATTED_VALUE` display strings (fails safe); `NO_CREDENTIALS_MESSAGE`
+hard-codes the read-only ADC scope (misleading only on a first-run write with
+zero credentials); URL `#gid=` is dropped (resolver targets the spreadsheet, not
+a tab); duplicate-header `index`, `format_values` newline handling, and the
+double-auth/prologue duplication for path sources — all minor or out of scope.
+Post-fix gate: 294 passed, 10 skipped, 100% coverage; ruff + format + pyrefly
+clean.
+
+## Retrospective
+
+- Scope grew beyond the original spec in the same PR — the plan proposed
+  get/update/append/clear, and the implementation added `sheets-set` (keyed
+  find-and-set via `batchUpdate`) plus a service-account-gated live integration
+  suite. Both were worth folding in, but they widened the review surface.
+- The per-operation scope split (read-only default token, separate
+  `gdrives_token_rw.json`) landed as designed and kept existing read-only users
+  from re-consenting — the key auth decision held up.
+- The review caught a real class of bug the tests missed: A1 quoting was applied
+  consistently in `set_by_match` but not in `run_get`'s default-tab path, and
+  every test/fixture used space-free tab names (`Sheet1`, `itest_<hex>`), so the
+  gap was invisible. Lesson: fixtures should include a name that needs quoting.
+- Both fixes were one-liners with obvious regression tests — cheap to close the
+  loop, and the kind of thing an integration test with a `Q3 Budget`-style tab
+  would have surfaced earlier.
+- Remaining follow-ups (formatted-value matching, gid targeting, scope-aware
+  credentials message, shared `_open()` prologue) are all deliberate deferrals,
+  not oversights — captured in the PR comment for a future pass.
