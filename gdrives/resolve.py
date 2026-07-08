@@ -1,8 +1,9 @@
 """Drive path resolution — convert paths to folder/file IDs."""
 
 from gdrives.auth import build_drive_service
-from gdrives.drives import resolve_name
+from gdrives.drives import find_drive, load
 from gdrives.files import (
+    DriveFile,
     Service,
     is_folder,
     list_children,
@@ -13,6 +14,23 @@ from gdrives.files import (
 
 class DrivePathError(Exception):
     """Raised when a Drive path cannot be resolved."""
+
+
+def _ambiguous_error(
+    name: str, location: str, matches: list[DriveFile]
+) -> DrivePathError:
+    """Build the error raised when a name matches more than one Drive item.
+
+    Drive permits duplicate names in one folder; resolution refuses to silently
+    pick one. ``location`` names where the clash occurred (e.g. ``"in path"`` or
+    ``"in Shared with me"``); each match is listed with its kind, id, and owner.
+    """
+    lines = [f"multiple items named '{name}' {location}:"]
+    for m in matches:
+        kind = "folder" if is_folder(m) else "file"
+        owner = owner_email(m) or "unknown"
+        lines.append(f"  {kind}  {m['name']}  {m['id']}  (owner: {owner})")
+    return DrivePathError("\n".join(lines))
 
 
 def walk_segments(
@@ -37,14 +55,7 @@ def walk_segments(
             kind = "file or folder" if is_last and allow_files else "folder"
             raise DrivePathError(f"{kind} '{segment}' not found in Drive")
         if len(matches) > 1:
-            # Drive permits duplicate names in one folder; refuse to silently
-            # pick one (mirrors the ambiguity error in resolve_shared_path).
-            lines = [f"multiple items named '{segment}' in path:"]
-            for m in matches:
-                kind = "folder" if is_folder(m) else "file"
-                owner = owner_email(m) or "unknown"
-                lines.append(f"  {kind}  {m['name']}  {m['id']}  (owner: {owner})")
-            raise DrivePathError("\n".join(lines))
+            raise _ambiguous_error(segment, "in path", matches)
         folder_id = matches[0]["id"]
     return folder_id
 
@@ -65,13 +76,14 @@ def resolve_path(
     """
     service = service or build_drive_service()
 
-    # Try progressively longer prefixes against the cache
+    # Load the drive cache once, then try progressively longer prefixes against it.
+    drives = load()
     parts = path.strip("/").split("/")
     drive_entry = None
     split_idx = 0
     for i in range(len(parts), 0, -1):
         candidate = "/".join(parts[:i])
-        entry = resolve_name(candidate)
+        entry = find_drive(drives, candidate)
         if entry:
             drive_entry = entry
             split_idx = i
@@ -111,12 +123,7 @@ def resolve_shared_path(
         raise DrivePathError(f"'{first_segment}' not found in Shared with me")
 
     if len(matches) > 1:
-        lines = [f"multiple items named '{first_segment}' in Shared with me:"]
-        for m in matches:
-            kind = "folder" if is_folder(m) else "file"
-            owner = owner_email(m) or "unknown"
-            lines.append(f"  {kind}  {m['name']}  {m['id']}  (owner: {owner})")
-        raise DrivePathError("\n".join(lines))
+        raise _ambiguous_error(first_segment, "in Shared with me", matches)
 
     item = matches[0]
 

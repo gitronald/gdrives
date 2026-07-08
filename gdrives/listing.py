@@ -149,6 +149,20 @@ def format_csv(rows: list[DriveEntry]) -> str:
     return buf.getvalue()
 
 
+def _render(rows: list[DriveEntry], suffix: str) -> str:
+    """Render rows for a ``--save-as`` path, choosing the format by extension.
+
+    ``.md`` renders nested markdown and ``.csv`` renders CSV; any other suffix is
+    rejected rather than silently written as CSV, so every caller (not just the
+    CLI, which pre-validates) gets the same guarantee.
+    """
+    if suffix == ".md":
+        return format_markdown(rows)
+    if suffix == ".csv":
+        return format_csv(rows)
+    raise ValueError(f"unsupported --save-as extension {suffix!r}: use .md or .csv")
+
+
 # -- Public API --
 
 
@@ -181,7 +195,7 @@ def ls(
     if save_as:
         for path in save_as:
             out = Path(path)
-            text = format_markdown(rows) if out.suffix == ".md" else format_csv(rows)
+            text = _render(rows, out.suffix)
             out.write_text(text, encoding="utf-8")
             print(f"Wrote {out}", file=sys.stderr)
     else:

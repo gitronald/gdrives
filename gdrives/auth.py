@@ -158,10 +158,7 @@ def authenticate(scopes: list[str] | None = None):
     helpful SystemExit if none are configured. ``scopes`` defaults to read-only
     Drive access; pass a write scope (e.g. SHEETS_WRITE_SCOPES) for write ops.
     """
-    creds = authenticate_oauth(scopes)
-    if creds:
-        return creds
-    creds = authenticate_service_account(scopes)
+    creds = authenticate_oauth(scopes) or authenticate_service_account(scopes)
     if creds:
         return creds
     try:

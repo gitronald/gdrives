@@ -134,24 +134,25 @@ def ls(
         )
         raise SystemExit(1)
 
+    if shared_with_me and path is None and depth != 1:
+        print(
+            "Error: --depth is not supported when listing all shared items",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     from gdrives.listing import ls as remote_ls
     from gdrives.resolve import resolve_path, resolve_shared_path
 
     with _cli_errors():
-        if shared_with_me:
-            if path is None:
-                if depth != 1:
-                    print(
-                        "Error: --depth is not supported when listing all shared items",
-                        file=sys.stderr,
-                    )
-                    raise SystemExit(1)
-                remote_ls(shared_with_me=True, save_as=save_as)
-            else:
-                folder_id = resolve_shared_path(path)
-                remote_ls(folder_id, depth=depth, save_as=save_as)
+        if shared_with_me and path is None:
+            remote_ls(shared_with_me=True, save_as=save_as)
         else:
-            folder_id = drive_id or resolve_path(path or "My Drive")
+            if shared_with_me:
+                assert path is not None  # the path-less shared case returned above
+                folder_id = resolve_shared_path(path)
+            else:
+                folder_id = drive_id or resolve_path(path or "My Drive")
             remote_ls(folder_id, depth=depth, save_as=save_as)
 
 
