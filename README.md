@@ -193,7 +193,9 @@ commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`) reques
 the `spreadsheets` scope the first time and cache it in a separate token. Cells
 are plain strings on both sides: `--values-file` reads a local CSV, and by
 default `USER_ENTERED` parses formulas, dates, and numbers like the Sheets UI
-(`--raw` stores the literal text).
+(`--raw` stores the literal text). Use `--raw` when writing data from an
+untrusted source, so a leading `=`, `+`, `-`, or `@` is stored verbatim rather
+than evaluated as a formula.
 
 #### Update rows by lookup (`sheets-set`)
 
