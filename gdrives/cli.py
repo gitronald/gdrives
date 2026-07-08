@@ -278,3 +278,49 @@ def sheets_clear(
 
     with _cli_errors():
         run_clear(source, range_, yes=yes)
+
+
+@app.command(name="sheets-set")
+def sheets_set(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    match: Annotated[
+        list[str],
+        typer.Option(
+            "-m",
+            "--match",
+            help="COLUMN=VALUE row filter; repeat for a composite AND key",
+        ),
+    ],
+    set_: Annotated[
+        list[str],
+        typer.Option(
+            "-s",
+            "--set",
+            help="COLUMN=VALUE to write; repeat to set multiple columns",
+        ),
+    ],
+    tab: Annotated[
+        str | None,
+        typer.Option("--tab", help="Tab name (default: first tab)"),
+    ] = None,
+    all_: Annotated[
+        bool,
+        typer.Option("--all", help="Update every matching row (default: exactly one)"),
+    ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Store literal strings (skip USER_ENTERED parsing)"),
+    ] = False,
+):
+    """Set column(s) on the row(s) matching COLUMN=VALUE condition(s) (write access).
+
+    Locates rows by header-named columns and writes the target cells in one call.
+    Refuses unless exactly one row matches, unless --all is given. Example:
+    gdrives sheets-set <sheet> -m year=2026 -m id=C300 -s status=paid -s amount=250
+    """
+    from gdrives.sheets import parse_pairs, run_set
+
+    with _cli_errors():
+        match_map = parse_pairs(match, "--match")
+        updates = parse_pairs(set_, "--set")
+        run_set(source, match_map, updates, tab=tab, raw=raw, allow_multiple=all_)

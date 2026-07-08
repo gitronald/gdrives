@@ -189,11 +189,35 @@ gdrives sheets-clear <sheet-url> "Sheet1!A1:C10"        # Clear values (prompts 
 ```
 
 Reads use the read-only scope (no re-consent for existing users). The write
-commands (`sheets-update`, `sheets-append`, `sheets-clear`) request the
-`spreadsheets` scope the first time and cache it in a separate token. Cells are
-plain strings on both sides: `--values-file` reads a local CSV, and by default
-`USER_ENTERED` parses formulas, dates, and numbers like the Sheets UI (`--raw`
-stores the literal text).
+commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`) request
+the `spreadsheets` scope the first time and cache it in a separate token. Cells
+are plain strings on both sides: `--values-file` reads a local CSV, and by
+default `USER_ENTERED` parses formulas, dates, and numbers like the Sheets UI
+(`--raw` stores the literal text).
+
+#### Update rows by lookup (`sheets-set`)
+
+Find rows by column value(s) and set other columns on them — no A1 arithmetic.
+Columns are addressed by **header name** (row 1). Repeat `--match` for a composite
+(AND) key and `--set` for multiple columns:
+
+```bash
+# In the row where id=C300, set status=paid and amount=250
+gdrives sheets-set <sheet-url> --match id=C300 --set status=paid --set amount=250
+
+# Composite key: match on two columns before writing
+gdrives sheets-set <sheet-url> -m year=2026 -m id=C300 -s status=paid
+
+# Update every matching row (default refuses when >1 row matches)
+gdrives sheets-set <sheet-url> -m status=pending -s reminder=sent --all
+
+gdrives sheets-set <sheet-url> --tab Roster -m id=C300 -s status=paid  # non-default tab
+```
+
+By default it requires **exactly one** matching row — it refuses (listing the
+rows) when the key is ambiguous, and errors when nothing matches, so a keyed
+update never silently rewrites the wrong row. Pass `--all` to update every match.
+`--raw` and the `USER_ENTERED` default apply as above.
 
 ### Download files and folders
 

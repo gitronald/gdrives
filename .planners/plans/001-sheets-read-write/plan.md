@@ -178,3 +178,25 @@ and Commands updates are local only (not in the PR); `README.md` and
 former "only ever requests read-only access" claims to reflect the opt-in write
 scope. Checks clean: `ruff check`, `ruff format --check`, `pyrefly check`
 (strict), and `pytest` (252 passed, 100% coverage).
+
+### Follow-ups landed in the same PR
+
+- **Live integration tests** (`tests/test_sheets_integration.py`): a
+  service-account-gated suite exercising `list_tabs`/`pull`/`update`/`append`/
+  `clear` (and USER_ENTERED vs RAW) against a real spreadsheet. Runs only when a
+  service account is available and `GDRIVES_TEST_SPREADSHEET_ID` is set (kept out
+  of the code since this is a public repo); otherwise skips, so CI stays green.
+  Each test creates and deletes its own uniquely-named tab. Registered an
+  `integration` pytest marker.
+- **Conditional row updates** (`sheets-set`): find rows by header-named column
+  value(s) and set other columns — the read-locate-write pattern behind
+  "update the row where id=X." Added `column_letter`, `a1_quote`, `find_rows`,
+  `batch_update_values` (wraps `values.batchUpdate` for scattered writes),
+  `set_by_match`, `parse_pairs`, and `run_set`, plus the `sheets-set` CLI command.
+  Supports composite AND keys (repeat `--match`), multiple target columns (repeat
+  `--set`), and multi-row updates (`--all`); refuses on 0 or >1 matches otherwise,
+  so a keyed update never rewrites the wrong row. Unit-tested with the fake
+  service (extended with `batchUpdate`) and integration-tested live (composite
+  key + multi-column, `--all` multi-row, ambiguity refusal). Verified the CLI
+  end-to-end against the service account. Final suite: 292 passed, 10 skipped,
+  100% coverage.

@@ -259,3 +259,40 @@ class TestSheetsClear:
         )
         cli.sheets_clear("SID", "Sheet1!A1:C10", yes=True)
         assert rec == {"s": "SID", "r": "Sheet1!A1:C10", "yes": True}
+
+
+class TestSheetsSet:
+    def test_parses_match_and_set_pairs(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_set",
+            lambda source, match, updates, *, tab, raw, allow_multiple: rec.update(
+                s=source, m=match, u=updates, tab=tab, raw=raw, all=allow_multiple
+            ),
+        )
+        cli.sheets_set(
+            "SID",
+            match=["year=2026", "id=C300"],
+            set_=["status=paid", "amount=250"],
+            tab="Sheet1",
+            all_=True,
+            raw=True,
+        )
+        assert rec == {
+            "s": "SID",
+            "m": {"year": "2026", "id": "C300"},
+            "u": {"status": "paid", "amount": "250"},
+            "tab": "Sheet1",
+            "raw": True,
+            "all": True,
+        }
+
+    def test_bad_pair_exits_1(self, monkeypatch, capsys):
+        # A --set without '=' is a ValueError, surfaced by the shared error seam.
+        monkeypatch.setattr(
+            "gdrives.sheets.run_set", lambda *a, **k: pytest.fail("must not run")
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_set("SID", match=["id=C300"], set_=["noequals"])
+        assert exc.value.code == 1
+        assert "COLUMN=VALUE" in capsys.readouterr().err

@@ -126,6 +126,9 @@ class _FakeValues:
     def clear(self, **kwargs: Any) -> _Executable:
         return self._service._record("values.clear", kwargs, "clear")
 
+    def batchUpdate(self, **kwargs: Any) -> _Executable:  # camelCase: Sheets API name
+        return self._service._record("values.batchUpdate", kwargs, "batchUpdate")
+
 
 class _FakeSpreadsheets:
     def __init__(self, service: "FakeSheetsService") -> None:

@@ -133,3 +133,62 @@ def test_raw_stores_formula_literally(tab):
         service, sid, f"'{name}'!A1", [["=1+2"]], input_option=sheets.RAW
     )
     assert sheets.pull_values(service, sid, f"'{name}'!A1") == [["=1+2"]]
+
+
+def _seed(service, sid, name, rows):
+    """Write a header + data table into the fresh tab and return it."""
+    end = sheets.column_letter(len(rows[0]) - 1)
+    sheets.update_values(service, sid, f"'{name}'!A1:{end}{len(rows)}", rows)
+    return rows
+
+
+def test_set_by_match_composite_key_multi_column(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [
+            ["year", "id", "status", "amount"],
+            ["2025", "C300", "old", "0"],
+            ["2026", "C300", "pending", "0"],
+            ["2026", "D400", "pending", "0"],
+        ],
+    )
+    result = sheets.set_by_match(
+        service,
+        sid,
+        name,
+        {"year": "2026", "id": "C300"},
+        {"status": "paid", "amount": "250"},
+    )
+    assert result["rows"] == [3]  # only the 2026/C300 row
+    grid = sheets.pull_values(service, sid, f"'{name}'")
+    assert grid[2] == ["2026", "C300", "paid", "250"]  # updated
+    assert grid[1] == ["2025", "C300", "old", "0"]  # 2025/C300 untouched
+    assert grid[3] == ["2026", "D400", "pending", "0"]  # other id untouched
+
+
+def test_set_by_match_all_updates_every_match(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "status"], ["A", "pending"], ["B", "pending"], ["A", "pending"]],
+    )
+    result = sheets.set_by_match(
+        service, sid, name, {"id": "A"}, {"status": "done"}, allow_multiple=True
+    )
+    assert result["rows"] == [2, 4]
+    statuses = [r[1] for r in sheets.pull_values(service, sid, f"'{name}'")[1:]]
+    assert statuses == ["done", "pending", "done"]  # both A rows, B untouched
+
+
+def test_set_by_match_multiple_rows_refused_without_all(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["id", "v"], ["A", "1"], ["A", "2"]])
+    with pytest.raises(ValueError, match="matches rows"):
+        sheets.set_by_match(service, sid, name, {"id": "A"}, {"v": "9"})
+    # nothing was written
+    assert sheets.pull_values(service, sid, f"'{name}'!B2:B3") == [["1"], ["2"]]
