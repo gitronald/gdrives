@@ -5,7 +5,7 @@ status: active
 branch: feature/sheets-read-write
 created: 2026-07-07T18:55:26-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/8
 ---
 
 # Read and update Google Sheets values via the Sheets API
