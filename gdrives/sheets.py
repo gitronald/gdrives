@@ -337,7 +337,9 @@ def run_get(
         tabs = list_tabs(service, spreadsheet_id)
         if not tabs:
             raise ValueError("spreadsheet has no tabs to read")
-        range_ = tabs[0]
+        # Quote the bare tab title so names with spaces or cell-like forms
+        # ('Q3 Budget', '2026') stay valid A1 ranges, matching set_by_match.
+        range_ = a1_quote(tabs[0])
 
     values = pull_values(service, spreadsheet_id, range_)
 
@@ -349,7 +351,11 @@ def run_get(
     elif aligned:
         print(format_values(values))
     else:
-        csv.writer(sys.stdout, delimiter=delimiter).writerows(values)
+        # Force "\n" line endings: sys.stdout is a text stream, so csv's default
+        # "\r\n" terminator would leave a stray CR (and "\r\r\n" on Windows).
+        csv.writer(sys.stdout, delimiter=delimiter, lineterminator="\n").writerows(
+            values
+        )
 
 
 def run_update(

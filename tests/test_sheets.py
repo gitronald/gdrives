@@ -220,13 +220,29 @@ class TestRunGet:
         run_get("SHEET_ID")
         # Read-only: default scope (None -> read-only inside build_sheets_service).
         assert rec["scopes"] is None
-        # list_tabs (meta) then values.get on the first tab.
+        # list_tabs (meta) then values.get on the first tab, A1-quoted.
         assert svc.calls[0][0] == "spreadsheets.get"
         assert svc.calls[1] == (
             "values.get",
-            {"spreadsheetId": "SHEET_ID", "range": "Sheet1"},
+            {"spreadsheetId": "SHEET_ID", "range": "'Sheet1'"},
         )
         assert "a  b" in capsys.readouterr().out
+
+    def test_default_range_quotes_tab_with_spaces(self, monkeypatch, capsys):
+        # A first tab whose name needs quoting must be wrapped so values.get
+        # gets a valid A1 range instead of "Q3 Budget" (Sheets 400s on that).
+        svc = FakeSheetsService(
+            meta={"sheets": [{"properties": {"title": "Q3 Budget"}}]},
+            get={"values": [["a"]]},
+        )
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service", lambda scopes=None: svc
+        )
+        run_get("SHEET_ID")
+        assert svc.calls[1] == (
+            "values.get",
+            {"spreadsheetId": "SHEET_ID", "range": "'Q3 Budget'"},
+        )
 
     def test_explicit_range_skips_tab_lookup(self, monkeypatch, capsys):
         svc = FakeSheetsService(get={"values": [["x"]]})
@@ -253,6 +269,18 @@ class TestRunGet:
         )
         run_get("SHEET_ID", "A1:B1", aligned=False)
         assert "a,b" in capsys.readouterr().out
+
+    def test_delimited_stdout_uses_plain_newlines(self, monkeypatch, capsys):
+        # csv.writer's default "\r\n" terminator against a text stdout leaves a
+        # stray CR (and "\r\r\n" on Windows); the stdout path forces "\n".
+        svc = FakeSheetsService(get={"values": [["a", "b"], ["c", "d"]]})
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service", lambda scopes=None: svc
+        )
+        run_get("SHEET_ID", "A1:B2", aligned=False)
+        out = capsys.readouterr().out
+        assert "\r" not in out
+        assert out == "a,b\nc,d\n"
 
     def test_empty_range_message(self, monkeypatch, capsys):
         svc = FakeSheetsService(get={})
