@@ -1,7 +1,7 @@
 ---
 id: 1
 slug: sheets-read-write
-status: draft
+status: active
 branch: feature/sheets-read-write
 created: 2026-07-07T18:55:26-07:00
 concluded:
