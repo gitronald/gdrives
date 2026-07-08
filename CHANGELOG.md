@@ -7,17 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-07
+
 ### Added
+
+- Live Google Sheets read/write via the Sheets API v4 (`spreadsheets.values.*`), distinct from `export`'s whole-file download:
+  - `sheets-get` — read an A1 range to aligned columns, `--csv`/`--tsv` stdout, or a delimited file (`-o`); a bare range or no range targets the first tab.
+  - `sheets-update` — overwrite a range with rows from a local CSV (`--values-file`).
+  - `sheets-append` — append CSV rows after the table in a range.
+  - `sheets-clear` — clear a range's values (keeps formatting); prompts unless `-y`.
+  - `sheets-set` — update row(s) located by header-named column value(s); repeat `--match` for a composite AND key and `--set` for multiple columns, refusing on 0 or >1 matches unless `--all`.
+- Separate `spreadsheets` write scope for the write commands, cached in its own `gdrives_token_rw.json`, so read commands never request or re-consent write access. `--raw` stores literal strings instead of the default `USER_ENTERED` parsing.
+- Dependabot cooldown windows for dependency update PRs.
 
 ### Changed
 
-### Deprecated
-
-### Removed
-
-### Fixed
-
-### Security
+- `authenticate` and the `build_*` service helpers take an optional `scopes` argument; the read-only Drive scope remains the default.
+- CI test workflow pins the Python version via a `UV_PYTHON` environment variable.
 
 ## [0.5.8] - 2026-06-09
 

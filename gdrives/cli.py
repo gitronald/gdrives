@@ -174,3 +174,153 @@ def show_drives():
                 f"{d['name']} ({d['id']})"
             )
         print(f"\nSaved to {CACHE_PATH}", file=sys.stderr)
+
+
+# A spreadsheet target accepted by every sheets command: a Sheet URL, a bare
+# file ID, or a Drive path (e.g. 'My Drive/budget'). Shared help string.
+_SOURCE_HELP = "Sheet URL, file ID, or Drive path (e.g. 'My Drive/budget')"
+_RANGE_HELP = "A1 range, e.g. 'Sheet1!A1:C10' (bare 'A1:C10' targets the first tab)"
+
+
+@app.command(name="sheets-get")
+def sheets_get(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    range_: Annotated[
+        str | None,
+        typer.Argument(metavar="[RANGE]", help=f"{_RANGE_HELP} (default: first tab)"),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="Write delimited rows to this file"),
+    ] = None,
+    csv_out: Annotated[
+        bool,
+        typer.Option("--csv", help="Print comma-delimited rows instead of columns"),
+    ] = False,
+    tsv_out: Annotated[
+        bool,
+        typer.Option("--tsv", help="Tab-delimited (for --csv-style stdout or -o)"),
+    ] = False,
+):
+    """Read a range of cells from a Google Sheet.
+
+    Prints aligned columns to stdout by default; --csv/--tsv print delimited
+    rows, and -o writes a delimited file (CSV, or TSV with --tsv).
+    """
+    if csv_out and tsv_out:
+        print("Error: --csv and --tsv are mutually exclusive", file=sys.stderr)
+        raise SystemExit(1)
+
+    from gdrives.sheets import run_get
+
+    delimiter = "\t" if tsv_out else ","
+    with _cli_errors():
+        run_get(
+            source,
+            range_,
+            output=output,
+            delimiter=delimiter,
+            aligned=not (csv_out or tsv_out),
+        )
+
+
+@app.command(name="sheets-update")
+def sheets_update(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    range_: Annotated[str, typer.Argument(metavar="RANGE", help=_RANGE_HELP)],
+    values_file: Annotated[
+        str,
+        typer.Option("--values-file", help="Local CSV of the rows to write"),
+    ],
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Store literal strings (skip USER_ENTERED parsing)"),
+    ] = False,
+):
+    """Overwrite a range with rows from a local CSV file (needs write access)."""
+    from gdrives.sheets import run_update
+
+    with _cli_errors():
+        run_update(source, range_, values_file, raw=raw)
+
+
+@app.command(name="sheets-append")
+def sheets_append(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    range_: Annotated[str, typer.Argument(metavar="RANGE", help=_RANGE_HELP)],
+    values_file: Annotated[
+        str,
+        typer.Option("--values-file", help="Local CSV of the rows to append"),
+    ],
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Store literal strings (skip USER_ENTERED parsing)"),
+    ] = False,
+):
+    """Append rows from a local CSV file after the table in a range (write access)."""
+    from gdrives.sheets import run_append
+
+    with _cli_errors():
+        run_append(source, range_, values_file, raw=raw)
+
+
+@app.command(name="sheets-clear")
+def sheets_clear(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    range_: Annotated[str, typer.Argument(metavar="RANGE", help=_RANGE_HELP)],
+    yes: Annotated[
+        bool,
+        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
+    ] = False,
+):
+    """Clear the values in a range, keeping formatting (needs write access)."""
+    from gdrives.sheets import run_clear
+
+    with _cli_errors():
+        run_clear(source, range_, yes=yes)
+
+
+@app.command(name="sheets-set")
+def sheets_set(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    match: Annotated[
+        list[str],
+        typer.Option(
+            "-m",
+            "--match",
+            help="COLUMN=VALUE row filter; repeat for a composite AND key",
+        ),
+    ],
+    set_: Annotated[
+        list[str],
+        typer.Option(
+            "-s",
+            "--set",
+            help="COLUMN=VALUE to write; repeat to set multiple columns",
+        ),
+    ],
+    tab: Annotated[
+        str | None,
+        typer.Option("--tab", help="Tab name (default: first tab)"),
+    ] = None,
+    all_: Annotated[
+        bool,
+        typer.Option("--all", help="Update every matching row (default: exactly one)"),
+    ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Store literal strings (skip USER_ENTERED parsing)"),
+    ] = False,
+):
+    """Set column(s) on the row(s) matching COLUMN=VALUE condition(s) (write access).
+
+    Locates rows by header-named columns and writes the target cells in one call.
+    Refuses unless exactly one row matches, unless --all is given. Example:
+    gdrives sheets-set <sheet> -m year=2026 -m id=C300 -s status=paid -s amount=250
+    """
+    from gdrives.sheets import parse_pairs, run_set
+
+    with _cli_errors():
+        match_map = parse_pairs(match, "--match")
+        updates = parse_pairs(set_, "--set")
+        run_set(source, match_map, updates, tab=tab, raw=raw, allow_multiple=all_)

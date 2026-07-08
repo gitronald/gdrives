@@ -95,3 +95,71 @@ def mock_list_response(
     if next_page_token:
         result["nextPageToken"] = next_page_token
     return result
+
+
+# -- Sheets API fake --
+
+
+class _Executable:
+    """Stand-in for a Sheets API request whose ``execute()`` returns a fixed dict."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        self._result = result
+
+    def execute(self) -> dict[str, Any]:
+        return self._result
+
+
+class _FakeValues:
+    def __init__(self, service: "FakeSheetsService") -> None:
+        self._service = service
+
+    def get(self, **kwargs: Any) -> _Executable:
+        return self._service._record("values.get", kwargs, "get")
+
+    def update(self, **kwargs: Any) -> _Executable:
+        return self._service._record("values.update", kwargs, "update")
+
+    def append(self, **kwargs: Any) -> _Executable:
+        return self._service._record("values.append", kwargs, "append")
+
+    def clear(self, **kwargs: Any) -> _Executable:
+        return self._service._record("values.clear", kwargs, "clear")
+
+    def batchUpdate(self, **kwargs: Any) -> _Executable:  # camelCase: Sheets API name
+        return self._service._record("values.batchUpdate", kwargs, "batchUpdate")
+
+
+class _FakeSpreadsheets:
+    def __init__(self, service: "FakeSheetsService") -> None:
+        self._service = service
+
+    def values(self) -> _FakeValues:
+        return _FakeValues(self._service)
+
+    def get(self, **kwargs: Any) -> _Executable:
+        return self._service._record("spreadsheets.get", kwargs, "meta")
+
+
+class FakeSheetsService:
+    """A minimal fake of the Sheets v4 discovery service.
+
+    Records every ``(method, kwargs)`` call in ``calls`` and returns the preset
+    response for that method, so tests can assert both the request shape and the
+    parsed result. Register responses by key: ``get``/``update``/``append``/
+    ``clear`` (values ops) and ``meta`` (``spreadsheets.get``, used by
+    ``list_tabs``). Any unregistered key returns ``{}``.
+    """
+
+    def __init__(self, **responses: dict[str, Any]) -> None:
+        self.responses: dict[str, dict[str, Any]] = responses
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(
+        self, method: str, kwargs: dict[str, Any], response_key: str
+    ) -> _Executable:
+        self.calls.append((method, kwargs))
+        return _Executable(self.responses.get(response_key, {}))
+
+    def spreadsheets(self) -> _FakeSpreadsheets:
+        return _FakeSpreadsheets(self)
