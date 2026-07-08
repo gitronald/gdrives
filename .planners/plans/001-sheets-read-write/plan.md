@@ -148,3 +148,33 @@ send rows as-is (Sheets pads with blanks).
   cell / small range? Start with `--values-file`; add inline later if wanted.
 - Should `pull_values` optionally coerce to typed values (`valueRenderOption`)?
   Default `FORMATTED_VALUE` (strings, matches the UI); expose the option later.
+
+## Log
+
+Implemented on branch `feature/sheets-read-write` (PR #8), following the
+implementation order above. Resolutions to the open questions:
+
+- **Scopes / write token** — took the recommended split: threaded a `scopes`
+  argument through `authenticate*` / `build_drive_service`, added
+  `build_sheets_service(scopes=...)` and a `SHEETS_WRITE_SCOPES` constant.
+  `_token_path(scopes)` returns `gdrives_token.json` for the read-only default
+  and `gdrives_token_rw.json` for any write scope, so existing read-only users
+  are never re-consented. Reads reuse the read-only token (Sheets `values.get`
+  works under `drive.readonly`); only `sheets-update`/`-append`/`-clear` request
+  `spreadsheets`.
+- **CLI shape** — flat commands (`sheets-get`, `sheets-update`, `sheets-append`,
+  `sheets-clear`), matching the existing `show-drives` style.
+- **`sheets-update` input** — `--values-file` (local CSV) only, as recommended;
+  inline `--value` deferred.
+- **`valueRenderOption`** — not exposed; defaults to `FORMATTED_VALUE` (strings).
+- **Range default** — a range-less `sheets-get` reads the first tab (via
+  `list_tabs`).
+- **Source resolver** — `resolve_spreadsheet_id` accepts URL / bare ID / Drive
+  path (path via `resolve_path(..., allow_files=True)`), shared by every `run_*`.
+
+Docs: `.claude/CLAUDE.md` is gitignored in this repo, so its package-structure
+and Commands updates are local only (not in the PR); `README.md` and
+`docs/setup-oauth.md` carry the shared write-scope documentation. Reworded the
+former "only ever requests read-only access" claims to reflect the opt-in write
+scope. Checks clean: `ruff check`, `ruff format --check`, `pyrefly check`
+(strict), and `pytest` (252 passed, 100% coverage).
