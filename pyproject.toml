@@ -83,6 +83,9 @@ implicit-any = false
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "--cov=gdrives --cov-report=term-missing"
+markers = [
+    "integration: live tests needing a service account + GDRIVES_TEST_SPREADSHEET_ID (skipped otherwise)",
+]
 
 [tool.coverage.run]
 source = ["gdrives"]
