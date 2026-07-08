@@ -1,10 +1,10 @@
 ---
 id: 1
 slug: sheets-read-write
-status: active
+status: done
 branch: feature/sheets-read-write
 created: 2026-07-07T18:55:26-07:00
-concluded:
+concluded: 2026-07-07T20:44:31-07:00
 pr: https://github.com/gitronald/gdrives/pull/8
 ---
 
@@ -200,3 +200,47 @@ scope. Checks clean: `ruff check`, `ruff format --check`, `pyrefly check`
   key + multi-column, `--all` multi-row, ambiguity refusal). Verified the CLI
   end-to-end against the service account. Final suite: 292 passed, 10 skipped,
   100% coverage.
+
+### Review follow-up (close, 2026-07-07)
+
+Ran the xhigh code-review gate over the PR diff (10 finder angles + adversarial
+verify), posted the results to PR #8, and fixed the two actionable correctness
+findings at the source, each with a paired regression test:
+
+- **Unquoted default tab** (`run_get`): a range-less `sheets-get` interpolated
+  the first tab's raw title into the A1 range, so a tab named `Q3 Budget` sent
+  `range='Q3 Budget'` and drew a Sheets 400. Now wraps it with `a1_quote`, like
+  every other tab-name path. Test: `test_default_range_quotes_tab_with_spaces`.
+- **stdout CSV line endings**: `csv.writer(sys.stdout)` kept csv's default
+  `\r\n` terminator against a text stream, leaving a stray CR (`\r\r\n` on
+  Windows). Now forces `lineterminator="\n"`; the file path was already
+  `newline=""`-safe. Test: `test_delimited_stdout_uses_plain_newlines`.
+
+Conscious no-ops (documented in the PR comment, not blocking): keyed lookups
+compare `FORMATTED_VALUE` display strings (fails safe); `NO_CREDENTIALS_MESSAGE`
+hard-codes the read-only ADC scope (misleading only on a first-run write with
+zero credentials); URL `#gid=` is dropped (resolver targets the spreadsheet, not
+a tab); duplicate-header `index`, `format_values` newline handling, and the
+double-auth/prologue duplication for path sources — all minor or out of scope.
+Post-fix gate: 294 passed, 10 skipped, 100% coverage; ruff + format + pyrefly
+clean.
+
+## Retrospective
+
+- Scope grew beyond the original spec in the same PR — the plan proposed
+  get/update/append/clear, and the implementation added `sheets-set` (keyed
+  find-and-set via `batchUpdate`) plus a service-account-gated live integration
+  suite. Both were worth folding in, but they widened the review surface.
+- The per-operation scope split (read-only default token, separate
+  `gdrives_token_rw.json`) landed as designed and kept existing read-only users
+  from re-consenting — the key auth decision held up.
+- The review caught a real class of bug the tests missed: A1 quoting was applied
+  consistently in `set_by_match` but not in `run_get`'s default-tab path, and
+  every test/fixture used space-free tab names (`Sheet1`, `itest_<hex>`), so the
+  gap was invisible. Lesson: fixtures should include a name that needs quoting.
+- Both fixes were one-liners with obvious regression tests — cheap to close the
+  loop, and the kind of thing an integration test with a `Q3 Budget`-style tab
+  would have surfaced earlier.
+- Remaining follow-ups (formatted-value matching, gid targeting, scope-aware
+  credentials message, shared `_open()` prologue) are all deliberate deferrals,
+  not oversights — captured in the PR comment for a future pass.
