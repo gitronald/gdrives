@@ -69,13 +69,21 @@ def load(path: Path = CACHE_PATH) -> list[DriveInfo]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def find_drive(drives: list[DriveInfo], name: str) -> DriveInfo | None:
+    """Find a drive by name (case-insensitive) in an already-loaded list.
+
+    Returns the full drive dict (id, type, name, url) or None. Lets callers that
+    match several names (e.g. path-prefix resolution) load the cache once.
+    """
+    for d in drives:
+        if d["name"].lower() == name.lower():
+            return d
+    return None
+
+
 def resolve_name(name: str, path: Path = CACHE_PATH) -> DriveInfo | None:
     """Look up a drive by name from the cache. Case-insensitive.
 
     Returns the full drive dict (id, type, name, url) or None.
     """
-    drives = load(path)
-    for d in drives:
-        if d["name"].lower() == name.lower():
-            return d
-    return None
+    return find_drive(load(path), name)

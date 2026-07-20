@@ -135,6 +135,18 @@ def list_tabs(service: Service, spreadsheet_id: str) -> list[str]:
     return [s["properties"]["title"] for s in result.get("sheets", [])]
 
 
+def first_tab(service: Service, spreadsheet_id: str) -> str:
+    """Return the spreadsheet's first tab title, raising if it has none.
+
+    The shared default for range-less reads and keyed updates: both target the
+    first tab when the caller names none.
+    """
+    tabs = list_tabs(service, spreadsheet_id)
+    if not tabs:
+        raise ValueError("spreadsheet has no tabs")
+    return tabs[0]
+
+
 # -- source resolution --
 
 
@@ -313,6 +325,17 @@ def format_values(values: list[list[str]]) -> str:
 # -- CLI entry points --
 
 
+def _resolve_and_report(source: str) -> str:
+    """Resolve ``source`` to a spreadsheet ID and echo it to stderr.
+
+    Every command opens the same way, so the resolve-then-announce step lives
+    here once instead of in each ``run_*`` entry point.
+    """
+    spreadsheet_id = resolve_spreadsheet_id(source)
+    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    return spreadsheet_id
+
+
 def run_get(
     source: str,
     range_: str | None = None,
@@ -329,17 +352,13 @@ def run_get(
     """
     from gdrives.auth import build_sheets_service
 
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    spreadsheet_id = _resolve_and_report(source)
     service = build_sheets_service()
 
     if range_ is None:
-        tabs = list_tabs(service, spreadsheet_id)
-        if not tabs:
-            raise ValueError("spreadsheet has no tabs to read")
         # Quote the bare tab title so names with spaces or cell-like forms
         # ('Q3 Budget', '2026') stay valid A1 ranges, matching set_by_match.
-        range_ = a1_quote(tabs[0])
+        range_ = a1_quote(first_tab(service, spreadsheet_id))
 
     values = pull_values(service, spreadsheet_id, range_)
 
@@ -364,8 +383,7 @@ def run_update(
     """Overwrite a range with rows read from a local CSV file."""
     from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
 
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    spreadsheet_id = _resolve_and_report(source)
     values = read_values_csv(values_file)
     service = build_sheets_service(SHEETS_WRITE_SCOPES)
     result = update_values(
@@ -387,8 +405,7 @@ def run_append(
     """Append rows read from a local CSV file after the table in ``range_``."""
     from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
 
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    spreadsheet_id = _resolve_and_report(source)
     values = read_values_csv(values_file)
     service = build_sheets_service(SHEETS_WRITE_SCOPES)
     result = append_values(
@@ -411,8 +428,7 @@ def run_clear(source: str, range_: str, *, yes: bool = False) -> None:
 
     from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
 
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    spreadsheet_id = _resolve_and_report(source)
     if not yes and not typer.confirm(f"Clear values in {range_}?", default=False):
         print("Aborted.", file=sys.stderr)
         return
@@ -436,15 +452,11 @@ def run_set(
     """
     from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
 
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    spreadsheet_id = _resolve_and_report(source)
     service = build_sheets_service(SHEETS_WRITE_SCOPES)
 
     if tab is None:
-        tabs = list_tabs(service, spreadsheet_id)
-        if not tabs:
-            raise ValueError("spreadsheet has no tabs")
-        tab = tabs[0]
+        tab = first_tab(service, spreadsheet_id)
 
     summary = set_by_match(
         service,

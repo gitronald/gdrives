@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import pytest
 from helpers import make_file, make_folder, make_gdoc, mock_list_response
 
 from gdrives.listing import (
@@ -267,6 +268,18 @@ class TestLs:
         assert "[file.txt]" in md_path.read_text()
         assert "file.txt" in csv_path.read_text()
         assert mock_collect.call_count == 1  # single API traversal feeds both files
+
+    @patch("gdrives.listing.collect")
+    def test_save_as_rejects_unknown_suffix(self, mock_collect, tmp_path):
+        # The domain rejects an unexpected extension rather than silently writing
+        # CSV, so callers other than the pre-validating CLI get the same guard.
+        mock_collect.return_value = [
+            DriveEntry(
+                "https://url", "file.txt", "file.txt", "txt", "2026-01-15", "a@b.com"
+            ),
+        ]
+        with pytest.raises(ValueError, match="unsupported --save-as extension"):
+            ls("folder_id", save_as=[str(tmp_path / "out.txt")])
 
     @patch("gdrives.listing.collect")
     def test_save_as_empty_warns_and_writes_nothing(

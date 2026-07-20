@@ -117,6 +117,11 @@ def shared_by(f: DriveFile) -> str:
     return (f.get("sharingUser") or {}).get("emailAddress", "")
 
 
+def _folders_first(f: DriveFile) -> tuple[bool, str]:
+    """Sort key placing folders before files, then case-insensitively by name."""
+    return (not is_folder(f), f["name"].lower())
+
+
 def paginate_files(
     service: Service, query: str, fields: str, corpora: str
 ) -> list[DriveFile]:
@@ -149,7 +154,7 @@ def list_children(
     """List all children of a Drive folder, sorted folders-first."""
     query = f"'{escape_query_value(folder_id)}' in parents and trashed = false"
     items = paginate_files(service, query, LIST_FIELDS, corpora)
-    return sorted(items, key=lambda f: (not is_folder(f), f["name"].lower()))
+    return sorted(items, key=_folders_first)
 
 
 def list_shared_with_me(service: Service, name: str | None = None) -> list[DriveFile]:
@@ -163,7 +168,7 @@ def list_shared_with_me(service: Service, name: str | None = None) -> list[Drive
     if name:
         query += f" and name='{escape_query_value(name)}'"
     items = paginate_files(service, query, LIST_FIELDS, "user")
-    return sorted(items, key=lambda f: (not is_folder(f), f["name"].lower()))
+    return sorted(items, key=_folders_first)
 
 
 class WalkItem(NamedTuple):

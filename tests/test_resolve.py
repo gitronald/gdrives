@@ -93,23 +93,25 @@ class TestWalkSegments:
 
 
 class TestResolvePath:
-    @patch("gdrives.resolve.resolve_name")
-    def test_single_segment_cache_hit(self, mock_resolve_name, mock_service):
-        mock_resolve_name.return_value = {"id": "drive_id"}
+    @patch("gdrives.resolve.load")
+    def test_single_segment_cache_hit(self, mock_load, mock_service):
+        mock_load.return_value = [
+            {"id": "drive_id", "type": "personal", "name": "My Drive", "url": ""}
+        ]
         result = resolve_path("My Drive", service=mock_service)
         assert result == "drive_id"
 
-    @patch("gdrives.resolve.resolve_name")
-    def test_cache_miss_raises(self, mock_resolve_name, mock_service):
-        mock_resolve_name.return_value = None
+    @patch("gdrives.resolve.load")
+    def test_cache_miss_raises(self, mock_load, mock_service):
+        mock_load.return_value = []
         with pytest.raises(DrivePathError, match="No drive matching"):
             resolve_path("Unknown Drive", service=mock_service)
 
-    @patch("gdrives.resolve.resolve_name")
-    def test_walks_remaining_segments(self, mock_resolve_name, mock_service):
-        mock_resolve_name.side_effect = lambda name: (
-            {"id": "drive_id"} if name == "My Drive" else None
-        )
+    @patch("gdrives.resolve.load")
+    def test_walks_remaining_segments(self, mock_load, mock_service):
+        mock_load.return_value = [
+            {"id": "drive_id", "type": "personal", "name": "My Drive", "url": ""}
+        ]
         folder = make_folder("projects", id="proj_id")
         mock_service.files().list().execute.return_value = mock_list_response([folder])
         result = resolve_path("My Drive/projects", service=mock_service)
