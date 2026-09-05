@@ -255,3 +255,27 @@ otherwise leave it as a follow-up.
   pass against the real files (16 passed: 10 Sheets, 6 Docs), confirming the
   Docs API request shapes, the `drive.readonly` read path, the `documents`
   write scope on the service account, and the revision guard's 400.
+- 2026-09-05: **Review gate** (`/code-review`, medium) on PR #21, with the
+  check gate green first (ruff, format, pyrefly, 433 tests at 100% coverage,
+  live suites included). Eight findings (seven confirmed, one plausible),
+  posted as a PR comment; none actioned yet — the close was paused here.
+  1. `count_occurrences` / `raw_text` scan only the body, but `replaceAllText`
+     also edits headers, footers, and footnotes, so the exactly-one guard in
+     `docs-replace` can pass while the write changes two places. Fix: count
+     every segment the API edits; extend `FakeDocsService` to render them.
+  2. `--ignore-case` counting uses `casefold()`. A live probe of the API's
+     `matchCase: false` against the test document showed it folds `ß` to
+     `ss` and matches dotted `İ` to `i` but does not fold the `ﬁ` ligature,
+     so no Python normalization matches exactly; `casefold()` is the closest
+     (`lower()` misses `ß`), and the residual divergence is worth a caveat.
+  3. An empty `--find` is rejected only after resolving, authenticating, and
+     fetching the document. Fix: validate first, as `run_append` does.
+  4. `_resolve_and_report` duplicates the Sheets copy apart from the label.
+  5. `build_docs_service` is a third identical `build_*_service`.
+  6. The `-y` help string is repeated in four commands.
+  7. The fake's empty-batch 400 is unreachable from the code — a conscious
+     no-op: it is API-faithful strictness.
+  8. `tab_id=None` means every tab for `replace_text` but the first tab for
+     the other writes (plausible) — documented in the docstrings; no change.
+  Remaining to close: fix 1–6 with regression tests, retrospective, closing
+  frontmatter, index, mark the PR ready, merge.
