@@ -5,7 +5,7 @@ status: active
 branch: feature/docs-read-write
 created: 2026-09-03T11:33:48-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/21
 ---
 
 # Read and edit Google Docs content via the Docs API
@@ -204,3 +204,47 @@ otherwise leave it as a follow-up.
   `matchCase=true`) with `--ignore-case`, or the reverse?
 - Does `docs-create` belong here at all, or should it wait for the Drive write
   scope so a new Doc can land in a folder from day one?
+
+## Log
+
+- 2026-09-04: activated on `dev`, branched `feature/docs-read-write` in a
+  worktree, draft PR #21 opened.
+- **Auth (step 1).** Took the recommended option: one token file per scope set.
+  Known sets keep their historical names (`gdrives_token.json`,
+  `gdrives_token_rw.json`); any other set derives a sorted name from each
+  scope's last path segment, so the Docs write token is
+  `gdrives_token_documents.json`. On load, the token JSON's granted `scopes`
+  are checked against the request and a token that does not cover it is
+  discarded (with a warning) so the flow re-consents instead of 403ing.
+- **Core module (step 2)** shipped as specified, with these deviations:
+  - `pull_document` always requests `includeTabsContent=true` (no `tabs=`
+    flag); `tab_body` still accepts the legacy top-level `body` shape.
+  - `set_text` / `clear_text` take `doc=` (an earlier `pull_document` result)
+    instead of `required_revision=`: the body span and the revision guard must
+    come from the same snapshot, so passing the snapshot is the coherent
+    interface. `replace_text` keeps `required_revision=` since it is index-free.
+  - Added `raw_text` / `count_occurrences` (undecorated text for occurrence
+    counting, so the `- ` list prefix and tab-joined cells never count as
+    matches), `resolve_tab_id` (title or ID), and `read_text_file` (drops one
+    trailing newline for a clean round trip).
+  - The shared resolver body became `resolve.resolve_file_id`;
+    `sheets.resolve_spreadsheet_id` and `docs.resolve_document_id` are thin
+    named wrappers.
+  - `run_append` prefixes a newline when the body is non-empty, so the CLI
+    appends a paragraph (the API's end-of-segment insert continues the last
+    line).
+- **CLI (step 3).** `docs-get` / `-update` / `-append` / `-replace` / `-clear`
+  plus the stretch `docs-create` (lands in My Drive root, as its help says).
+  Open questions resolved: plain text is the `docs-get` default with `--json`
+  for the raw document (Markdown stays with `export -o file.md`);
+  `docs-replace` is case-sensitive with `--ignore-case`; `docs-create` shipped
+  without `--parent`.
+- **`export` note.** `.txt` and `.md` added to `EXPORT_MIME_TYPES`.
+- **Tests (step 4).** `FakeDocsService` holds plain text per tab, renders real
+  indices, applies insert / delete / replace requests, bumps `revisionId`, and
+  rejects a stale `requiredRevisionId` with a 400, so request ordering and the
+  guard are tested end to end. The live suite is gated on
+  `GDRIVES_TEST_DOCUMENT_ID` and never runs the whole-body operations against
+  the shared document.
+- **Checks.** ruff, ruff format, pyrefly, and pytest at 100% coverage
+  (417 passed, 16 integration tests skipped without credentials).
