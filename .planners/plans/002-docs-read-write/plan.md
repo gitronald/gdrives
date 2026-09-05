@@ -248,3 +248,10 @@ otherwise leave it as a follow-up.
   the shared document.
 - **Checks.** ruff, ruff format, pyrefly, and pytest at 100% coverage
   (417 passed, 16 integration tests skipped without credentials).
+- 2026-09-05: created a throwaway test document next to the test sheet (both
+  in the owner's My Drive root, shared with the service account as Editor) via
+  a one-off, unpersisted `drive.file` OAuth grant, and pointed
+  `GDRIVES_TEST_DOCUMENT_ID` at it from a gitignored `.env`. Both live suites
+  pass against the real files (16 passed: 10 Sheets, 6 Docs), confirming the
+  Docs API request shapes, the `drive.readonly` read path, the `documents`
+  write scope on the service account, and the revision guard's 400.
