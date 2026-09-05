@@ -1,8 +1,8 @@
 ---
 id: 2
 slug: docs-read-write
-status: draft
-branch:
+status: active
+branch: feature/docs-read-write
 created: 2026-09-03T11:33:48-07:00
 concluded:
 pr:
