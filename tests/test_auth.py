@@ -1,5 +1,6 @@
 """Tests for gdrives.auth — credential discovery and the fallback chain."""
 
+import json
 import stat
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -254,6 +255,45 @@ class TestAuthenticateOauthFlow:
         )
         assert auth.authenticate_oauth() is None
 
+    def test_token_lacking_requested_scopes_is_discarded_and_reconsented(
+        self, monkeypatch, tmp_path
+    ):
+        # A token granted for another scope set must not be loaded (it would
+        # 403 on first use); the flow runs again and the new grant is saved.
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        token = tmp_path / "gdrives_token_documents.json"
+        token.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: pytest.fail("must not load a mismatched token"),
+        )
+        new_creds = MagicMock()
+        new_creds.to_json.return_value = json.dumps({"scopes": auth.DOCS_WRITE_SCOPES})
+        flow = MagicMock()
+        flow.run_local_server.return_value = new_creds
+        monkeypatch.setattr(
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+            lambda path, scopes=None: flow,
+        )
+        assert auth.authenticate_oauth(auth.DOCS_WRITE_SCOPES) is new_creds
+        assert json.loads(token.read_text())["scopes"] == auth.DOCS_WRITE_SCOPES
+
+    def test_token_lacking_requested_scopes_headless_returns_none(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        token = tmp_path / "gdrives_token_documents.json"
+        token.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: pytest.fail("must not load a mismatched token"),
+        )
+        assert auth.authenticate_oauth(auth.DOCS_WRITE_SCOPES) is None
+
     def test_write_token_swallows_oserror(self, tmp_path):
         creds = MagicMock()
         creds.to_json.return_value = "{}"
@@ -317,6 +357,24 @@ class TestBuildSheetsService:
         assert rec["scopes"] == auth.SHEETS_WRITE_SCOPES
 
 
+class TestBuildDocsService:
+    def test_builds_v1_with_authenticated_creds(self, monkeypatch):
+        creds = object()
+        service = object()
+        rec = {}
+        monkeypatch.setattr(
+            auth, "authenticate", lambda scopes=None: rec.update(scopes=scopes) or creds
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda *a, **k: rec.update(a=a, k=k) or service,
+        )
+        assert auth.build_docs_service(auth.DOCS_WRITE_SCOPES) is service
+        assert rec["a"] == ("docs", "v1")
+        assert rec["k"]["credentials"] is creds
+        assert rec["scopes"] == auth.DOCS_WRITE_SCOPES
+
+
 # -- _token_path scope split --
 
 
@@ -333,6 +391,60 @@ class TestTokenPathScopes:
             "/tmp/cfg/gdrives_token_rw.json"
         )
 
+    def test_docs_scope_uses_its_own_token(self, monkeypatch):
+        # A Sheets-consented token does not carry the Docs scope; sharing one
+        # file would 403 (or re-consent and clobber the Sheets grant).
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
+        assert auth._token_path(auth.DOCS_WRITE_SCOPES) == Path(
+            "/tmp/cfg/gdrives_token_documents.json"
+        )
+
+    def test_unknown_scope_set_gets_stable_sorted_name(self):
+        scopes = [
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/documents",
+        ]
+        assert auth._token_name(scopes) == "gdrives_token_documents_drive-file.json"
+        assert auth._token_name(list(reversed(scopes))) == auth._token_name(scopes)
+
     def test_none_when_config_unset(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
         assert auth._token_path(auth.SHEETS_WRITE_SCOPES) is None
+
+
+# -- _token_covers (granted-scope check) --
+
+
+class TestTokenCovers:
+    def _write(self, tmp_path, payload):
+        token = tmp_path / "token.json"
+        token.write_text(payload)
+        return token
+
+    def test_granted_superset_covers(self, tmp_path):
+        token = self._write(
+            tmp_path, json.dumps({"scopes": auth.DOCS_WRITE_SCOPES + auth.SCOPES})
+        )
+        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
+
+    def test_mismatch_does_not_cover(self, tmp_path):
+        token = self._write(tmp_path, json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is False
+
+    def test_space_separated_scopes_string(self, tmp_path):
+        token = self._write(
+            tmp_path, json.dumps({"scopes": " ".join(auth.DOCS_WRITE_SCOPES)})
+        )
+        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["{}", json.dumps({"scopes": 5}), "not json", "[]"],
+        ids=["no-scopes-entry", "non-list-scopes", "unparseable", "non-object"],
+    )
+    def test_unknown_grant_is_left_to_the_loader(self, tmp_path, payload):
+        token = self._write(tmp_path, payload)
+        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
+
+    def test_missing_file_is_left_to_the_loader(self, tmp_path):
+        assert auth._token_covers(tmp_path / "absent.json", auth.SCOPES) is True

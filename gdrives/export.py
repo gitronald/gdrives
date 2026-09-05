@@ -1,4 +1,4 @@
-"""Export a Google Doc, Sheet, or Slides to Office/CSV via the Drive API."""
+"""Export a Google Doc, Sheet, or Slides to Office/text formats via the Drive API."""
 
 import sys
 from pathlib import Path
@@ -16,10 +16,13 @@ NATIVE_EXPORTS = {
     "gslides": (".pptx", f"{_OOXML}.presentationml.presentation"),
 }
 
-# Extension -> export MIME type. Derived from NATIVE_EXPORTS, plus CSV (Sheets only,
-# reachable via an explicit `-o file.csv`, never via folder auto-export).
+# Extension -> export MIME type. Derived from NATIVE_EXPORTS, plus the type-specific
+# text formats: CSV (Sheets only) and plain text / Markdown (Docs only). These are
+# reachable via an explicit `-o file.<ext>`, never via folder auto-export.
 EXPORT_MIME_TYPES = {ext: mime for ext, mime in NATIVE_EXPORTS.values()}
 EXPORT_MIME_TYPES[".csv"] = "text/csv"
+EXPORT_MIME_TYPES[".txt"] = "text/plain"
+EXPORT_MIME_TYPES[".md"] = "text/markdown"
 
 
 def mime_for_output(output_path: str) -> str:
@@ -45,7 +48,7 @@ def export_file(service: Service, file_id: str, output_path: str):
 
 
 def run(source: str, output: str):
-    """Export a Google Doc, Sheet, or Slides file to .docx, .xlsx, .pptx, or .csv."""
+    """Export a Doc (.docx/.txt/.md), Sheet (.xlsx/.csv), or Slides (.pptx) file."""
     from gdrives.auth import build_drive_service
 
     file_id = extract_drive_id(source)

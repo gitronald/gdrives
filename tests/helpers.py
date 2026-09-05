@@ -163,3 +163,233 @@ class FakeSheetsService:
 
     def spreadsheets(self) -> _FakeSpreadsheets:
         return _FakeSpreadsheets(self)
+
+
+# -- Docs API fake --
+
+
+def http_error(status: int, reason: str) -> Any:
+    """Build the ``HttpError`` the discovery client raises for an API failure."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.status = status
+            self.reason = reason
+
+    return HttpError(_Resp(), reason.encode())
+
+
+def render_content(text: str) -> list[dict[str, Any]]:
+    """Render plain text as Docs body content with real ``startIndex``/``endIndex``.
+
+    Index 0 is the leading section break; each line (trailing newline kept)
+    becomes one paragraph holding a single text run. ``text`` must end with a
+    newline, like every Docs body. Indices count code points, which equals the
+    API's UTF-16 units for the BMP-only text used in tests.
+    """
+    content: list[dict[str, Any]] = [
+        {"startIndex": 0, "endIndex": 1, "sectionBreak": {}}
+    ]
+    index = 1
+    for line in text.splitlines(keepends=True):
+        end = index + len(line)
+        content.append(
+            {
+                "startIndex": index,
+                "endIndex": end,
+                "paragraph": {
+                    "elements": [
+                        {
+                            "startIndex": index,
+                            "endIndex": end,
+                            "textRun": {"content": line},
+                        }
+                    ]
+                },
+            }
+        )
+        index = end
+    return content
+
+
+class _Deferred:
+    """Stand-in for a Docs API request; ``execute()`` runs the fake's handler."""
+
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+
+    def execute(self) -> dict[str, Any]:
+        return self._fn()
+
+
+class _FakeDocuments:
+    def __init__(self, service: "FakeDocsService") -> None:
+        self._service = service
+
+    def get(self, **kwargs: Any) -> _Deferred:
+        self._service.calls.append(("documents.get", kwargs))
+        return _Deferred(self._service.document)
+
+    def batchUpdate(self, **kwargs: Any) -> _Deferred:  # camelCase: Docs API name
+        self._service.calls.append(("documents.batchUpdate", kwargs))
+        return _Deferred(lambda: self._service._batch_update(kwargs["body"]))
+
+    def create(self, **kwargs: Any) -> _Deferred:
+        self._service.calls.append(("documents.create", kwargs))
+        return _Deferred(lambda: self._service._create(kwargs["body"]))
+
+
+class FakeDocsService:
+    """A minimal, stateful fake of the Docs v1 discovery service.
+
+    Holds one document as plain text per tab (``tabs`` maps tab ID -> text;
+    every tab ends with the newline Docs requires) and applies ``insertText``,
+    ``deleteContentRange``, and ``replaceAllText`` requests to that text with
+    real index arithmetic, so shifted-index and stale-revision paths are
+    testable without the API. Every successful batch bumps ``revision``; a batch
+    whose ``writeControl.requiredRevisionId`` is stale raises the 400 HttpError
+    the real API returns, and a failing batch leaves the text untouched. Every
+    ``(method, kwargs)`` call is recorded in ``calls``.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        tabs: dict[str, str] | None = None,
+        document_id: str = "DOC",
+        title: str = "Untitled",
+    ) -> None:
+        source = tabs if tabs is not None else {"t.0": text}
+        self.tabs: dict[str, str] = {
+            tab_id: self._terminated(body) for tab_id, body in source.items()
+        }
+        self.titles: dict[str, str] = {
+            tab_id: f"Tab {i + 1}" for i, tab_id in enumerate(self.tabs)
+        }
+        self.document_id = document_id
+        self.title = title
+        self.revision = "rev-1"
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    @staticmethod
+    def _terminated(text: str) -> str:
+        return text if text.endswith("\n") else text + "\n"
+
+    @property
+    def text(self) -> str:
+        """The first tab's text (the common single-tab case)."""
+        return next(iter(self.tabs.values()))
+
+    def _first_tab(self) -> str:
+        return next(iter(self.tabs))
+
+    def _bump(self) -> None:
+        self.revision = f"rev-{int(self.revision.split('-')[1]) + 1}"
+
+    def edit_externally(self, text: str, tab_id: str | None = None) -> None:
+        """Replace a tab's text as a collaborator would, bumping the revision."""
+        self.tabs[tab_id or self._first_tab()] = self._terminated(text)
+        self._bump()
+
+    def documents(self) -> _FakeDocuments:
+        return _FakeDocuments(self)
+
+    def document(self) -> dict[str, Any]:
+        """Render the current state the way ``documents.get`` returns it."""
+        return {
+            "documentId": self.document_id,
+            "title": self.title,
+            "revisionId": self.revision,
+            "tabs": [
+                {
+                    "tabProperties": {
+                        "tabId": tab_id,
+                        "title": self.titles[tab_id],
+                        "index": i,
+                    },
+                    "documentTab": {"body": {"content": render_content(body)}},
+                }
+                for i, (tab_id, body) in enumerate(self.tabs.items())
+            ],
+        }
+
+    def _create(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Become a fresh, empty, single-tab document titled per ``body``."""
+        self.document_id = "NEW_DOC"
+        self.title = body["title"]
+        self.tabs = {"t.0": "\n"}
+        self.titles = {"t.0": "Tab 1"}
+        self.revision = "rev-1"
+        return self.document()
+
+    def _batch_update(self, body: dict[str, Any]) -> dict[str, Any]:
+        required = body.get("writeControl", {}).get("requiredRevisionId")
+        if required is not None and required != self.revision:
+            raise http_error(400, "The provided revision ID is not the latest")
+        if not body.get("requests"):
+            raise http_error(400, "requests must not be empty")
+        snapshot = dict(self.tabs)
+        try:
+            replies = [self._apply(request) for request in body["requests"]]
+        except Exception:
+            self.tabs = snapshot
+            raise
+        self._bump()
+        return {
+            "documentId": self.document_id,
+            "replies": replies,
+            "writeControl": {"requiredRevisionId": self.revision},
+        }
+
+    def _apply(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Apply one batchUpdate request to the text model; return its reply."""
+        if "insertText" in request:
+            req = request["insertText"]
+            if "endOfSegmentLocation" in req:
+                tab_id = req["endOfSegmentLocation"].get("tabId") or self._first_tab()
+                current = self.tabs[tab_id]
+                pos = len(current) - 1  # immediately before the final newline
+            else:
+                tab_id = req["location"].get("tabId") or self._first_tab()
+                current = self.tabs[tab_id]
+                pos = req["location"]["index"] - 1
+            if not req["text"]:
+                raise http_error(400, "insertText: text must not be empty")
+            if pos < 0 or pos > len(current) - 1:
+                raise http_error(400, f"insertText: index {pos + 1} out of range")
+            self.tabs[tab_id] = current[:pos] + req["text"] + current[pos:]
+            return {}
+        if "deleteContentRange" in request:
+            span = request["deleteContentRange"]["range"]
+            tab_id = span.get("tabId") or self._first_tab()
+            current = self.tabs[tab_id]
+            start, end = span["startIndex"] - 1, span["endIndex"] - 1
+            if start < 0 or start >= end:
+                raise http_error(400, "deleteContentRange: range must not be empty")
+            if end > len(current) - 1:
+                raise http_error(
+                    400, "deleteContentRange: cannot delete the final newline"
+                )
+            self.tabs[tab_id] = current[:start] + current[end:]
+            return {}
+        if "replaceAllText" in request:
+            req = request["replaceAllText"]
+            find = req["containsText"]["text"]
+            match_case = req["containsText"].get("matchCase", False)
+            tab_ids = req.get("tabsCriteria", {}).get("tabIds") or list(self.tabs)
+            changed = 0
+            for tab_id in tab_ids:
+                current = self.tabs[tab_id]
+                if match_case:
+                    changed += current.count(find)
+                    self.tabs[tab_id] = current.replace(find, req["replaceText"])
+                else:
+                    import re
+
+                    pattern = re.compile(re.escape(find), re.IGNORECASE)
+                    self.tabs[tab_id], n = pattern.subn(req["replaceText"], current)
+                    changed += n
+            return {"replaceAllText": {"occurrencesChanged": changed}}
+        raise http_error(400, f"unsupported request: {sorted(request)}")

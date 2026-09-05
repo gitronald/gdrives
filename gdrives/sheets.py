@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from gdrives.files import Service, extract_drive_id
+from gdrives.files import Service
 
 # The two valueInputOption modes. USER_ENTERED parses "=SUM(...)", dates, and
 # numbers like the Sheets UI; RAW stores the literal string in each cell.
@@ -153,18 +153,14 @@ def first_tab(service: Service, spreadsheet_id: str) -> str:
 def resolve_spreadsheet_id(source: str, service: Service | None = None) -> str:
     """Resolve a spreadsheet URL, bare file ID, or Drive path to a spreadsheet ID.
 
-    Mirrors how ``download`` picks a target: a URL or bare ID goes through
-    ``extract_drive_id``; a Drive path (contains ``/``) is walked via
-    ``resolve_path`` using the Drive API. ``service`` is the *Drive* service used
-    for path resolution; when omitted, ``resolve_path`` builds a read-only one.
+    The Sheets-facing name for :func:`gdrives.resolve.resolve_file_id`: a URL or
+    bare ID goes through ``extract_drive_id``; a Drive path (contains ``/``) is
+    walked via ``resolve_path`` using the Drive API. ``service`` is the *Drive*
+    service used for path resolution; when omitted, a read-only one is built.
     """
-    if source.startswith(("http://", "https://")):
-        return extract_drive_id(source)
-    if "/" in source:
-        from gdrives.resolve import resolve_path
+    from gdrives.resolve import resolve_file_id
 
-        return resolve_path(source, service, allow_files=True)
-    return source
+    return resolve_file_id(source, service)
 
 
 # -- conditional (find-and-set) updates --

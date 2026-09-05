@@ -1,5 +1,6 @@
 """Shared Google Drive authentication and service builder."""
 
+import json
 import logging
 import os
 import sys
@@ -20,6 +21,20 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 # access; write commands opt in explicitly (see build_sheets_service).
 SHEETS_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# Write scope for the Docs API (documents.batchUpdate/create). Same opt-in split
+# as Sheets: only the docs-* write commands request it, and it is cached in its
+# own token file (see _token_path) so neither the read-only token nor the Sheets
+# write token is touched.
+DOCS_WRITE_SCOPES = ["https://www.googleapis.com/auth/documents"]
+
+# Token filename per scope set. The read-only default and the Sheets write scope
+# keep their historical names so existing tokens stay valid; any other set gets
+# a name derived from its scopes (see _token_name).
+_TOKEN_NAMES = {
+    frozenset(SCOPES): "gdrives_token.json",
+    frozenset(SHEETS_WRITE_SCOPES): "gdrives_token_rw.json",
+}
+
 NO_CREDENTIALS_MESSAGE = (
     "Error: no Google Drive credentials found. Set up one of:\n"
     "  - OAuth: put gdrives_credentials.json in $GOOGLE_CONFIG_DIR "
@@ -39,18 +54,51 @@ def _config_dir() -> Path | None:
     return Path(value) if value else None
 
 
+def _token_name(scopes: list[str]) -> str:
+    """Return the token filename for a scope set.
+
+    Known sets map to their historical names; any other set gets a stable name
+    built from each scope's last path segment, sorted so order never matters
+    (``.../auth/documents`` -> ``gdrives_token_documents.json``).
+    """
+    key = frozenset(scopes)
+    if key in _TOKEN_NAMES:
+        return _TOKEN_NAMES[key]
+    parts = sorted(s.rstrip("/").rsplit("/", 1)[-1].replace(".", "-") for s in key)
+    return "gdrives_token_" + "_".join(parts) + ".json"
+
+
 def _token_path(scopes: list[str] | None = None) -> Path | None:
     """Return the OAuth token path for the given scopes, or None if unconfigured.
 
-    Write scopes get a distinct token file (``gdrives_token_rw.json``) so
-    requesting write access never clobbers — or forces a re-consent of — the
-    shared read-only token. The read-only default keeps ``gdrives_token.json``.
+    Every scope set gets its own token file, so requesting one kind of write
+    access never clobbers — or forces a re-consent of — the shared read-only
+    token or another write token. The read-only default keeps
+    ``gdrives_token.json`` and the Sheets write scope ``gdrives_token_rw.json``.
     """
     config_dir = _config_dir()
     if config_dir is None:
         return None
-    name = "gdrives_token.json" if scopes in (None, SCOPES) else "gdrives_token_rw.json"
-    return config_dir / name
+    return config_dir / _token_name(scopes or SCOPES)
+
+
+def _token_covers(token_path: Path, scopes: list[str]) -> bool:
+    """True unless the cached token records granted scopes that miss ``scopes``.
+
+    google-auth stores the granted scopes in the token JSON. A token whose grant
+    does not cover the request would load fine and then 403 on the first call,
+    so the caller discards it and re-consents instead. A token without a
+    ``scopes`` entry, or one that cannot be parsed, is left to the normal loader.
+    """
+    try:
+        granted = json.loads(token_path.read_text()).get("scopes")
+    except (OSError, ValueError, AttributeError):
+        return True
+    if isinstance(granted, str):
+        granted = granted.split()
+    if not isinstance(granted, list):
+        return True
+    return set(scopes) <= set(granted)
 
 
 def _credentials_path() -> Path | None:
@@ -110,7 +158,14 @@ def authenticate_oauth(scopes: list[str] | None = None):
 
     creds = None
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        if _token_covers(token_path, scopes):
+            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        else:
+            logger.warning(
+                "cached OAuth token %s does not cover the requested scopes; "
+                "re-authorizing",
+                token_path,
+            )
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -186,3 +241,16 @@ def build_sheets_service(scopes: list[str] | None = None):
 
     creds = authenticate(scopes)
     return build("sheets", "v4", credentials=creds)
+
+
+def build_docs_service(scopes: list[str] | None = None):
+    """Authenticate and return a Docs v1 service.
+
+    Defaults to the read-only Drive scope (enough for ``documents.get`` and
+    reusing the shared read-only token). Pass DOCS_WRITE_SCOPES for
+    ``batchUpdate``/``create``, which persist a separate write token.
+    """
+    from googleapiclient.discovery import build
+
+    creds = authenticate(scopes)
+    return build("docs", "v1", credentials=creds)
