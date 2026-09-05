@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-04
+
 ### Changed
 
 - Refreshed locked dependencies: google-api-python-client 2.199.0, google-auth-oauthlib 1.4.1, python-dotenv 1.2.3 (minimum raised to 1.2.3), and typer 0.27.1; dev tools pre-commit 4.6.2, pyrefly 1.2.0, and ruff 0.16.4. CI workflows bumped to setup-uv 8.3.2 and pinned to its commit SHA.

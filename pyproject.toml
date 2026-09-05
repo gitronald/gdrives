@@ -1,6 +1,6 @@
 [project]
 name = "gdrives"
-version = "0.6.2a0"
+version = "0.6.2"
 description = ""
 authors = [
     {name = "gitronald", email = "gitronald@users.noreply.github.com"}
