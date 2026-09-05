@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-20
+
+### Changed
+
+- `listing.ls(save_as=...)` rejects unsupported file extensions with an error instead of silently writing CSV; `.md` and `.csv` remain the supported formats (the CLI already pre-validated, so only library callers are affected).
+- Drive path resolution loads the drive cache once per lookup instead of once per prefix candidate.
+- Refreshed locked dependencies, including protobuf 6 -> 7 and rich 14 -> 15; CI workflows bumped to setup-uv 8.3.1.
+
+### Fixed
+
+- Removed the unsupported `semver-major-days` cooldown option from the github-actions Dependabot config, which broke Dependabot runs.
+
 ## [0.6.0] - 2026-07-07
 
 ### Added
