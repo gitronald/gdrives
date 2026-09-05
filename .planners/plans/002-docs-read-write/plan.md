@@ -258,7 +258,8 @@ otherwise leave it as a follow-up.
 - 2026-09-05: **Review gate** (`/code-review`, medium) on PR #21, with the
   check gate green first (ruff, format, pyrefly, 433 tests at 100% coverage,
   live suites included). Eight findings (seven confirmed, one plausible),
-  posted as a PR comment; none actioned yet — the close was paused here.
+  posted as a [PR comment](https://github.com/gitronald/gdrives/pull/21#issuecomment-5550233169);
+  none actioned yet — the close was paused here.
   1. `count_occurrences` / `raw_text` scan only the body, but `replaceAllText`
      also edits headers, footers, and footnotes, so the exactly-one guard in
      `docs-replace` can pass while the write changes two places. Fix: count
@@ -277,5 +278,9 @@ otherwise leave it as a follow-up.
      no-op: it is API-faithful strictness.
   8. `tab_id=None` means every tab for `replace_text` but the first tab for
      the other writes (plausible) — documented in the docstrings; no change.
-  Remaining to close: fix 1–6 with regression tests, retrospective, closing
-  frontmatter, index, mark the PR ready, merge.
+  **Next, on resuming:** (1) fix findings 1–6 at the source, each with a
+  paired regression test (finding 1 needs `FakeDocsService` to render
+  headers, footers, and footnotes); (2) run the full check gate, commit, and
+  push; (3) `gh pr ready 21`; (4) run `/planners close 002` again to add the
+  retrospective, set the closing frontmatter (`concluded`, `status: done`),
+  regenerate the index, and merge PR #21 into `dev`.
