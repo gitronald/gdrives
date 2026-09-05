@@ -6,6 +6,7 @@
 2. Create a project (or use an existing one)
 3. Enable the **Google Drive API** (APIs & Services > Library > search "Google Drive API")
 4. To use the `sheets-*` commands, also enable the **Google Sheets API** (same Library page)
+5. To use the `docs-*` commands, also enable the **Google Docs API** (same Library page)
 
 ## 2. Set up OAuth consent screen
 
@@ -28,7 +29,7 @@ Run any `gdrives` command (e.g., `uv run gdrives show-drives`). A browser window
 
 If the token expires or is revoked, the auth flow will automatically re-trigger.
 
-The first `sheets-update`, `sheets-append`, or `sheets-clear` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Read commands keep using the read-only token untouched.
+The first `sheets-update`, `sheets-append`, `sheets-clear`, or `sheets-set` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Likewise, the first `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, or `docs-create` run authorizes the `documents` write scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_documents.json`. Read commands keep using the read-only token untouched, and each write scope has its own token, so authorizing one never re-prompts for another. A cached token whose grant does not cover the requested scope is discarded and re-authorized instead of failing with a 403.
 
 ## Files
 
@@ -36,6 +37,7 @@ The first `sheets-update`, `sheets-append`, or `sheets-clear` run opens a second
 |---|---|
 | `gdrives_credentials.json` | OAuth client secret (downloaded from Cloud Console) |
 | `gdrives_token.json` | Read-only token, auto-generated after first authorization |
-| `gdrives_token_rw.json` | Write token, auto-generated on first Sheets write command |
+| `gdrives_token_rw.json` | Sheets write token, auto-generated on first Sheets write command |
+| `gdrives_token_documents.json` | Docs write token, auto-generated on first Docs write command |
 
-Scopes: `drive.readonly` (read commands) and `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`).
+Scopes: `drive.readonly` (read commands), `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`), and `documents` (Docs write commands: `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`).
