@@ -109,20 +109,39 @@ def resolve_tab_id(doc: Document, tab: str) -> str:
     raise ValueError(f"tab {tab!r} not found; tabs: {listing or 'none'}")
 
 
-def tab_body(doc: Document, tab_id: str | None = None) -> Document:
-    """Return the ``body`` of one tab (the first when ``tab_id`` is None).
+def tab_content(doc: Document, tab_id: str | None = None) -> Document:
+    """Return one tab's ``documentTab`` (the first when ``tab_id`` is None).
 
-    Also accepts a document fetched without tabs content, whose first-tab body
-    sits in the top-level ``body`` field.
+    That dict holds the tab's ``body`` plus its ``headers``, ``footers``, and
+    ``footnotes`` maps. Also accepts a document fetched without tabs content,
+    whose first-tab fields sit at the top level of the document itself.
     """
     if "tabs" not in doc and tab_id is None:
-        return doc.get("body", {})
+        return doc
     if tab_id is None:
         tab_id = first_tab_id(doc)
     for tab in iter_tabs(doc):
         if tab["tabProperties"]["tabId"] == tab_id:
-            return tab.get("documentTab", {}).get("body", {})
+            return tab.get("documentTab", {})
     raise ValueError(f"tab {tab_id!r} not found")
+
+
+def tab_body(doc: Document, tab_id: str | None = None) -> Document:
+    """Return the ``body`` of one tab (the first when ``tab_id`` is None)."""
+    return tab_content(doc, tab_id).get("body", {})
+
+
+def tab_segments(doc: Document, tab_id: str | None = None) -> Iterator[Document]:
+    """Yield every text segment of a tab: its body, then headers, footers, and
+    footnotes, each as a ``{"content": [...]}`` dict.
+
+    These are exactly the segments ``replaceAllText`` edits, so anything that
+    counts or previews a replacement must walk all of them, not just the body.
+    """
+    tab = tab_content(doc, tab_id)
+    yield tab.get("body", {})
+    for kind in ("headers", "footers", "footnotes"):
+        yield from tab.get(kind, {}).values()
 
 
 # -- reading --
@@ -158,11 +177,15 @@ def _text_runs(content: list[Document]) -> Iterator[str]:
 def raw_text(doc: Document, tab_id: str | None = None) -> str:
     """Return a tab's text runs concatenated verbatim, with no decoration.
 
-    This is the text ``replaceAllText`` matches against, so it is what
+    Covers every segment ``replaceAllText`` matches against (body, headers,
+    footers, and footnotes, in that order), so it is what
     :func:`count_occurrences` searches; :func:`document_text` is the readable
-    view with list and table decoration.
+    body-only view with list and table decoration.
     """
-    return "".join(_text_runs(tab_body(doc, tab_id).get("content", [])))
+    return "".join(
+        "".join(_text_runs(segment.get("content", [])))
+        for segment in tab_segments(doc, tab_id)
+    )
 
 
 def body_text(content: list[Document]) -> str:
@@ -202,7 +225,15 @@ def document_text(doc: Document, tab_id: str | None = None) -> str:
 def count_occurrences(
     doc: Document, find: str, *, match_case: bool = True, tab_id: str | None = None
 ) -> int:
-    """Count non-overlapping occurrences of ``find`` in a tab's raw text."""
+    """Count non-overlapping occurrences of ``find`` in a tab's raw text.
+
+    Case-insensitive counting uses ``str.casefold()``, the closest match to
+    the API's ``matchCase: false`` comparison: a live probe showed the API
+    folds ``ß`` to ``ss`` and dotted ``İ`` to ``i`` like ``casefold()`` does
+    (``lower()`` misses ``ß``), but does not fold ligatures such as ``ﬁ``. For
+    text containing such characters the count can differ from the number of
+    occurrences the API changes.
+    """
     if not find:
         raise ValueError("search text must not be empty")
     text = raw_text(doc, tab_id)
@@ -395,9 +426,9 @@ def read_text_file(path: str) -> str:
 
 def _resolve_and_report(source: str) -> str:
     """Resolve ``source`` to a document ID and echo it to stderr."""
-    document_id = resolve_document_id(source)
-    print(f"Document ID: {document_id}", file=sys.stderr)
-    return document_id
+    from gdrives.resolve import resolve_and_report
+
+    return resolve_and_report(source, "Document")
 
 
 def _target_tab(doc: Document, tab: str | None) -> str | None:
@@ -505,6 +536,8 @@ def run_replace(
     """
     from gdrives.auth import DOCS_WRITE_SCOPES, build_docs_service
 
+    if not find:
+        raise ValueError("search text must not be empty")
     document_id = _resolve_and_report(source)
     service = build_docs_service(DOCS_WRITE_SCOPES)
     doc = pull_document(service, document_id)

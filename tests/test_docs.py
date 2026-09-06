@@ -258,6 +258,27 @@ class TestRawText:
         with pytest.raises(ValueError, match="must not be empty"):
             count_occurrences(doc_with([]), "")
 
+    def test_counts_headers_footers_and_footnotes(self):
+        # replaceAllText edits every segment, so the count must see them all;
+        # the readable text stays body-only.
+        svc = FakeDocsService(
+            "draft body",
+            headers={"h.0": "draft header"},
+            footers={"f.0": "draft footer"},
+            footnotes={"n.0": "draft note"},
+        )
+        doc = svc.document()
+        assert count_occurrences(doc, "draft") == 4
+        assert raw_text(doc) == "draft body\ndraft header\ndraft footer\ndraft note\n"
+        assert document_text(doc) == "draft body\n"
+
+    def test_segments_on_tabless_document(self):
+        doc = {
+            "body": {"content": [paragraph("x\n")]},
+            "footers": {"f.0": {"content": [paragraph("x\n")]}},
+        }
+        assert count_occurrences(doc, "x") == 2
+
 
 # -- body_range --
 
@@ -689,6 +710,29 @@ class TestRunReplace:
         }
         assert body["writeControl"] == {"requiredRevisionId": "rev-1"}
         assert "Replaced 1 occurrence(s) of 'draft'" in capsys.readouterr().out
+
+    def test_empty_search_text_refused_before_any_network_work(self, monkeypatch):
+        svc = FakeDocsService("hello")
+        patch_service(monkeypatch, svc)
+        monkeypatch.setattr(
+            "gdrives.resolve.resolve_file_id",
+            lambda *a, **k: pytest.fail("must not resolve with an empty --find"),
+        )
+        with pytest.raises(ValueError, match="must not be empty"):
+            run_replace("DOC", "", "x")
+        assert svc.calls == []
+
+    def test_occurrence_in_footer_counts_toward_the_guard(self, monkeypatch):
+        # Without segment-aware counting the body's single match would pass
+        # the exactly-one guard and the API would still change two places.
+        svc = FakeDocsService("status: draft", footers={"f.0": "draft v2"})
+        patch_service(monkeypatch, svc)
+        with pytest.raises(ValueError, match="occurs 2 times; pass --all"):
+            run_replace("DOC", "draft", "final")
+        assert svc.text == "status: draft\n"
+        run_replace("DOC", "draft", "final", allow_multiple=True)
+        assert svc.text == "status: final\n"
+        assert svc.segments["footers"] == {"f.0": "final v2\n"}
 
     def test_no_occurrence_is_an_error(self, monkeypatch):
         svc = FakeDocsService("hello")

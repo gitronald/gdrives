@@ -247,10 +247,13 @@ class FakeDocsService:
     every tab ends with the newline Docs requires) and applies ``insertText``,
     ``deleteContentRange``, and ``replaceAllText`` requests to that text with
     real index arithmetic, so shifted-index and stale-revision paths are
-    testable without the API. Every successful batch bumps ``revision``; a batch
-    whose ``writeControl.requiredRevisionId`` is stale raises the 400 HttpError
-    the real API returns, and a failing batch leaves the text untouched. Every
-    ``(method, kwargs)`` call is recorded in ``calls``.
+    testable without the API. ``headers`` / ``footers`` / ``footnotes`` (each
+    segment ID -> text) render as the first tab's extra segments; only
+    ``replaceAllText`` touches them, as in the API. Every successful batch
+    bumps ``revision``; a batch whose ``writeControl.requiredRevisionId`` is
+    stale raises the 400 HttpError the real API returns, and a failing batch
+    leaves the text untouched. Every ``(method, kwargs)`` call is recorded in
+    ``calls``.
     """
 
     def __init__(
@@ -260,10 +263,22 @@ class FakeDocsService:
         tabs: dict[str, str] | None = None,
         document_id: str = "DOC",
         title: str = "Untitled",
+        headers: dict[str, str] | None = None,
+        footers: dict[str, str] | None = None,
+        footnotes: dict[str, str] | None = None,
     ) -> None:
         source = tabs if tabs is not None else {"t.0": text}
         self.tabs: dict[str, str] = {
             tab_id: self._terminated(body) for tab_id, body in source.items()
+        }
+        # Extra segments of the first tab: kind -> segment ID -> text.
+        self.segments: dict[str, dict[str, str]] = {
+            kind: {sid: self._terminated(body) for sid, body in (given or {}).items()}
+            for kind, given in (
+                ("headers", headers),
+                ("footers", footers),
+                ("footnotes", footnotes),
+            )
         }
         self.titles: dict[str, str] = {
             tab_id: f"Tab {i + 1}" for i, tab_id in enumerate(self.tabs)
@@ -309,11 +324,23 @@ class FakeDocsService:
                         "title": self.titles[tab_id],
                         "index": i,
                     },
-                    "documentTab": {"body": {"content": render_content(body)}},
+                    "documentTab": self._document_tab(i, body),
                 }
                 for i, (tab_id, body) in enumerate(self.tabs.items())
             ],
         }
+
+    def _document_tab(self, index: int, body: str) -> dict[str, Any]:
+        """Render one tab's body, plus the extra segments on the first tab."""
+        tab: dict[str, Any] = {"body": {"content": render_content(body)}}
+        if index == 0:
+            for kind, segments in self.segments.items():
+                if segments:
+                    tab[kind] = {
+                        sid: {"content": render_content(text)}
+                        for sid, text in segments.items()
+                    }
+        return tab
 
     def _create(self, body: dict[str, Any]) -> dict[str, Any]:
         """Become a fresh, empty, single-tab document titled per ``body``."""
@@ -331,10 +358,11 @@ class FakeDocsService:
         if not body.get("requests"):
             raise http_error(400, "requests must not be empty")
         snapshot = dict(self.tabs)
+        segments_snapshot = {k: dict(v) for k, v in self.segments.items()}
         try:
             replies = [self._apply(request) for request in body["requests"]]
         except Exception:
-            self.tabs = snapshot
+            self.tabs, self.segments = snapshot, segments_snapshot
             raise
         self._bump()
         return {
@@ -379,17 +407,26 @@ class FakeDocsService:
             find = req["containsText"]["text"]
             match_case = req["containsText"].get("matchCase", False)
             tab_ids = req.get("tabsCriteria", {}).get("tabIds") or list(self.tabs)
+
+            def substitute(current: str) -> tuple[str, int]:
+                if match_case:
+                    return current.replace(find, req["replaceText"]), current.count(
+                        find
+                    )
+                import re
+
+                pattern = re.compile(re.escape(find), re.IGNORECASE)
+                return pattern.subn(req["replaceText"], current)
+
             changed = 0
             for tab_id in tab_ids:
-                current = self.tabs[tab_id]
-                if match_case:
-                    changed += current.count(find)
-                    self.tabs[tab_id] = current.replace(find, req["replaceText"])
-                else:
-                    import re
-
-                    pattern = re.compile(re.escape(find), re.IGNORECASE)
-                    self.tabs[tab_id], n = pattern.subn(req["replaceText"], current)
-                    changed += n
+                self.tabs[tab_id], n = substitute(self.tabs[tab_id])
+                changed += n
+            # Headers, footers, and footnotes are edited too (first tab only).
+            if self._first_tab() in tab_ids:
+                for segments in self.segments.values():
+                    for sid, text in segments.items():
+                        segments[sid], n = substitute(text)
+                        changed += n
             return {"replaceAllText": {"occurrencesChanged": changed}}
         raise http_error(400, f"unsupported request: {sorted(request)}")
