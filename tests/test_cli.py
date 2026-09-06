@@ -296,3 +296,181 @@ class TestSheetsSet:
             cli.sheets_set("SID", match=["id=C300"], set_=["noequals"])
         assert exc.value.code == 1
         assert "COLUMN=VALUE" in capsys.readouterr().err
+
+
+class TestDocsGet:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_get",
+            lambda source, *, tab, output, as_json: rec.update(
+                s=source, tab=tab, o=output, j=as_json
+            ),
+        )
+        cli.docs_get("DID", tab="Notes", output="out.txt", as_json=True)
+        assert rec == {"s": "DID", "tab": "Notes", "o": "out.txt", "j": True}
+
+    def test_defaults(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.docs.run_get", lambda *a, **k: rec.update(k=k))
+        cli.docs_get("DID")
+        assert rec["k"] == {"tab": None, "output": None, "as_json": False}
+
+    def test_value_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise ValueError("tab 'nope' not found; tabs: 'Tab 1' (t.0)")
+
+        monkeypatch.setattr("gdrives.docs.run_get", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.docs_get("DID", tab="nope")
+        assert exc.value.code == 1
+        assert "Error: tab 'nope' not found" in capsys.readouterr().err
+
+
+class TestDocsUpdate:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_update",
+            lambda source, text_file, *, tab, yes: rec.update(
+                s=source, tf=text_file, tab=tab, yes=yes
+            ),
+        )
+        cli.docs_update("DID", text_file="body.txt", tab="t.1", yes=True)
+        assert rec == {"s": "DID", "tf": "body.txt", "tab": "t.1", "yes": True}
+
+    def test_path_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise DrivePathError("file or folder 'missing' not found in Drive")
+
+        monkeypatch.setattr("gdrives.docs.run_update", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.docs_update("My Drive/missing", text_file="body.txt")
+        assert exc.value.code == 1
+        assert "Error: file or folder 'missing' not found" in capsys.readouterr().err
+
+
+class TestDocsAppend:
+    def test_delegates_text(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_append",
+            lambda source, *, text, text_file, tab: rec.update(
+                s=source, t=text, tf=text_file, tab=tab
+            ),
+        )
+        cli.docs_append("DID", text="more")
+        assert rec == {"s": "DID", "t": "more", "tf": None, "tab": None}
+
+    def test_delegates_text_file(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.docs.run_append", lambda *a, **k: rec.update(k=k))
+        cli.docs_append("DID", text_file="more.txt", tab="Notes")
+        assert rec["k"] == {"text": None, "text_file": "more.txt", "tab": "Notes"}
+
+    def test_exclusivity_error_exits_1(self, monkeypatch, capsys):
+        # run_append raises ValueError for both/neither; the seam renders it.
+        def boom(*a, **k):
+            raise ValueError("pass exactly one of --text or --text-file")
+
+        monkeypatch.setattr("gdrives.docs.run_append", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.docs_append("DID")
+        assert exc.value.code == 1
+        assert "exactly one of --text or --text-file" in capsys.readouterr().err
+
+
+class TestDocsReplace:
+    def test_delegates_with_inverted_case_flag(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_replace",
+            lambda source, find, replace, *, match_case, tab, allow_multiple: (
+                rec.update(
+                    s=source,
+                    f=find,
+                    r=replace,
+                    mc=match_case,
+                    tab=tab,
+                    all=allow_multiple,
+                )
+            ),
+        )
+        cli.docs_replace(
+            "DID", find="old", replace="new", ignore_case=True, all_=True, tab="t.1"
+        )
+        assert rec == {
+            "s": "DID",
+            "f": "old",
+            "r": "new",
+            "mc": False,
+            "tab": "t.1",
+            "all": True,
+        }
+
+    def test_defaults_are_case_sensitive_single_match(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.docs.run_replace", lambda *a, **k: rec.update(k=k))
+        cli.docs_replace("DID", find="old", replace="")
+        assert rec["k"] == {"match_case": True, "tab": None, "allow_multiple": False}
+
+    def test_refusal_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise ValueError(
+                "'old' occurs 3 times; pass --all to replace every occurrence"
+            )
+
+        monkeypatch.setattr("gdrives.docs.run_replace", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.docs_replace("DID", find="old", replace="new")
+        assert exc.value.code == 1
+        assert "pass --all" in capsys.readouterr().err
+
+
+class TestDocsClear:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_clear",
+            lambda source, *, tab, yes: rec.update(s=source, tab=tab, yes=yes),
+        )
+        cli.docs_clear("DID", tab="t.1", yes=True)
+        assert rec == {"s": "DID", "tab": "t.1", "yes": True}
+
+
+class TestDocsCreate:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.docs.run_create",
+            lambda title, *, text_file: rec.update(t=title, tf=text_file),
+        )
+        cli.docs_create(title="Notes", text_file="body.txt")
+        assert rec == {"t": "Notes", "tf": "body.txt"}
+
+    def test_http_error_exits_1(self, monkeypatch, capsys):
+        from helpers import http_error
+
+        def boom(*a, **k):
+            raise http_error(403, "Forbidden")
+
+        monkeypatch.setattr("gdrives.docs.run_create", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.docs_create(title="Notes")
+        assert exc.value.code == 1
+        assert "Drive API request failed" in capsys.readouterr().err
+
+
+class TestYesFlag:
+    def test_every_confirming_command_shares_the_flag(self):
+        import typer.core
+        import typer.main
+
+        group = typer.main.get_command(cli.app)
+        assert isinstance(group, typer.main.TyperGroup)
+        for name in ("download", "sheets-clear", "docs-update", "docs-clear"):
+            command = group.commands[name]
+            (param,) = [p for p in command.params if p.name == "yes"]
+            assert isinstance(param, typer.core.TyperOption)
+            assert param.opts == ["-y", "--yes"], name
+            assert param.help == "Skip the confirmation prompt", name

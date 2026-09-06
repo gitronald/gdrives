@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-05
+
+### Added
+
+- Live Google Docs read/edit via the Docs API v1 (`documents.get` / `batchUpdate` / `create`), distinct from `export`'s whole-file download:
+  - `docs-get` — print a Doc's plain text (list items prefixed `- `, table rows tab-separated); `--json` prints the raw document, `-o` writes a file, and `--tab` picks a tab by title or ID.
+  - `docs-update` — overwrite the body with a local text file; prompts unless `-y`.
+  - `docs-append` — append `--text` or a `--text-file` as new paragraph(s).
+  - `docs-replace` — find and replace; refuses when the phrase occurs more than once unless `--all`, errors when it occurs nowhere; `--ignore-case` relaxes matching.
+  - `docs-clear` — empty the body; prompts unless `-y`.
+  - `docs-create` — create a new Doc in My Drive root, optionally filled from a text file; prints its URL.
+- Index-addressed Docs writes (`docs-update`, `docs-clear`) and `docs-replace` send the revision they read as `writeControl.requiredRevisionId`, so a write is refused if the document changed in between.
+- Separate `documents` write scope for the Docs write commands, cached in its own `gdrives_token_documents.json`. Every scope set now gets its own token file, and a cached token whose granted scopes do not cover the request is discarded and re-authorized instead of failing with a 403.
+- `export` accepts `.txt` (plain text) and `.md` (Markdown) outputs for Google Docs.
+
+### Changed
+
+- `sheets.resolve_spreadsheet_id` delegates to the new shared `resolve.resolve_file_id` (URL, bare ID, or Drive path to a file ID), which `docs.resolve_document_id` also wraps.
+
 ## [0.6.2] - 2026-09-04
 
 ### Changed

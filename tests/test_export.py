@@ -13,6 +13,8 @@ DOCX_MIME = EXPORT_MIME_TYPES[".docx"]
 XLSX_MIME = EXPORT_MIME_TYPES[".xlsx"]
 PPTX_MIME = EXPORT_MIME_TYPES[".pptx"]
 CSV_MIME = EXPORT_MIME_TYPES[".csv"]
+TXT_MIME = EXPORT_MIME_TYPES[".txt"]
+MD_MIME = EXPORT_MIME_TYPES[".md"]
 
 
 # -- mime_for_output --
@@ -30,6 +32,12 @@ class TestMimeForOutput:
 
     def test_csv(self):
         assert mime_for_output("file.csv") == CSV_MIME
+
+    def test_txt_is_plain_text(self):
+        assert mime_for_output("file.txt") == "text/plain"
+
+    def test_md_is_markdown(self):
+        assert mime_for_output("file.md") == "text/markdown"
 
     def test_uppercase_extension(self):
         assert mime_for_output("FILE.XLSX") == XLSX_MIME
@@ -77,6 +85,20 @@ class TestExportFile:
         export_file(mock_service, "fid", str(out))
         mock_service.files().export.assert_called_with(fileId="fid", mimeType=CSV_MIME)
         assert out.read_bytes() == b"a,b\n1,2\n"
+
+    def test_md_uses_markdown_mime(self, mock_service, tmp_path):
+        out = tmp_path / "out.md"
+        mock_service.files().export().execute.return_value = b"# Title\n"
+        export_file(mock_service, "fid", str(out))
+        mock_service.files().export.assert_called_with(fileId="fid", mimeType=MD_MIME)
+        assert out.read_bytes() == b"# Title\n"
+
+    def test_txt_uses_plain_text_mime(self, mock_service, tmp_path):
+        out = tmp_path / "out.txt"
+        mock_service.files().export().execute.return_value = b"Title\n"
+        export_file(mock_service, "fid", str(out))
+        mock_service.files().export.assert_called_with(fileId="fid", mimeType=TXT_MIME)
+        assert out.read_bytes() == b"Title\n"
 
     def test_unsupported_extension_does_not_call_api(self, mock_service, tmp_path):
         out = tmp_path / "out.pdf"

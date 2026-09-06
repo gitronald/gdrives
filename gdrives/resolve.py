@@ -1,10 +1,13 @@
 """Drive path resolution — convert paths to folder/file IDs."""
 
+import sys
+
 from gdrives.auth import build_drive_service
 from gdrives.drives import find_drive, load
 from gdrives.files import (
     DriveFile,
     Service,
+    extract_drive_id,
     is_folder,
     list_children,
     list_shared_with_me,
@@ -140,3 +143,31 @@ def resolve_shared_path(
     return walk_segments(
         service, item["id"], remaining, allow_files=allow_files, corpora="user"
     )
+
+
+def resolve_file_id(source: str, service: Service | None = None) -> str:
+    """Resolve a Drive URL, bare file ID, or Drive path to a file ID.
+
+    The shared front door for commands that target one file (the ``sheets-*``
+    and ``docs-*`` sets): a URL or bare ID goes through ``extract_drive_id``; a
+    Drive path (contains ``/``) is walked via ``resolve_path`` with files
+    allowed. ``service`` is the *Drive* service used for path resolution; when
+    omitted, ``resolve_path`` builds a read-only one.
+    """
+    if source.startswith(("http://", "https://")):
+        return extract_drive_id(source)
+    if "/" in source:
+        return resolve_path(source, service, allow_files=True)
+    return source
+
+
+def resolve_and_report(source: str, label: str, service: Service | None = None) -> str:
+    """Resolve ``source`` with :func:`resolve_file_id` and echo the ID to stderr.
+
+    Every Sheets and Docs command opens the same way, so the resolve-then-
+    announce step lives here once. ``label`` names the file kind in the
+    message (``"Spreadsheet ID: ..."``, ``"Document ID: ..."``).
+    """
+    file_id = resolve_file_id(source, service)
+    print(f"{label} ID: {file_id}", file=sys.stderr)
+    return file_id

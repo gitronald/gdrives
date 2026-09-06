@@ -9,6 +9,11 @@ import typer
 
 app = typer.Typer(help="Google Drive file management tools.")
 
+# The "-y/--yes" flag shared by every command that confirms before writing.
+YesFlag = Annotated[
+    bool, typer.Option("-y", "--yes", help="Skip the confirmation prompt")
+]
+
 
 @contextmanager
 def _cli_errors() -> Iterator[None]:
@@ -39,11 +44,11 @@ def export(
         typer.Option(
             "-o",
             "--output",
-            help="Output: .docx (Docs), .xlsx/.csv (Sheets), .pptx (Slides)",
+            help="Output: .docx/.txt/.md (Docs), .xlsx/.csv (Sheets), .pptx (Slides)",
         ),
     ],
 ):
-    """Export a Google Doc to .docx, a Sheet to .xlsx/.csv, or Slides to .pptx."""
+    """Export a Doc to .docx/.txt/.md, a Sheet to .xlsx/.csv, or Slides to .pptx."""
     from gdrives.export import run
 
     with _cli_errors():
@@ -69,10 +74,7 @@ def download(
             help="Max recursion depth (1=flat, 2=one level, ...; default: unlimited)",
         ),
     ] = None,
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Download a Drive file or folder to a local directory.
 
@@ -269,10 +271,7 @@ def sheets_append(
 def sheets_clear(
     source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
     range_: Annotated[str, typer.Argument(metavar="RANGE", help=_RANGE_HELP)],
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Clear the values in a range, keeping formatting (needs write access)."""
     from gdrives.sheets import run_clear
@@ -325,3 +324,151 @@ def sheets_set(
         match_map = parse_pairs(match, "--match")
         updates = parse_pairs(set_, "--set")
         run_set(source, match_map, updates, tab=tab, raw=raw, allow_multiple=all_)
+
+
+# A document target accepted by every docs command: a Doc URL, a bare file ID,
+# or a Drive path (e.g. 'My Drive/notes'). Shared help strings.
+_DOC_SOURCE_HELP = "Doc URL, file ID, or Drive path (e.g. 'My Drive/notes')"
+_DOC_TAB_HELP = "Tab title or ID (default: first tab)"
+_TEXT_FILE_HELP = "Local UTF-8 text file (one trailing newline is dropped)"
+
+
+@app.command(name="docs-get")
+def docs_get(
+    source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
+    tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="Write the text (or JSON) to this file"),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw document JSON instead of text"),
+    ] = False,
+):
+    """Print a Google Doc's text: paragraphs, list items, and table rows.
+
+    Lists are prefixed with '- ' and table rows are tab-separated. --json prints
+    the full documents.get response (every tab) for inspection or scripting.
+    """
+    from gdrives.docs import run_get
+
+    with _cli_errors():
+        run_get(source, tab=tab, output=output, as_json=as_json)
+
+
+@app.command(name="docs-update")
+def docs_update(
+    source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
+    text_file: Annotated[str, typer.Option("--text-file", help=_TEXT_FILE_HELP)],
+    tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
+    yes: YesFlag = False,
+):
+    """Overwrite a Doc's whole body with a local text file (needs write access).
+
+    Existing content, including formatting, is replaced by the file's plain
+    text; the write is refused if the document changed since it was read.
+    """
+    from gdrives.docs import run_update
+
+    with _cli_errors():
+        run_update(source, text_file, tab=tab, yes=yes)
+
+
+@app.command(name="docs-append")
+def docs_append(
+    source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
+    text: Annotated[
+        str | None,
+        typer.Option("--text", help="Text to append (verbatim)"),
+    ] = None,
+    text_file: Annotated[
+        str | None,
+        typer.Option("--text-file", help=_TEXT_FILE_HELP),
+    ] = None,
+    tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
+):
+    """Append text as new paragraph(s) at the end of a Doc (needs write access).
+
+    Pass exactly one of --text or --text-file.
+    """
+    from gdrives.docs import run_append
+
+    with _cli_errors():
+        run_append(source, text=text, text_file=text_file, tab=tab)
+
+
+@app.command(name="docs-replace")
+def docs_replace(
+    source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
+    find: Annotated[str, typer.Option("--find", help="Text to search for")],
+    replace: Annotated[
+        str,
+        typer.Option("--replace", help="Replacement text (may be empty)"),
+    ],
+    ignore_case: Annotated[
+        bool,
+        typer.Option(
+            "--ignore-case",
+            help=(
+                "Match regardless of letter case (the pre-check counts with "
+                "Unicode casefolding, which can differ from the API on rare "
+                "characters such as ligatures)"
+            ),
+        ),
+    ] = False,
+    all_: Annotated[
+        bool,
+        typer.Option("--all", help="Replace every occurrence (default: exactly one)"),
+    ] = False,
+    tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
+):
+    """Find and replace text in a Doc (needs write access).
+
+    Refuses when the phrase occurs more than once unless --all is given, so a
+    targeted edit never rewrites the wrong sentence; errors when it occurs
+    nowhere. Example: gdrives docs-replace <doc> --find "draft" --replace "final"
+    """
+    from gdrives.docs import run_replace
+
+    with _cli_errors():
+        run_replace(
+            source,
+            find,
+            replace,
+            match_case=not ignore_case,
+            tab=tab,
+            allow_multiple=all_,
+        )
+
+
+@app.command(name="docs-clear")
+def docs_clear(
+    source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
+    tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
+    yes: YesFlag = False,
+):
+    """Empty a Doc's body (needs write access)."""
+    from gdrives.docs import run_clear
+
+    with _cli_errors():
+        run_clear(source, tab=tab, yes=yes)
+
+
+@app.command(name="docs-create")
+def docs_create(
+    title: Annotated[str, typer.Option("--title", help="Title of the new document")],
+    text_file: Annotated[
+        str | None,
+        typer.Option("--text-file", help=f"{_TEXT_FILE_HELP} for the initial body"),
+    ] = None,
+):
+    """Create a new Google Doc in the root of My Drive (needs write access).
+
+    Prints the new document's URL. It lands in My Drive root: moving it into a
+    folder needs Drive write access, which gdrives does not request.
+    """
+    from gdrives.docs import run_create
+
+    with _cli_errors():
+        run_create(title, text_file=text_file)
