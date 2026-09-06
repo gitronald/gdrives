@@ -82,14 +82,22 @@ implicit-any = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "--cov=gdrives --cov-report=term-missing"
+addopts = "--cov --cov-report=term-missing"
 markers = [
     "integration: live tests needing a service account + GDRIVES_TEST_SPREADSHEET_ID / GDRIVES_TEST_DOCUMENT_ID (skipped otherwise)",
 ]
 
 [tool.coverage.run]
 source = ["gdrives"]
+branch = true
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+fail_under = 100
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
