@@ -284,3 +284,28 @@ otherwise leave it as a follow-up.
   push; (3) `gh pr ready 21`; (4) run `/planners close 002` again to add the
   retrospective, set the closing frontmatter (`concluded`, `status: done`),
   regenerate the index, and merge PR #21 into `dev`.
+- 2026-09-05: **Review findings actioned** (1–6), each with a regression
+  test, in three commits:
+  - `tab_content` / `tab_segments` walk a tab's body, headers, footers, and
+    footnotes; `raw_text` (and so `count_occurrences`) covers all of them,
+    while `document_text` stays body-only. `FakeDocsService` takes
+    `headers` / `footers` / `footnotes` maps, renders them on the first tab,
+    and applies `replaceAllText` to them, so the guard test proves a body
+    match plus a footer match is refused without `--all` (finding 1).
+  - The `casefold()` divergence is now a caveat in the `count_occurrences`
+    docstring and the `--ignore-case` help text (finding 2).
+  - `run_replace` rejects an empty `--find` before resolving, authenticating,
+    or fetching; the test patches the resolver to fail if reached (finding 3).
+  - `resolve.resolve_and_report(source, label)` replaces the two
+    `_resolve_and_report` copies, which are now one-line wrappers (finding 4).
+  - `auth._build_service(api, version, scopes)` backs the three public
+    `build_*_service` functions (finding 5).
+  - `cli.YesFlag` is the shared `Annotated` type for `-y/--yes` across
+    `download`, `sheets-clear`, `docs-update`, and `docs-clear`; the test
+    inspects the Click parameters (typer 0.27 no longer imports `click`, so
+    the narrows use `typer.main.TyperGroup` / `typer.core.TyperOption`)
+    (finding 6).
+  - Gate green: ruff, format, pyrefly, 441 tests at 100% coverage (live
+    suites included). Pre-commit runs pyrefly on each staged chunk, so the
+    shared helper commit had to land before the docs commit that imports it.
+  Remaining: `gh pr ready 21`, then `/planners close 002`.
