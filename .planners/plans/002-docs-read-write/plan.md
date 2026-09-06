@@ -1,10 +1,10 @@
 ---
 id: 2
 slug: docs-read-write
-status: active
+status: done
 branch: feature/docs-read-write
 created: 2026-09-03T11:33:48-07:00
-concluded:
+concluded: 2026-09-05T22:03:39-07:00
 pr: https://github.com/gitronald/gdrives/pull/21
 ---
 
@@ -309,3 +309,29 @@ otherwise leave it as a follow-up.
     suites included). Pre-commit runs pyrefly on each staged chunk, so the
     shared helper commit had to land before the docs commit that imports it.
   Remaining: `gh pr ready 21`, then `/planners close 002`.
+- 2026-09-05: **Close.** PR #21 marked ready, CI green on Python 3.11-3.14,
+  local gate re-run clean (ruff, format, pyrefly, 441 tests at 100% coverage).
+  Merged into `dev`, worktree and branch removed.
+
+## Retrospective
+
+- The plan's recommended auth option (one token file per scope set, with a
+  granted-scope check on load) held up unchanged; the alternative combined
+  write token would have forced every Sheets user through a re-consent for a
+  feature they may never use.
+- The `set_text(doc=...)` signature was the one API deviation worth noting:
+  taking the snapshot instead of `required_revision=` makes it impossible to
+  pair a body span with a revision from a different `get`.
+- The review gate earned its place. The headers/footers/footnotes gap in the
+  `docs-replace` guard was invisible from the body-only fake; fixing it meant
+  teaching `FakeDocsService` to render those segments, which is now the test
+  surface for any future per-segment behavior.
+- Probing the live API for `matchCase: false` settled a question no doc
+  answered (`ß` and dotted `İ` fold, the `ﬁ` ligature does not). A five-minute
+  live probe beat guessing which Python normalization to trust.
+- Pre-commit runs pyrefly per staged chunk, so a shared helper must be
+  committed before the module that imports it. Worth remembering when
+  splitting a refactor into logical commits.
+- Next time: create the live test fixture (shared Doc, `.env` ID) at the
+  start of implementation rather than after the unit suite, so the request
+  shapes are validated against the real API while the module is still fluid.
