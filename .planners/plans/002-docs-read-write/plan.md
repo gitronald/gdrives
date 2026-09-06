@@ -1,11 +1,11 @@
 ---
 id: 2
 slug: docs-read-write
-status: active
+status: done
 branch: feature/docs-read-write
 created: 2026-09-03T11:33:48-07:00
-concluded:
-pr:
+concluded: 2026-09-05T22:03:39-07:00
+pr: https://github.com/gitronald/gdrives/pull/21
 ---
 
 # Read and edit Google Docs content via the Docs API
@@ -204,3 +204,134 @@ otherwise leave it as a follow-up.
   `matchCase=true`) with `--ignore-case`, or the reverse?
 - Does `docs-create` belong here at all, or should it wait for the Drive write
   scope so a new Doc can land in a folder from day one?
+
+## Log
+
+- 2026-09-04: activated on `dev`, branched `feature/docs-read-write` in a
+  worktree, draft PR #21 opened.
+- **Auth (step 1).** Took the recommended option: one token file per scope set.
+  Known sets keep their historical names (`gdrives_token.json`,
+  `gdrives_token_rw.json`); any other set derives a sorted name from each
+  scope's last path segment, so the Docs write token is
+  `gdrives_token_documents.json`. On load, the token JSON's granted `scopes`
+  are checked against the request and a token that does not cover it is
+  discarded (with a warning) so the flow re-consents instead of 403ing.
+- **Core module (step 2)** shipped as specified, with these deviations:
+  - `pull_document` always requests `includeTabsContent=true` (no `tabs=`
+    flag); `tab_body` still accepts the legacy top-level `body` shape.
+  - `set_text` / `clear_text` take `doc=` (an earlier `pull_document` result)
+    instead of `required_revision=`: the body span and the revision guard must
+    come from the same snapshot, so passing the snapshot is the coherent
+    interface. `replace_text` keeps `required_revision=` since it is index-free.
+  - Added `raw_text` / `count_occurrences` (undecorated text for occurrence
+    counting, so the `- ` list prefix and tab-joined cells never count as
+    matches), `resolve_tab_id` (title or ID), and `read_text_file` (drops one
+    trailing newline for a clean round trip).
+  - The shared resolver body became `resolve.resolve_file_id`;
+    `sheets.resolve_spreadsheet_id` and `docs.resolve_document_id` are thin
+    named wrappers.
+  - `run_append` prefixes a newline when the body is non-empty, so the CLI
+    appends a paragraph (the API's end-of-segment insert continues the last
+    line).
+- **CLI (step 3).** `docs-get` / `-update` / `-append` / `-replace` / `-clear`
+  plus the stretch `docs-create` (lands in My Drive root, as its help says).
+  Open questions resolved: plain text is the `docs-get` default with `--json`
+  for the raw document (Markdown stays with `export -o file.md`);
+  `docs-replace` is case-sensitive with `--ignore-case`; `docs-create` shipped
+  without `--parent`.
+- **`export` note.** `.txt` and `.md` added to `EXPORT_MIME_TYPES`.
+- **Tests (step 4).** `FakeDocsService` holds plain text per tab, renders real
+  indices, applies insert / delete / replace requests, bumps `revisionId`, and
+  rejects a stale `requiredRevisionId` with a 400, so request ordering and the
+  guard are tested end to end. The live suite is gated on
+  `GDRIVES_TEST_DOCUMENT_ID` and never runs the whole-body operations against
+  the shared document.
+- **Checks.** ruff, ruff format, pyrefly, and pytest at 100% coverage
+  (417 passed, 16 integration tests skipped without credentials).
+- 2026-09-05: created a throwaway test document next to the test sheet (both
+  in the owner's My Drive root, shared with the service account as Editor) via
+  a one-off, unpersisted `drive.file` OAuth grant, and pointed
+  `GDRIVES_TEST_DOCUMENT_ID` at it from a gitignored `.env`. Both live suites
+  pass against the real files (16 passed: 10 Sheets, 6 Docs), confirming the
+  Docs API request shapes, the `drive.readonly` read path, the `documents`
+  write scope on the service account, and the revision guard's 400.
+- 2026-09-05: **Review gate** (`/code-review`, medium) on PR #21, with the
+  check gate green first (ruff, format, pyrefly, 433 tests at 100% coverage,
+  live suites included). Eight findings (seven confirmed, one plausible),
+  posted as a [PR comment](https://github.com/gitronald/gdrives/pull/21#issuecomment-5550233169);
+  none actioned yet — the close was paused here.
+  1. `count_occurrences` / `raw_text` scan only the body, but `replaceAllText`
+     also edits headers, footers, and footnotes, so the exactly-one guard in
+     `docs-replace` can pass while the write changes two places. Fix: count
+     every segment the API edits; extend `FakeDocsService` to render them.
+  2. `--ignore-case` counting uses `casefold()`. A live probe of the API's
+     `matchCase: false` against the test document showed it folds `ß` to
+     `ss` and matches dotted `İ` to `i` but does not fold the `ﬁ` ligature,
+     so no Python normalization matches exactly; `casefold()` is the closest
+     (`lower()` misses `ß`), and the residual divergence is worth a caveat.
+  3. An empty `--find` is rejected only after resolving, authenticating, and
+     fetching the document. Fix: validate first, as `run_append` does.
+  4. `_resolve_and_report` duplicates the Sheets copy apart from the label.
+  5. `build_docs_service` is a third identical `build_*_service`.
+  6. The `-y` help string is repeated in four commands.
+  7. The fake's empty-batch 400 is unreachable from the code — a conscious
+     no-op: it is API-faithful strictness.
+  8. `tab_id=None` means every tab for `replace_text` but the first tab for
+     the other writes (plausible) — documented in the docstrings; no change.
+  **Next, on resuming:** (1) fix findings 1–6 at the source, each with a
+  paired regression test (finding 1 needs `FakeDocsService` to render
+  headers, footers, and footnotes); (2) run the full check gate, commit, and
+  push; (3) `gh pr ready 21`; (4) run `/planners close 002` again to add the
+  retrospective, set the closing frontmatter (`concluded`, `status: done`),
+  regenerate the index, and merge PR #21 into `dev`.
+- 2026-09-05: **Review findings actioned** (1–6), each with a regression
+  test, in three commits:
+  - `tab_content` / `tab_segments` walk a tab's body, headers, footers, and
+    footnotes; `raw_text` (and so `count_occurrences`) covers all of them,
+    while `document_text` stays body-only. `FakeDocsService` takes
+    `headers` / `footers` / `footnotes` maps, renders them on the first tab,
+    and applies `replaceAllText` to them, so the guard test proves a body
+    match plus a footer match is refused without `--all` (finding 1).
+  - The `casefold()` divergence is now a caveat in the `count_occurrences`
+    docstring and the `--ignore-case` help text (finding 2).
+  - `run_replace` rejects an empty `--find` before resolving, authenticating,
+    or fetching; the test patches the resolver to fail if reached (finding 3).
+  - `resolve.resolve_and_report(source, label)` replaces the two
+    `_resolve_and_report` copies, which are now one-line wrappers (finding 4).
+  - `auth._build_service(api, version, scopes)` backs the three public
+    `build_*_service` functions (finding 5).
+  - `cli.YesFlag` is the shared `Annotated` type for `-y/--yes` across
+    `download`, `sheets-clear`, `docs-update`, and `docs-clear`; the test
+    inspects the Click parameters (typer 0.27 no longer imports `click`, so
+    the narrows use `typer.main.TyperGroup` / `typer.core.TyperOption`)
+    (finding 6).
+  - Gate green: ruff, format, pyrefly, 441 tests at 100% coverage (live
+    suites included). Pre-commit runs pyrefly on each staged chunk, so the
+    shared helper commit had to land before the docs commit that imports it.
+  Remaining: `gh pr ready 21`, then `/planners close 002`.
+- 2026-09-05: **Close.** PR #21 marked ready, CI green on Python 3.11-3.14,
+  local gate re-run clean (ruff, format, pyrefly, 441 tests at 100% coverage).
+  Merged into `dev`, worktree and branch removed.
+
+## Retrospective
+
+- The plan's recommended auth option (one token file per scope set, with a
+  granted-scope check on load) held up unchanged; the alternative combined
+  write token would have forced every Sheets user through a re-consent for a
+  feature they may never use.
+- The `set_text(doc=...)` signature was the one API deviation worth noting:
+  taking the snapshot instead of `required_revision=` makes it impossible to
+  pair a body span with a revision from a different `get`.
+- The review gate earned its place. The headers/footers/footnotes gap in the
+  `docs-replace` guard was invisible from the body-only fake; fixing it meant
+  teaching `FakeDocsService` to render those segments, which is now the test
+  surface for any future per-segment behavior.
+- Probing the live API for `matchCase: false` settled a question no doc
+  answered (`ß` and dotted `İ` fold, the `ﬁ` ligature does not). A five-minute
+  live probe beat guessing which Python normalization to trust.
+- Pre-commit runs pyrefly per staged chunk, so a shared helper must be
+  committed before the module that imports it. Worth remembering when
+  splitting a refactor into logical commits.
+- Next time: create the live test fixture (shared Doc, `.env` ID) at the
+  start of implementation rather than after the unit suite, so the request
+  shapes are validated against the real API while the module is still fluid.
