@@ -9,6 +9,11 @@ import typer
 
 app = typer.Typer(help="Google Drive file management tools.")
 
+# The "-y/--yes" flag shared by every command that confirms before writing.
+YesFlag = Annotated[
+    bool, typer.Option("-y", "--yes", help="Skip the confirmation prompt")
+]
+
 
 @contextmanager
 def _cli_errors() -> Iterator[None]:
@@ -69,10 +74,7 @@ def download(
             help="Max recursion depth (1=flat, 2=one level, ...; default: unlimited)",
         ),
     ] = None,
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Download a Drive file or folder to a local directory.
 
@@ -269,10 +271,7 @@ def sheets_append(
 def sheets_clear(
     source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
     range_: Annotated[str, typer.Argument(metavar="RANGE", help=_RANGE_HELP)],
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Clear the values in a range, keeping formatting (needs write access)."""
     from gdrives.sheets import run_clear
@@ -363,10 +362,7 @@ def docs_update(
     source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
     text_file: Annotated[str, typer.Option("--text-file", help=_TEXT_FILE_HELP)],
     tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Overwrite a Doc's whole body with a local text file (needs write access).
 
@@ -412,7 +408,14 @@ def docs_replace(
     ],
     ignore_case: Annotated[
         bool,
-        typer.Option("--ignore-case", help="Match regardless of letter case"),
+        typer.Option(
+            "--ignore-case",
+            help=(
+                "Match regardless of letter case (the pre-check counts with "
+                "Unicode casefolding, which can differ from the API on rare "
+                "characters such as ligatures)"
+            ),
+        ),
     ] = False,
     all_: Annotated[
         bool,
@@ -443,10 +446,7 @@ def docs_replace(
 def docs_clear(
     source: Annotated[str, typer.Argument(help=_DOC_SOURCE_HELP)],
     tab: Annotated[str | None, typer.Option("--tab", help=_DOC_TAB_HELP)] = None,
-    yes: Annotated[
-        bool,
-        typer.Option("-y", "--yes", help="Skip the confirmation prompt"),
-    ] = False,
+    yes: YesFlag = False,
 ):
     """Empty a Doc's body (needs write access)."""
     from gdrives.docs import run_clear

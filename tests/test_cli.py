@@ -459,3 +459,18 @@ class TestDocsCreate:
             cli.docs_create(title="Notes")
         assert exc.value.code == 1
         assert "Drive API request failed" in capsys.readouterr().err
+
+
+class TestYesFlag:
+    def test_every_confirming_command_shares_the_flag(self):
+        import typer.core
+        import typer.main
+
+        group = typer.main.get_command(cli.app)
+        assert isinstance(group, typer.main.TyperGroup)
+        for name in ("download", "sheets-clear", "docs-update", "docs-clear"):
+            command = group.commands[name]
+            (param,) = [p for p in command.params if p.name == "yes"]
+            assert isinstance(param, typer.core.TyperOption)
+            assert param.opts == ["-y", "--yes"], name
+            assert param.help == "Skip the confirmation prompt", name
