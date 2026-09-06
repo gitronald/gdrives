@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-05
+
+### Changed
+
+- Test coverage now measures branches as well as lines and fails the run below 100%. The coverage settings (source, threshold, and standard exclusion patterns) live in `pyproject.toml`, so `uv run pytest` and the CI workflow share one configuration.
+
 ## [0.7.0] - 2026-09-05
 
 ### Added
