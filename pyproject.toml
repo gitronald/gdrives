@@ -89,6 +89,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["gdrives"]
+branch = true
 
 [tool.coverage.report]
 show_missing = true
