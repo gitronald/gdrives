@@ -222,12 +222,17 @@ def authenticate(scopes: list[str] | None = None):
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
 
 
-def build_drive_service(scopes: list[str] | None = None):
-    """Authenticate and return a Drive v3 service."""
+def _build_service(api: str, version: str, scopes: list[str] | None):
+    """Authenticate with ``scopes`` and build the ``api``/``version`` client."""
     from googleapiclient.discovery import build
 
     creds = authenticate(scopes)
-    return build("drive", "v3", credentials=creds)
+    return build(api, version, credentials=creds)
+
+
+def build_drive_service(scopes: list[str] | None = None):
+    """Authenticate and return a Drive v3 service."""
+    return _build_service("drive", "v3", scopes)
 
 
 def build_sheets_service(scopes: list[str] | None = None):
@@ -237,10 +242,7 @@ def build_sheets_service(scopes: list[str] | None = None):
     and reusing the shared read-only token). Pass SHEETS_WRITE_SCOPES for the
     update/append/clear operations, which persist a separate write token.
     """
-    from googleapiclient.discovery import build
-
-    creds = authenticate(scopes)
-    return build("sheets", "v4", credentials=creds)
+    return _build_service("sheets", "v4", scopes)
 
 
 def build_docs_service(scopes: list[str] | None = None):
@@ -250,7 +252,4 @@ def build_docs_service(scopes: list[str] | None = None):
     reusing the shared read-only token). Pass DOCS_WRITE_SCOPES for
     ``batchUpdate``/``create``, which persist a separate write token.
     """
-    from googleapiclient.discovery import build
-
-    creds = authenticate(scopes)
-    return build("docs", "v1", credentials=creds)
+    return _build_service("docs", "v1", scopes)

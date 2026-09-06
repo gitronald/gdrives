@@ -321,7 +321,7 @@ class TestAuthenticateAdc:
         assert auth.authenticate_adc() is creds
 
 
-# -- build_drive_service / build_sheets_service --
+# -- build_drive_service / build_sheets_service / build_docs_service --
 
 
 class TestBuildDriveService:
@@ -373,6 +373,24 @@ class TestBuildDocsService:
         assert rec["a"] == ("docs", "v1")
         assert rec["k"]["credentials"] is creds
         assert rec["scopes"] == auth.DOCS_WRITE_SCOPES
+
+
+class TestBuildService:
+    def test_all_builders_share_one_path(self, monkeypatch):
+        rec = []
+        monkeypatch.setattr(auth, "authenticate", lambda scopes=None: "creds")
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda api, version, credentials: rec.append((api, version, credentials)),
+        )
+        auth.build_drive_service()
+        auth.build_sheets_service()
+        auth.build_docs_service()
+        assert rec == [
+            ("drive", "v3", "creds"),
+            ("sheets", "v4", "creds"),
+            ("docs", "v1", "creds"),
+        ]
 
 
 # -- _token_path scope split --

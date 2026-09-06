@@ -1,5 +1,7 @@
 """Drive path resolution — convert paths to folder/file IDs."""
 
+import sys
+
 from gdrives.auth import build_drive_service
 from gdrives.drives import find_drive, load
 from gdrives.files import (
@@ -157,3 +159,15 @@ def resolve_file_id(source: str, service: Service | None = None) -> str:
     if "/" in source:
         return resolve_path(source, service, allow_files=True)
     return source
+
+
+def resolve_and_report(source: str, label: str, service: Service | None = None) -> str:
+    """Resolve ``source`` with :func:`resolve_file_id` and echo the ID to stderr.
+
+    Every Sheets and Docs command opens the same way, so the resolve-then-
+    announce step lives here once. ``label`` names the file kind in the
+    message (``"Spreadsheet ID: ..."``, ``"Document ID: ..."``).
+    """
+    file_id = resolve_file_id(source, service)
+    print(f"{label} ID: {file_id}", file=sys.stderr)
+    return file_id

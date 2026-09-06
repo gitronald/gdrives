@@ -7,6 +7,7 @@ from helpers import make_file, make_folder, mock_list_response
 
 from gdrives.resolve import (
     DrivePathError,
+    resolve_and_report,
     resolve_file_id,
     resolve_path,
     resolve_shared_path,
@@ -210,3 +211,20 @@ class TestResolveFileId:
             "service": mock_service,
             "allow_files": True,
         }
+
+
+class TestResolveAndReport:
+    def test_echoes_labelled_id_to_stderr(self, capsys):
+        assert resolve_and_report("DOC123", "Document") == "DOC123"
+        out = capsys.readouterr()
+        assert out.err == "Document ID: DOC123\n"
+        assert out.out == ""
+
+    def test_passes_service_through_for_paths(self, monkeypatch, mock_service):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.resolve.resolve_file_id",
+            lambda source, service=None: rec.update(s=source, svc=service) or "FID",
+        )
+        assert resolve_and_report("My Drive/x", "Spreadsheet", mock_service) == "FID"
+        assert rec == {"s": "My Drive/x", "svc": mock_service}

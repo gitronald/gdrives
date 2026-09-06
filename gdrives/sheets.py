@@ -327,9 +327,9 @@ def _resolve_and_report(source: str) -> str:
     Every command opens the same way, so the resolve-then-announce step lives
     here once instead of in each ``run_*`` entry point.
     """
-    spreadsheet_id = resolve_spreadsheet_id(source)
-    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
-    return spreadsheet_id
+    from gdrives.resolve import resolve_and_report
+
+    return resolve_and_report(source, "Spreadsheet")
 
 
 def run_get(
