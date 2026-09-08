@@ -8,4 +8,133 @@ concluded:
 pr:
 ---
 
-# 
+# Read and write conditional format rules on a Sheet
+
+## Plan
+
+### Goal
+
+Expose Google Sheets **conditional formatting** rules through `gdrives` — list the
+rules on a spreadsheet, add one, and delete one. Plan
+[001](../001-sheets-read-write/plan.md) deliberately scoped structural edits via
+`spreadsheets.batchUpdate` (formatting, tabs, frozen rows) out; this plan takes the
+first slice of that follow-up, limited to conditional format rules.
+
+The motivating case: converting an uploaded `.xlsx` to a native Google Sheet does
+not carry its conditional formatting across, so anyone migrating a workbook has to
+re-create every rule by hand in the web UI. With this, the rules can be captured
+from a source sheet and replayed onto the converted one as a scripted step.
+
+### Scope
+
+In scope:
+- `list_conditional_rules` / `add_conditional_rule` / `delete_conditional_rule`
+  helpers in `gdrives/sheets.py`.
+- A custom-formula rule builder (the common case) plus pass-through of a raw rule
+  dict for anything the builder does not cover.
+- CLI commands `sheets-rules`, `sheets-add-rule`, `sheets-delete-rule`.
+- Tests against the fake Sheets service in `tests/helpers.py`, mirroring
+  `tests/test_sheets.py`.
+
+Out of scope:
+- The rest of `spreadsheets.batchUpdate`: cell formatting, tab add/delete/rename,
+  frozen rows, data validation, protected ranges, banding.
+- Color-scale (gradient) rules — single-color / boolean rules only. The API models
+  them as `gradientRule` instead of `booleanRule`; `list` should still surface them
+  verbatim, but the builder and the add command do not construct one.
+- Any "copy all rules from sheet A to sheet B" convenience command. That is a
+  caller-side loop over `list` + `add`, and belongs in the consumer until the
+  primitives have settled.
+
+### API surface
+
+Conditional formatting is **not** part of `spreadsheets.values.*` — rules live on
+the spreadsheet resource itself. So:
+
+- **Reading** uses `spreadsheets().get(spreadsheetId=..., fields=...)` and pulls
+  `sheets[].conditionalFormats[]`. Request a narrow `fields` mask
+  (`sheets.properties(sheetId,title),sheets.conditionalFormats`) — the default
+  response carries the whole grid and is enormous.
+- **Writing** uses `spreadsheets().batchUpdate(...)` with
+  `addConditionalFormatRule` / `deleteConditionalFormatRule` requests. Note this is
+  `spreadsheets.batchUpdate`, a different method from the
+  `spreadsheets.values.batchUpdate` already wrapped by `batch_update_values`
+  (`sheets.py:99`) — keep the names distinct so the two are not confused.
+
+Proposed helpers in `gdrives/sheets.py`:
+
+```python
+def list_conditional_rules(service, spreadsheet_id) -> list[dict[str, Any]]
+    # -> [{"tab": "Sheet1", "sheet_id": 0, "index": 0, "rule": {...}}, ...]
+
+def build_formula_rule(ranges, formula, *, bold=None, italic=None,
+                       strikethrough=None, underline=None,
+                       text_color=None, background=None) -> dict[str, Any]
+    # -> {"ranges": [GridRange, ...],
+    #     "booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
+    #                                   "values": [{"userEnteredValue": formula}]},
+    #                     "format": {...}}}
+
+def add_conditional_rule(service, spreadsheet_id, rule, *, index=0) -> dict[str, Any]
+
+def delete_conditional_rule(service, spreadsheet_id, sheet_id, index) -> dict[str, Any]
+```
+
+Two details the builder has to get right:
+
+- **A1 ranges must become `GridRange` objects.** The API takes
+  `{sheetId, startRowIndex, endRowIndex, startColumnIndex, endColumnIndex}` with
+  0-based, half-open indices — not the `"Sheet1!A2:AA"` string the rest of the
+  module speaks. Add an `a1_to_grid_range(service, spreadsheet_id, range_)` that
+  resolves the tab name to a `sheetId` and converts the corners, reusing
+  `column_letter` (`sheets.py:169`) in reverse and `list_tabs` for the lookup.
+  Omitting `endRowIndex` / `endColumnIndex` is how the API expresses an open-ended
+  range (`A2:AA` with no row bound), so the converter must leave them unset rather
+  than defaulting them.
+- **Rules are an ordered list per tab, addressed by index.** `addConditionalFormatRule`
+  takes an insertion `index` and `deleteConditionalFormatRule` a positional one, so
+  deleting shifts everything after it. Document that, and have `list` return the
+  index alongside each rule so a delete can be aimed.
+
+Colors are `{"red": 0.0-1.0, "green": ..., "blue": ...}` floats, not hex. Accept hex
+strings at the CLI boundary and convert, so `--text-color "#999999"` works.
+
+### CLI
+
+```bash
+gdrives sheets-rules <sheet>                       # list rules, grouped by tab
+gdrives sheets-rules <sheet> --json                # raw rule dicts, for replay
+gdrives sheets-add-rule <sheet> --range "Sheet1!A2:AA" \
+    --formula '=OR($F2="Rejected", $F2="Inactive")' \
+    --strikethrough --text-color "#999999"
+gdrives sheets-add-rule <sheet> --rule-json rules.json   # replay a captured rule
+gdrives sheets-delete-rule <sheet> --tab Sheet1 --index 0 [--yes]
+```
+
+`sheets-rules` reads, so it keeps the default read-only scope. The two write
+commands request `SHEETS_WRITE_SCOPES` like the existing `sheets-update` family, so
+they reuse the `gdrives_token_rw.json` token with no new consent flow. Follow the
+existing CLI conventions: the spreadsheet target accepts a URL, bare ID, or Drive
+path (`cli.py:182`); the destructive command takes `--yes` like `sheets-clear`; the
+`run_*` implementation lives in `sheets.py` and is imported inside the command body.
+
+`--range` should be repeatable — one rule can cover several ranges.
+
+### Tests
+
+Extend `tests/helpers.py`'s fake Sheets service with a `conditionalFormats` payload
+on the `get` response and a recorder for `batchUpdate` requests, then cover:
+
+- `list_conditional_rules` on a sheet with rules on more than one tab, and on one
+  with none (the key is absent, not empty — same shape trap as `values`).
+- `a1_to_grid_range` for a bounded range, an open-ended one (`A2:AA`), a
+  single-column range, and a quoted tab name with a space.
+- `build_formula_rule` output matches the documented request shape, and that unset
+  format options are omitted rather than sent as `None`.
+- Hex-to-float color conversion, including a bad hex string erroring cleanly.
+- `add`/`delete` issue the right `batchUpdate` request bodies.
+
+### Docs
+
+- README: a short **Conditional formatting** subsection under the Sheets commands.
+- CHANGELOG `[Unreleased]`: the three new commands and the helper functions.
