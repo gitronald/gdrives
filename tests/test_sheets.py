@@ -8,7 +8,7 @@ import it lazily.
 """
 
 import pytest
-from helpers import FakeSheetsService
+from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
     a1_quote,
@@ -303,14 +303,6 @@ class TestRunGet:
 
 
 class TestRunWrite:
-    def _patch_service(self, monkeypatch, svc):
-        rec = {}
-        monkeypatch.setattr(
-            "gdrives.auth.build_sheets_service",
-            lambda scopes=None: rec.update(scopes=scopes) or svc,
-        )
-        return rec
-
     def test_update_reads_csv_and_requests_write_scope(
         self, monkeypatch, tmp_path, capsys
     ):
@@ -319,7 +311,7 @@ class TestRunWrite:
         svc = FakeSheetsService(
             update={"updatedCells": 4, "updatedRange": "Sheet1!A1:B2"}
         )
-        rec = self._patch_service(monkeypatch, svc)
+        rec = patch_sheets_service(monkeypatch, svc)
         csv_path = tmp_path / "data.csv"
         write_values_csv(str(csv_path), [["a", "b"], ["1", "2"]])
         run_update("SHEET_ID", "Sheet1!A1:B2", str(csv_path))
@@ -337,7 +329,7 @@ class TestRunWrite:
 
     def test_update_raw_flag_selects_raw(self, monkeypatch, tmp_path):
         svc = FakeSheetsService()
-        self._patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         csv_path = tmp_path / "data.csv"
         write_values_csv(str(csv_path), [["=SUM(1,2)"]])
         run_update("SHEET_ID", "A1", str(csv_path), raw=True)
@@ -347,7 +339,7 @@ class TestRunWrite:
         svc = FakeSheetsService(
             append={"updates": {"updatedRows": 2, "updatedRange": "Sheet1!A3:B4"}}
         )
-        self._patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         csv_path = tmp_path / "data.csv"
         write_values_csv(str(csv_path), [["a", "b"], ["c", "d"]])
         run_append("SHEET_ID", "Sheet1!A1", str(csv_path))

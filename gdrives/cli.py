@@ -326,6 +326,112 @@ def sheets_set(
         run_set(source, match_map, updates, tab=tab, raw=raw, allow_multiple=all_)
 
 
+@app.command(name="sheets-rules")
+def sheets_rules(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw rules as JSON (for --rule-json)"),
+    ] = False,
+):
+    """List a Sheet's conditional format rules, grouped by tab.
+
+    Each rule is prefixed with its index on its tab: the first matching rule
+    wins, and sheets-delete-rule takes that index.
+    """
+    from gdrives.sheets import run_rules
+
+    with _cli_errors():
+        run_rules(source, as_json=as_json)
+
+
+def _flag(name: str, what: str) -> typer.models.OptionInfo:
+    return typer.Option(f"--{name}", help=f"Format matching cells {what}")
+
+
+@app.command(name="sheets-add-rule")
+def sheets_add_rule(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    range_: Annotated[
+        list[str] | None,
+        typer.Option("--range", help=f"{_RANGE_HELP}; repeat for several"),
+    ] = None,
+    formula: Annotated[
+        str | None,
+        typer.Option("--formula", help="Custom formula, e.g. '=$F2=\"Rejected\"'"),
+    ] = None,
+    bold: Annotated[bool, _flag("bold", "bold")] = False,
+    italic: Annotated[bool, _flag("italic", "italic")] = False,
+    strikethrough: Annotated[bool, _flag("strikethrough", "struck through")] = False,
+    underline: Annotated[bool, _flag("underline", "underlined")] = False,
+    text_color: Annotated[
+        str | None,
+        typer.Option("--text-color", help="Text color as hex, e.g. '#999999'"),
+    ] = None,
+    background: Annotated[
+        str | None,
+        typer.Option("--background", help="Fill color as hex, e.g. '#fce8e6'"),
+    ] = None,
+    rule_json: Annotated[
+        str | None,
+        typer.Option(
+            "--rule-json",
+            help="JSON file holding one rule (or one sheets-rules --json entry)",
+        ),
+    ] = None,
+    index: Annotated[
+        int,
+        typer.Option("--index", min=0, help="Position in the tab's rules (0 = first)"),
+    ] = 0,
+):
+    """Add a conditional format rule (needs write access).
+
+    Builds a custom-formula rule from --range/--formula and the format options,
+    or replays one captured with sheets-rules --json. Example:
+    gdrives sheets-add-rule <sheet> --range 'Sheet1!A2:AA'
+    --formula '=$F2="Rejected"' --strikethrough --text-color '#999999'
+    """
+    from gdrives.sheets import run_add_rule
+
+    with _cli_errors():
+        run_add_rule(
+            source,
+            ranges=range_,
+            formula=formula,
+            bold=bold,
+            italic=italic,
+            strikethrough=strikethrough,
+            underline=underline,
+            text_color=text_color,
+            background=background,
+            rule_json=rule_json,
+            index=index,
+        )
+
+
+@app.command(name="sheets-delete-rule")
+def sheets_delete_rule(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    index: Annotated[
+        int, typer.Option("--index", help="Rule index on the tab (see sheets-rules)")
+    ],
+    tab: Annotated[
+        str | None,
+        typer.Option("--tab", help="Tab name (default: first tab)"),
+    ] = None,
+    yes: YesFlag = False,
+):
+    """Delete one conditional format rule by tab and index (needs write access).
+
+    Later rules on the tab shift up by one, so re-run sheets-rules before
+    deleting another.
+    """
+    from gdrives.sheets import run_delete_rule
+
+    with _cli_errors():
+        run_delete_rule(source, index, tab=tab, yes=yes)
+
+
 # A document target accepted by every docs command: a Doc URL, a bare file ID,
 # or a Drive path (e.g. 'My Drive/notes'). Shared help strings.
 _DOC_SOURCE_HELP = "Doc URL, file ID, or Drive path (e.g. 'My Drive/notes')"
