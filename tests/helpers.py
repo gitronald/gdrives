@@ -140,6 +140,11 @@ class _FakeSpreadsheets:
     def get(self, **kwargs: Any) -> _Executable:
         return self._service._record("spreadsheets.get", kwargs, "meta")
 
+    def batchUpdate(self, **kwargs: Any) -> _Executable:  # camelCase: Sheets API name
+        return self._service._record(
+            "spreadsheets.batchUpdate", kwargs, "spreadsheetBatchUpdate"
+        )
+
 
 class FakeSheetsService:
     """A minimal fake of the Sheets v4 discovery service.
@@ -147,8 +152,10 @@ class FakeSheetsService:
     Records every ``(method, kwargs)`` call in ``calls`` and returns the preset
     response for that method, so tests can assert both the request shape and the
     parsed result. Register responses by key: ``get``/``update``/``append``/
-    ``clear`` (values ops) and ``meta`` (``spreadsheets.get``, used by
-    ``list_tabs``). Any unregistered key returns ``{}``.
+    ``clear``/``batchUpdate`` (values ops), ``meta`` (``spreadsheets.get``, used
+    by ``list_tabs``, ``tab_sheet_ids``, and ``list_conditional_rules``), and
+    ``spreadsheetBatchUpdate`` (``spreadsheets.batchUpdate``, the structural
+    one). Any unregistered key returns ``{}``.
     """
 
     def __init__(self, **responses: dict[str, Any]) -> None:
