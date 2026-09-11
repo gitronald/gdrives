@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-11
+
 ### Added
 
 - Conditional format rules on Google Sheets. They are read with `spreadsheets.get` and written with `spreadsheets.batchUpdate`, separate from the `spreadsheets.values.*` cell commands:
