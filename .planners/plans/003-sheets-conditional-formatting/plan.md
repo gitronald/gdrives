@@ -5,7 +5,7 @@ status: active
 branch: feature/sheets-conditional-formatting
 created: 2026-09-08T12:12:39-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/26
 ---
 
 # Read and write conditional format rules on a Sheet
@@ -138,3 +138,38 @@ on the `get` response and a recorder for `batchUpdate` requests, then cover:
 
 - README: a short **Conditional formatting** subsection under the Sheets commands.
 - CHANGELOG `[Unreleased]`: the three new commands and the helper functions.
+
+## Log
+
+### 2026-09-11 — implementation
+
+- Activated on `dev`; work on `feature/sheets-conditional-formatting` in a
+  worktree; draft PR opened.
+- `gdrives/sheets.py`: `list_conditional_rules`, `build_formula_rule`,
+  `add_conditional_rule`, `delete_conditional_rule`, `a1_to_grid_range`, plus the
+  supporting pieces the spec implied: `column_index` (inverse of `column_letter`),
+  `split_a1`, `tab_sheet_ids` (title -> `sheetId`; `list_tabs` only returns titles,
+  so it could not be reused for the lookup), `grid_range_to_a1` and `describe_rule`
+  / `format_rules` (for the human `sheets-rules` view), `hex_to_color` /
+  `color_to_hex`, `read_rule_json`, and `batch_update_spreadsheet` (named apart
+  from `batch_update_values`, as planned).
+- CLI: `sheets-rules [--json]`, `sheets-add-rule` (repeatable `--range`,
+  `--formula`, `--bold/--italic/--strikethrough/--underline`, `--text-color`,
+  `--background`, `--index`, or `--rule-json`), `sheets-delete-rule --index
+  [--tab] [-y]`. `--tab` defaults to the first tab (matching `sheets-set`) rather
+  than being required. The delete re-reads the rule list, shows the targeted rule
+  in the prompt, and refuses an out-of-range index before sending anything.
+  `--rule-json` accepts a bare rule or one `sheets-rules --json` entry.
+- Tests: `tests/test_sheets_rules.py` (fake service gained
+  `spreadsheets.batchUpdate`), CLI delegation tests, and two live tests in
+  `tests/test_sheets_integration.py`; unit suite at 100% line+branch coverage,
+  live sheets suite 12/12 passing.
+- **Finding (spec correction):** omitting `endRowIndex` does express an
+  open-ended range *in the request*, but the API does not store it that way — a
+  rule added over `A2:C` lists back as `A2:C1000`, clamped to the tab's current
+  row count. So a captured rule replays with a fixed extent. Documented in the
+  `_cell_span` docstring and the README; the live test asserts the clamped shape.
+- **Caveat for replay:** a captured rule's ranges keep their source `sheetId`, so
+  `--rule-json` onto a different spreadsheet only works when a tab with that ID
+  exists there. Remapping is left to the caller (in line with the out-of-scope
+  "copy all rules" convenience).
