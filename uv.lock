@@ -380,7 +380,7 @@ wheels = [
 
 [[package]]
 name = "gdrives"
-version = "0.8.0"
+version = "0.8.1a0"
 source = { editable = "." }
 dependencies = [
     { name = "google-api-python-client" },
