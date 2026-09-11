@@ -330,6 +330,12 @@ def split_a1(range_: str) -> tuple[str | None, str]:
     return _unquote(tab), cells
 
 
+def _tab_ids(tabs: list[dict[str, Any]]) -> dict[str, int]:
+    """Map each tab title to its ``sheetId`` from a ``spreadsheets.get`` sheets list."""
+    # The API omits zero-valued fields, so the first tab's sheetId 0 may be absent.
+    return {s["properties"]["title"]: s["properties"].get("sheetId", 0) for s in tabs}
+
+
 def tab_sheet_ids(service: Service, spreadsheet_id: str) -> dict[str, int]:
     """Map each tab title to its numeric ``sheetId``, in tab order."""
     result = (
@@ -337,11 +343,7 @@ def tab_sheet_ids(service: Service, spreadsheet_id: str) -> dict[str, int]:
         .get(spreadsheetId=spreadsheet_id, fields="sheets.properties(sheetId,title)")
         .execute()
     )
-    # The API omits zero-valued fields, so the first tab's sheetId 0 may be absent.
-    return {
-        s["properties"]["title"]: s["properties"].get("sheetId", 0)
-        for s in result.get("sheets", [])
-    }
+    return _tab_ids(result.get("sheets", []))
 
 
 def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:
@@ -474,10 +476,14 @@ def build_formula_rule(
 
     Only the format options given are sent, so an unset one keeps the cell's own
     formatting rather than being forced off. Colors are Sheets Color dicts (see
-    :func:`hex_to_color`). Raises when there are no ranges or no format options.
+    :func:`hex_to_color`). Raises when there are no ranges, ranges on more than one
+    tab (the API requires a rule's ranges to share a ``sheetId``), or no format
+    options.
     """
     if not ranges:
         raise ValueError("a rule needs at least one range")
+    if len({r.get("sheetId", 0) for r in ranges}) > 1:
+        raise ValueError("a rule's ranges must all be on one tab")
     flags = {
         "bold": bold,
         "italic": italic,
@@ -521,15 +527,8 @@ def batch_update_spreadsheet(
     )
 
 
-def list_conditional_rules(
-    service: Service, spreadsheet_id: str
-) -> list[dict[str, Any]]:
-    """Return every conditional format rule as ``{tab, sheet_id, index, rule}``.
-
-    Rules come back in tab order, then rule order; ``index`` is the rule's
-    position on its tab (what :func:`delete_conditional_rule` takes). Color-scale
-    (``gradientRule``) rules are returned verbatim alongside boolean ones.
-    """
+def _rule_tabs(service: Service, spreadsheet_id: str) -> list[dict[str, Any]]:
+    """Read every tab's properties and conditional formats in one ``get``."""
     result = (
         service.spreadsheets()
         .get(
@@ -539,8 +538,25 @@ def list_conditional_rules(
         )
         .execute()
     )
+    return result.get("sheets", [])
+
+
+def list_conditional_rules(
+    service: Service, spreadsheet_id: str
+) -> list[dict[str, Any]]:
+    """Return every conditional format rule as ``{tab, sheet_id, index, rule}``.
+
+    Rules come back in tab order, then rule order; ``index`` is the rule's
+    position on its tab (what :func:`delete_conditional_rule` takes). Color-scale
+    (``gradientRule``) rules are returned verbatim alongside boolean ones.
+    """
+    return _flatten_rules(_rule_tabs(service, spreadsheet_id))
+
+
+def _flatten_rules(tabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten :func:`_rule_tabs` output to ``{tab, sheet_id, index, rule}`` entries."""
     rules = []
-    for sheet in result.get("sheets", []):
+    for sheet in tabs:
         props = sheet["properties"]
         # Like "values", the key is absent (not empty) on a tab with no rules.
         for index, rule in enumerate(sheet.get("conditionalFormats", [])):
@@ -576,6 +592,8 @@ def delete_conditional_rule(
     service: Service, spreadsheet_id: str, sheet_id: int, index: int
 ) -> dict[str, Any]:
     """Delete the rule at ``index`` on tab ``sheet_id``; later rules shift up by one."""
+    if index < 0:
+        raise ValueError(f"rule index must be non-negative, got {index}")
     return batch_update_spreadsheet(
         service,
         spreadsheet_id,
@@ -878,7 +896,8 @@ def run_add_rule(
     """Add a custom-formula rule over ``ranges``, or replay one from ``rule_json``.
 
     Options, colors, and the JSON file are validated before any API call, so a
-    typo fails without a round-trip.
+    typo fails without a round-trip; only a range's tab needs the tab lookup to
+    check.
     """
     from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
 
@@ -907,6 +926,11 @@ def run_add_rule(
     else:
         if not ranges or formula is None:
             raise ValueError("pass --range and --formula, or --rule-json")
+        if not (any(flags.values()) or text_color or background):
+            raise ValueError(
+                "a rule needs at least one format option (--bold, --italic, "
+                "--strikethrough, --underline, --text-color, or --background)"
+            )
         fg = hex_to_color(text_color) if text_color else None
         bg = hex_to_color(background) if background else None
         spreadsheet_id = _resolve_and_report(source)
@@ -938,11 +962,11 @@ def run_delete_rule(
 
     spreadsheet_id = _resolve_and_report(source)
     service = build_sheets_service(SHEETS_WRITE_SCOPES)
-    ids = tab_sheet_ids(service, spreadsheet_id)
+    # One read supplies both the tab lookup and the rule list.
+    tabs = _rule_tabs(service, spreadsheet_id)
+    ids = _tab_ids(tabs)
     tab = _lookup_tab(ids, tab)
-    on_tab = [
-        r for r in list_conditional_rules(service, spreadsheet_id) if r["tab"] == tab
-    ]
+    on_tab = [r for r in _flatten_rules(tabs) if r["tab"] == tab]
     if not 0 <= index < len(on_tab):
         raise ValueError(
             f"tab {tab!r} has {len(on_tab)} rule(s); no rule at index {index}"

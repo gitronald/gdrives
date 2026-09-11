@@ -5,6 +5,8 @@ Drive API response shapes based on docs/drive-api.md.
 
 from typing import Any
 
+import pytest
+
 
 def make_file(
     name: str,
@@ -170,6 +172,22 @@ class FakeSheetsService:
 
     def spreadsheets(self) -> _FakeSpreadsheets:
         return _FakeSpreadsheets(self)
+
+
+def patch_sheets_service(
+    monkeypatch: pytest.MonkeyPatch, svc: FakeSheetsService
+) -> dict[str, Any]:
+    """Make ``build_sheets_service`` return ``svc``; the dict records its ``scopes``.
+
+    Patched at its source (``gdrives.auth``), since the ``run_*`` entry points
+    import it lazily.
+    """
+    rec: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "gdrives.auth.build_sheets_service",
+        lambda scopes=None: rec.update(scopes=scopes) or svc,
+    )
+    return rec
 
 
 # -- Docs API fake --

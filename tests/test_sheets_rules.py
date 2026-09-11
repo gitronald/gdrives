@@ -10,7 +10,7 @@ entry points patch ``build_sheets_service`` at its source (``gdrives.auth``).
 import json
 
 import pytest
-from helpers import FakeSheetsService
+from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
     a1_to_grid_range,
@@ -59,15 +59,6 @@ def meta(*sheets):
             entry["conditionalFormats"] = rules
         out.append(entry)
     return {"sheets": out}
-
-
-def patch_service(monkeypatch, svc):
-    rec = {}
-    monkeypatch.setattr(
-        "gdrives.auth.build_sheets_service",
-        lambda scopes=None: rec.update(scopes=scopes) or svc,
-    )
-    return rec
 
 
 # -- A1 <-> GridRange --
@@ -331,6 +322,15 @@ class TestBuildFormulaRule:
         with pytest.raises(ValueError, match="at least one format option"):
             build_formula_rule([{"sheetId": 0}], "=TRUE")
 
+    def test_ranges_on_two_tabs_raise(self):
+        with pytest.raises(ValueError, match="all be on one tab"):
+            build_formula_rule([{"sheetId": 0}, {"sheetId": 7}], "=TRUE", bold=True)
+
+    def test_omitted_sheet_id_is_the_first_tab(self):
+        # The API omits sheetId 0, so {} and {"sheetId": 0} are the same tab.
+        ranges = [{}, {"sheetId": 0, "startRowIndex": 1}]
+        assert build_formula_rule(ranges, "=TRUE", bold=True)["ranges"] == ranges
+
 
 # -- list / add / delete --
 
@@ -405,6 +405,12 @@ class TestAddDelete:
         assert svc.calls[0][1]["body"] == {
             "requests": [{"deleteConditionalFormatRule": {"sheetId": 42, "index": 1}}]
         }
+
+    def test_delete_negative_index_raises(self):
+        svc = FakeSheetsService()
+        with pytest.raises(ValueError, match="non-negative"):
+            delete_conditional_rule(svc, "sid", 42, -1)
+        assert svc.calls == []
 
 
 # -- read_rule_json --
@@ -541,7 +547,7 @@ class TestFormatRules:
 class TestRunRules:
     def test_prints_grouped_with_read_scope(self, monkeypatch, capsys):
         svc = FakeSheetsService(meta=meta(("Sheet1", 0, [RULE])))
-        rec = patch_service(monkeypatch, svc)
+        rec = patch_sheets_service(monkeypatch, svc)
         run_rules("SHEET_ID")
         assert rec["scopes"] is None  # the default read-only scope
         out = capsys.readouterr().out
@@ -549,19 +555,19 @@ class TestRunRules:
 
     def test_json(self, monkeypatch, capsys):
         svc = FakeSheetsService(meta=meta(("Sheet1", 0, [RULE])))
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         run_rules("SHEET_ID", as_json=True)
         assert json.loads(capsys.readouterr().out) == [
             {"tab": "Sheet1", "sheet_id": 0, "index": 0, "rule": RULE}
         ]
 
     def test_json_empty_is_empty_list(self, monkeypatch, capsys):
-        patch_service(monkeypatch, FakeSheetsService(meta=meta(("S", 0, None))))
+        patch_sheets_service(monkeypatch, FakeSheetsService(meta=meta(("S", 0, None))))
         run_rules("SHEET_ID", as_json=True)
         assert json.loads(capsys.readouterr().out) == []
 
     def test_no_rules_message(self, monkeypatch, capsys):
-        patch_service(monkeypatch, FakeSheetsService(meta=meta(("S", 0, None))))
+        patch_sheets_service(monkeypatch, FakeSheetsService(meta=meta(("S", 0, None))))
         run_rules("SHEET_ID")
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -576,7 +582,7 @@ class TestRunAddRule:
         from gdrives.auth import SHEETS_WRITE_SCOPES
 
         svc = FakeSheetsService(meta=meta(("Sheet1", 0, None), ("Data", 7, None)))
-        rec = patch_service(monkeypatch, svc)
+        rec = patch_sheets_service(monkeypatch, svc)
         run_add_rule(
             "SHEET_ID",
             ranges=["Data!A2:C", "Data!E:E"],
@@ -625,7 +631,7 @@ class TestRunAddRule:
 
     def test_text_color_and_remaining_flags(self, monkeypatch):
         svc = FakeSheetsService(meta=meta(("Sheet1", 0, None)))
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         run_add_rule(
             "SHEET_ID",
             ranges=["A1"],
@@ -653,7 +659,7 @@ class TestRunAddRule:
             json.dumps({"tab": "Sheet1", "sheet_id": 0, "index": 3, "rule": RULE})
         )
         svc = FakeSheetsService()
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         run_add_rule("SHEET_ID", rule_json=str(path))
         # no tab lookup: the rule's ranges already carry their sheetId
         assert [c[0] for c in svc.calls] == ["spreadsheets.batchUpdate"]
@@ -696,11 +702,21 @@ class TestRunAddRule:
         with pytest.raises(ValueError, match="hex string"):
             run_add_rule("SHEET_ID", ranges=["A1"], formula="=TRUE", text_color="grey")
 
-    def test_no_format_refuses_without_writing(self, monkeypatch):
-        svc = FakeSheetsService(meta=meta(("Sheet1", 0, None)))
-        patch_service(monkeypatch, svc)
+    def test_no_format_fails_before_any_call(self, monkeypatch):
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service",
+            lambda scopes=None: pytest.fail("must not build a service"),
+        )
         with pytest.raises(ValueError, match="format option"):
             run_add_rule("SHEET_ID", ranges=["A1"], formula="=TRUE")
+
+    def test_ranges_on_two_tabs_refuse_without_writing(self, monkeypatch):
+        svc = FakeSheetsService(meta=meta(("Sheet1", 0, None), ("Data", 7, None)))
+        patch_sheets_service(monkeypatch, svc)
+        with pytest.raises(ValueError, match="all be on one tab"):
+            run_add_rule(
+                "SHEET_ID", ranges=["Sheet1!A1", "Data!A1"], formula="=TRUE", bold=True
+            )
         assert [c[0] for c in svc.calls] == ["spreadsheets.get"]
 
 
@@ -709,7 +725,7 @@ class TestRunAddRule:
 
 class TestRunDeleteRule:
     def service(self):
-        # One payload answers both reads (tab ids and the rule list).
+        # The one read supplies both the tab ids and the rule list.
         return FakeSheetsService(
             meta=meta(
                 ("Sheet1", 0, [RULE]),
@@ -721,13 +737,21 @@ class TestRunDeleteRule:
         from gdrives.auth import SHEETS_WRITE_SCOPES
 
         svc = self.service()
-        rec = patch_service(monkeypatch, svc)
+        rec = patch_sheets_service(monkeypatch, svc)
         monkeypatch.setattr(
             "typer.confirm",
             lambda *a, **k: pytest.fail("must not prompt with yes=True"),
         )
         run_delete_rule("SHEET_ID", 1, tab="Data", yes=True)
         assert rec["scopes"] == SHEETS_WRITE_SCOPES
+        # one read serves the tab lookup and the rule list, then one write
+        assert [c[0] for c in svc.calls] == [
+            "spreadsheets.get",
+            "spreadsheets.batchUpdate",
+        ]
+        assert svc.calls[0][1]["fields"] == (
+            "sheets(properties(sheetId,title),conditionalFormats)"
+        )
         assert svc.calls[-1] == (
             "spreadsheets.batchUpdate",
             {
@@ -743,7 +767,7 @@ class TestRunDeleteRule:
 
     def test_prompt_shows_rule_and_decline_aborts(self, monkeypatch, capsys):
         svc = self.service()
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         prompts = []
         monkeypatch.setattr(
             "typer.confirm", lambda text, **k: prompts.append(text) or False
@@ -758,7 +782,7 @@ class TestRunDeleteRule:
 
     def test_accepted_prompt_deletes(self, monkeypatch):
         svc = self.service()
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
         run_delete_rule("SHEET_ID", 0)
         assert svc.calls[-1][1]["body"]["requests"] == [
@@ -768,17 +792,17 @@ class TestRunDeleteRule:
     @pytest.mark.parametrize("index", [1, -1])
     def test_index_out_of_range_refuses(self, monkeypatch, index):
         svc = self.service()
-        patch_service(monkeypatch, svc)
+        patch_sheets_service(monkeypatch, svc)
         with pytest.raises(ValueError, match="'Sheet1' has 1 rule"):
             run_delete_rule("SHEET_ID", index, yes=True)
         assert "spreadsheets.batchUpdate" not in [c[0] for c in svc.calls]
 
     def test_unknown_tab_refuses(self, monkeypatch):
-        patch_service(monkeypatch, self.service())
+        patch_sheets_service(monkeypatch, self.service())
         with pytest.raises(ValueError, match="no tab named 'Nope'"):
             run_delete_rule("SHEET_ID", 0, tab="Nope", yes=True)
 
     def test_no_tabs_refuses(self, monkeypatch):
-        patch_service(monkeypatch, FakeSheetsService())
+        patch_sheets_service(monkeypatch, FakeSheetsService())
         with pytest.raises(ValueError, match="no tabs"):
             run_delete_rule("SHEET_ID", 0, yes=True)
