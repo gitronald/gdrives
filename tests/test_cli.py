@@ -298,6 +298,71 @@ class TestSheetsSet:
         assert "COLUMN=VALUE" in capsys.readouterr().err
 
 
+class TestSheetsRules:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_rules",
+            lambda source, *, as_json: rec.update(s=source, j=as_json),
+        )
+        cli.sheets_rules("SID", as_json=True)
+        assert rec == {"s": "SID", "j": True}
+
+
+class TestSheetsAddRule:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_add_rule", lambda source, **k: rec.update(s=source, k=k)
+        )
+        cli.sheets_add_rule(
+            "SID",
+            range_=["Sheet1!A2:AA", "Sheet1!C:C"],
+            formula="=$F2=1",
+            strikethrough=True,
+            text_color="#999999",
+            index=2,
+        )
+        assert rec == {
+            "s": "SID",
+            "k": {
+                "ranges": ["Sheet1!A2:AA", "Sheet1!C:C"],
+                "formula": "=$F2=1",
+                "bold": False,
+                "italic": False,
+                "strikethrough": True,
+                "underline": False,
+                "text_color": "#999999",
+                "background": None,
+                "rule_json": None,
+                "index": 2,
+            },
+        }
+
+    def test_value_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise ValueError("pass --range and --formula, or --rule-json")
+
+        monkeypatch.setattr("gdrives.sheets.run_add_rule", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_add_rule("SID")
+        assert exc.value.code == 1
+        assert "Error: pass --range" in capsys.readouterr().err
+
+
+class TestSheetsDeleteRule:
+    def test_delegates(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_delete_rule",
+            lambda source, index, *, tab, yes: rec.update(
+                s=source, i=index, tab=tab, yes=yes
+            ),
+        )
+        cli.sheets_delete_rule("SID", index=1, tab="Data", yes=True)
+        assert rec == {"s": "SID", "i": 1, "tab": "Data", "yes": True}
+
+
 class TestDocsGet:
     def test_delegates(self, monkeypatch):
         rec = {}
@@ -468,7 +533,13 @@ class TestYesFlag:
 
         group = typer.main.get_command(cli.app)
         assert isinstance(group, typer.main.TyperGroup)
-        for name in ("download", "sheets-clear", "docs-update", "docs-clear"):
+        for name in (
+            "download",
+            "sheets-clear",
+            "sheets-delete-rule",
+            "docs-update",
+            "docs-clear",
+        ):
             command = group.commands[name]
             (param,) = [p for p in command.params if p.name == "yes"]
             assert isinstance(param, typer.core.TyperOption)

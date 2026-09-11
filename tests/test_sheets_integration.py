@@ -1,9 +1,11 @@
 """Live integration tests for gdrives.sheets against the real Sheets API v4.
 
 These exercise every core value operation (list_tabs, pull/update/append/clear)
-against a real spreadsheet, so they catch anything the fake-service unit tests
-in test_sheets.py can't — request-shape mismatches, scope problems, and how the
-API actually renders formulas and empty ranges.
+and the conditional format rule round trip (add/list/delete) against a real
+spreadsheet, so they catch anything the fake-service unit tests in
+test_sheets.py and test_sheets_rules.py can't — request-shape mismatches, scope
+problems, and how the API actually renders formulas, empty ranges, and stored
+rule ranges.
 
 They run **only** when a service account is available and
 ``GDRIVES_TEST_SPREADSHEET_ID`` points at a spreadsheet shared with it as
@@ -192,3 +194,69 @@ def test_set_by_match_multiple_rows_refused_without_all(tab):
         sheets.set_by_match(service, sid, name, {"id": "A"}, {"v": "9"})
     # nothing was written
     assert sheets.pull_values(service, sid, f"'{name}'!B2:B3") == [["1"], ["2"]]
+
+
+def _rules_on(service, sid, name):
+    """The conditional format rules on the fresh tab only."""
+    return [r for r in sheets.list_conditional_rules(service, sid) if r["tab"] == name]
+
+
+def _row_count(service, sid, name):
+    """The fresh tab's current grid height."""
+    result = (
+        service.spreadsheets()
+        .get(spreadsheetId=sid, fields="sheets.properties(title,gridProperties)")
+        .execute()
+    )
+    (props,) = [
+        s["properties"] for s in result["sheets"] if s["properties"]["title"] == name
+    ]
+    return props["gridProperties"]["rowCount"]
+
+
+def test_conditional_rule_add_list_delete_round_trips(tab):
+    service, sid, name = tab
+    assert _rules_on(service, sid, name) == []
+    grid = sheets.a1_to_grid_range(service, sid, f"'{name}'!A2:C")
+    rule = sheets.build_formula_rule(
+        [grid],
+        '=$B2="Rejected"',
+        strikethrough=True,
+        text_color=sheets.hex_to_color("#999999"),
+    )
+    sheets.add_conditional_rule(service, sid, rule)
+
+    (entry,) = _rules_on(service, sid, name)
+    assert entry["index"] == 0
+    stored = entry["rule"]
+    # The request's open end is not kept: the API stores the range clamped to the
+    # tab's current row count (A2:C -> A2:C1000 on a fresh 1000-row tab).
+    assert "endRowIndex" not in grid
+    assert stored["ranges"][0] == {
+        **grid,
+        "endRowIndex": _row_count(service, sid, name),
+    }
+    assert stored["booleanRule"]["condition"] == rule["booleanRule"]["condition"]
+    assert sheets.describe_rule(stored).endswith("[strikethrough, text #999999]")
+
+    sheets.delete_conditional_rule(service, sid, entry["sheet_id"], 0)
+    assert _rules_on(service, sid, name) == []
+
+
+def test_conditional_rule_index_orders_and_json_replays(tab):
+    service, sid, name = tab
+    grid = sheets.a1_to_grid_range(service, sid, f"'{name}'!A1:A10")
+    first = sheets.build_formula_rule([grid], "=TRUE", bold=True)
+    second = sheets.build_formula_rule([grid], "=FALSE", italic=True)
+    sheets.add_conditional_rule(service, sid, first)
+    sheets.add_conditional_rule(service, sid, second, index=0)  # jumps ahead
+    formulas = [
+        r["rule"]["booleanRule"]["condition"]["values"][0]["userEnteredValue"]
+        for r in _rules_on(service, sid, name)
+    ]
+    assert formulas == ["=FALSE", "=TRUE"]
+
+    # a listed rule re-adds verbatim (the replay path behind --rule-json)
+    listed = _rules_on(service, sid, name)[1]["rule"]
+    sheets.add_conditional_rule(service, sid, listed, index=2)
+    assert _rules_on(service, sid, name)[2]["rule"] == listed

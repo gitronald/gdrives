@@ -12,9 +12,18 @@ what the API returns with the default ``FORMATTED_VALUE`` render and what it
 accepts on write. The Sheets API returns rows truncated at the last non-empty
 cell, so display padding lives in ``format_values``; writes send rows as-is
 (Sheets pads short rows with blanks).
+
+Conditional format rules are the exception: they live on the spreadsheet
+resource, not in ``spreadsheets.values``, so they are read with
+``spreadsheets.get`` and written with ``spreadsheets.batchUpdate``, and address
+cells by ``GridRange`` (numeric ``sheetId`` + 0-based, half-open indices) rather
+than A1 strings.
 """
 
 import csv
+import json
+import re
+import string
 import sys
 from pathlib import Path
 from typing import Any
@@ -282,6 +291,390 @@ def parse_pairs(pairs: list[str], flag: str) -> dict[str, str]:
     return out
 
 
+# -- conditional format rules (spreadsheets.get / spreadsheets.batchUpdate) --
+#
+# Each tab holds an ordered list of rules addressed by position: the first rule
+# that matches a cell wins, and both inserting at an index and deleting one shift
+# every rule after it. So list returns each rule's index alongside it, and a
+# delete is aimed by (tab, index) from a fresh list.
+
+_CELL_RE = re.compile(r"([A-Za-z]*)([0-9]*)")
+
+
+def column_index(letters: str) -> int:
+    """Convert an A1 column letter to its 0-based index (A -> 0, AA -> 26)."""
+    if not (letters.isascii() and letters.isalpha()):
+        raise ValueError(f"not a column letter: {letters!r}")
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+def _unquote(tab: str) -> str:
+    """Undo :func:`a1_quote`: strip surrounding quotes and un-double ``''``."""
+    if len(tab) >= 2 and tab.startswith("'") and tab.endswith("'"):
+        return tab[1:-1].replace("''", "'")
+    return tab
+
+
+def split_a1(range_: str) -> tuple[str | None, str]:
+    """Split an A1 range into ``(tab title or None, cell span)``, unquoting the tab.
+
+    Splits on the *last* ``!``, since a quoted tab name may contain one but the
+    cell span never does.
+    """
+    if "!" not in range_:
+        return None, range_
+    tab, cells = range_.rsplit("!", 1)
+    return _unquote(tab), cells
+
+
+def _tab_ids(tabs: list[dict[str, Any]]) -> dict[str, int]:
+    """Map each tab title to its ``sheetId`` from a ``spreadsheets.get`` sheets list."""
+    # The API omits zero-valued fields, so the first tab's sheetId 0 may be absent.
+    return {s["properties"]["title"]: s["properties"].get("sheetId", 0) for s in tabs}
+
+
+def tab_sheet_ids(service: Service, spreadsheet_id: str) -> dict[str, int]:
+    """Map each tab title to its numeric ``sheetId``, in tab order."""
+    result = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets.properties(sheetId,title)")
+        .execute()
+    )
+    return _tab_ids(result.get("sheets", []))
+
+
+def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:
+    """Return ``tab`` (or the first tab when None), raising if it does not exist."""
+    if not tab_ids:
+        raise ValueError("spreadsheet has no tabs")
+    if tab is None:
+        return next(iter(tab_ids))
+    if tab not in tab_ids:
+        raise ValueError(f"no tab named {tab!r}; tabs: {list(tab_ids)}")
+    return tab
+
+
+def _parse_cell(ref: str, range_: str) -> tuple[int | None, int | None]:
+    """Parse one A1 corner (``B3``, ``AA``, ``7``) to (column index, row number)."""
+    ref = ref.replace("$", "")  # absolute refs ($A$2) address the same cells
+    match = _CELL_RE.fullmatch(ref)
+    if match is None or not ref:
+        raise ValueError(f"bad A1 cell reference {ref!r} in {range_!r}")
+    letters, digits = match.groups()
+    row = int(digits) if digits else None
+    if row == 0:
+        raise ValueError(f"row numbers start at 1, got {ref!r} in {range_!r}")
+    return (column_index(letters) if letters else None), row
+
+
+def _cell_span(cells: str) -> dict[str, int]:
+    """Convert an A1 cell span to GridRange indices (0-based, end-exclusive).
+
+    An omitted row or column on a corner leaves that index unset, which is how
+    the API expresses an open-ended range: ``A2:AA`` has no ``endRowIndex``.
+    (A stored conditional format rule does not keep the open end: the API clamps
+    it to the tab's current size, so ``A2:AA`` lists back as ``A2:AA1000``.)
+    """
+    start, sep, end = cells.partition(":")
+    s_col, s_row = _parse_cell(start, cells)
+    e_col, e_row = _parse_cell(end, cells) if sep else (s_col, s_row)
+    span: dict[str, int] = {}
+    if s_row is not None:
+        span["startRowIndex"] = s_row - 1
+    if e_row is not None:
+        span["endRowIndex"] = e_row
+    if s_col is not None:
+        span["startColumnIndex"] = s_col
+    if e_col is not None:
+        span["endColumnIndex"] = e_col + 1
+    for axis in ("Row", "Column"):
+        lo, hi = span.get(f"start{axis}Index"), span.get(f"end{axis}Index")
+        if lo is not None and hi is not None and lo >= hi:
+            raise ValueError(f"range {cells!r} ends before it starts")
+    return span
+
+
+def a1_to_grid_range(
+    service: Service,
+    spreadsheet_id: str,
+    range_: str,
+    *,
+    tab_ids: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Convert an A1 range to a ``GridRange`` dict for ``spreadsheets.batchUpdate``.
+
+    Resolves the tab title to its ``sheetId`` (a bare span like ``A2:C`` targets
+    the first tab; a bare tab name, or ``Tab!``, covers the whole tab). Pass
+    ``tab_ids`` from :func:`tab_sheet_ids` to convert several ranges with one
+    lookup.
+    """
+    ids = tab_ids if tab_ids is not None else tab_sheet_ids(service, spreadsheet_id)
+    tab, cells = split_a1(range_)
+    if tab is None and _unquote(cells) in ids:
+        tab, cells = _unquote(cells), ""
+    tab = _lookup_tab(ids, tab)
+    grid: dict[str, Any] = {"sheetId": ids[tab]}
+    if cells:
+        grid.update(_cell_span(cells))
+    return grid
+
+
+def grid_range_to_a1(grid: dict[str, Any]) -> str:
+    """Render a GridRange's cell span in A1 notation, without the tab.
+
+    An absent end index is an open end (``A2:AA``); an absent span is the whole
+    tab, rendered as ``""``.
+    """
+    sc, ec = grid.get("startColumnIndex"), grid.get("endColumnIndex")
+    sr, er = grid.get("startRowIndex"), grid.get("endRowIndex")
+    cols = sc is not None or ec is not None
+    rows = sr is not None or er is not None
+    if not (cols or rows):
+        return ""
+    start = (column_letter(sc or 0) if cols else "") + (
+        str((sr or 0) + 1) if rows else ""
+    )
+    end = (column_letter(ec - 1) if ec is not None else "") + (
+        str(er) if er is not None else ""
+    )
+    return start if cols and rows and start == end else f"{start}:{end}"
+
+
+def hex_to_color(value: str) -> dict[str, float]:
+    """Convert ``#RRGGBB`` (or ``RRGGBB`` / ``#RGB``) to a Sheets Color (0-1 floats)."""
+    digits = value.strip().removeprefix("#")
+    if len(digits) == 3:
+        digits = "".join(c * 2 for c in digits)
+    if len(digits) != 6 or any(c not in string.hexdigits for c in digits):
+        raise ValueError(f"color must be a hex string like '#999999', got {value!r}")
+    red, green, blue = (int(digits[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    return {"red": red, "green": green, "blue": blue}
+
+
+def color_to_hex(color: dict[str, Any]) -> str:
+    """Convert a Sheets Color to ``#rrggbb``; channels the API omits count as 0."""
+    return "#" + "".join(
+        f"{round(color.get(c, 0) * 255):02x}" for c in ("red", "green", "blue")
+    )
+
+
+def build_formula_rule(
+    ranges: list[dict[str, Any]],
+    formula: str,
+    *,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    strikethrough: bool | None = None,
+    underline: bool | None = None,
+    text_color: dict[str, float] | None = None,
+    background: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Build a custom-formula ``ConditionalFormatRule`` over ``ranges`` (GridRanges).
+
+    Only the format options given are sent, so an unset one keeps the cell's own
+    formatting rather than being forced off. Colors are Sheets Color dicts (see
+    :func:`hex_to_color`). Raises when there are no ranges, ranges on more than one
+    tab (the API requires a rule's ranges to share a ``sheetId``), or no format
+    options.
+    """
+    if not ranges:
+        raise ValueError("a rule needs at least one range")
+    if len({r.get("sheetId", 0) for r in ranges}) > 1:
+        raise ValueError("a rule's ranges must all be on one tab")
+    flags = {
+        "bold": bold,
+        "italic": italic,
+        "strikethrough": strikethrough,
+        "underline": underline,
+    }
+    text_format: dict[str, Any] = {k: v for k, v in flags.items() if v is not None}
+    if text_color is not None:
+        text_format["foregroundColor"] = text_color
+    fmt: dict[str, Any] = {}
+    if text_format:
+        fmt["textFormat"] = text_format
+    if background is not None:
+        fmt["backgroundColor"] = background
+    if not fmt:
+        raise ValueError("a rule needs at least one format option")
+    return {
+        "ranges": list(ranges),
+        "booleanRule": {
+            "condition": {
+                "type": "CUSTOM_FORMULA",
+                "values": [{"userEnteredValue": formula}],
+            },
+            "format": fmt,
+        },
+    }
+
+
+def batch_update_spreadsheet(
+    service: Service, spreadsheet_id: str, requests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Send structural ``requests`` via ``spreadsheets.batchUpdate``.
+
+    Not :func:`batch_update_values` (``spreadsheets.values.batchUpdate``), which
+    writes cell values; this one edits the spreadsheet resource itself.
+    """
+    return (
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests})
+        .execute()
+    )
+
+
+def _rule_tabs(service: Service, spreadsheet_id: str) -> list[dict[str, Any]]:
+    """Read every tab's properties and conditional formats in one ``get``."""
+    result = (
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            # A narrow mask: the default response carries the whole grid.
+            fields="sheets(properties(sheetId,title),conditionalFormats)",
+        )
+        .execute()
+    )
+    return result.get("sheets", [])
+
+
+def list_conditional_rules(
+    service: Service, spreadsheet_id: str
+) -> list[dict[str, Any]]:
+    """Return every conditional format rule as ``{tab, sheet_id, index, rule}``.
+
+    Rules come back in tab order, then rule order; ``index`` is the rule's
+    position on its tab (what :func:`delete_conditional_rule` takes). Color-scale
+    (``gradientRule``) rules are returned verbatim alongside boolean ones.
+    """
+    return _flatten_rules(_rule_tabs(service, spreadsheet_id))
+
+
+def _flatten_rules(tabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten :func:`_rule_tabs` output to ``{tab, sheet_id, index, rule}`` entries."""
+    rules = []
+    for sheet in tabs:
+        props = sheet["properties"]
+        # Like "values", the key is absent (not empty) on a tab with no rules.
+        for index, rule in enumerate(sheet.get("conditionalFormats", [])):
+            rules.append(
+                {
+                    "tab": props["title"],
+                    "sheet_id": props.get("sheetId", 0),
+                    "index": index,
+                    "rule": rule,
+                }
+            )
+    return rules
+
+
+def add_conditional_rule(
+    service: Service, spreadsheet_id: str, rule: dict[str, Any], *, index: int = 0
+) -> dict[str, Any]:
+    """Insert ``rule`` at ``index`` in its tab's rules (0 = first, highest priority).
+
+    The tab is the one named by the rule's ranges' ``sheetId``; rules at or after
+    ``index`` shift down by one.
+    """
+    if index < 0:
+        raise ValueError(f"rule index must be non-negative, got {index}")
+    return batch_update_spreadsheet(
+        service,
+        spreadsheet_id,
+        [{"addConditionalFormatRule": {"rule": rule, "index": index}}],
+    )
+
+
+def delete_conditional_rule(
+    service: Service, spreadsheet_id: str, sheet_id: int, index: int
+) -> dict[str, Any]:
+    """Delete the rule at ``index`` on tab ``sheet_id``; later rules shift up by one."""
+    if index < 0:
+        raise ValueError(f"rule index must be non-negative, got {index}")
+    return batch_update_spreadsheet(
+        service,
+        spreadsheet_id,
+        [{"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": index}}],
+    )
+
+
+def read_rule_json(path: str) -> dict[str, Any]:
+    """Read one rule from a JSON file for replay with :func:`add_conditional_rule`.
+
+    Accepts a bare ``ConditionalFormatRule`` or one entry of ``sheets-rules
+    --json`` output (unwrapping its ``rule``). Its ranges keep their ``sheetId``,
+    so they must name a tab that exists on the target spreadsheet.
+    """
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "rule" in data:
+        data = data["rule"]
+    if not isinstance(data, dict) or not (
+        "booleanRule" in data or "gradientRule" in data
+    ):
+        raise ValueError(
+            f"{path}: expected one conditional format rule "
+            "(an object with booleanRule or gradientRule, or one sheets-rules "
+            "--json entry)"
+        )
+    return data
+
+
+def _format_summary(fmt: dict[str, Any]) -> str:
+    """Summarize a rule's CellFormat: flags plus text/fill colors as hex."""
+    text = fmt.get("textFormat", {})
+    parts = [
+        flag
+        for flag in ("bold", "italic", "strikethrough", "underline")
+        if text.get(flag)
+    ]
+    fg = text.get(
+        "foregroundColor", text.get("foregroundColorStyle", {}).get("rgbColor")
+    )
+    if fg is not None:
+        parts.append(f"text {color_to_hex(fg)}")
+    bg = fmt.get("backgroundColor", fmt.get("backgroundColorStyle", {}).get("rgbColor"))
+    if bg is not None:
+        parts.append(f"fill {color_to_hex(bg)}")
+    return ", ".join(parts) or "no format"
+
+
+def describe_rule(rule: dict[str, Any]) -> str:
+    """Render a rule as one line: ranges, condition, and format summary."""
+    ranges = ", ".join(
+        grid_range_to_a1(r) or "(whole tab)" for r in rule.get("ranges", [])
+    )
+    if "gradientRule" in rule:
+        return f"{ranges}  color scale"
+    boolean = rule.get("booleanRule", {})
+    condition = boolean.get("condition", {})
+    kind = condition.get("type", "")
+    # A custom formula speaks for itself; other types (TEXT_CONTAINS, ...) need it.
+    parts = [] if kind == "CUSTOM_FORMULA" else [kind]
+    parts += [
+        v.get("userEnteredValue", v.get("relativeDate", ""))
+        for v in condition.get("values", [])
+    ]
+    return (
+        f"{ranges}  {' '.join(parts)}  [{_format_summary(boolean.get('format', {}))}]"
+    )
+
+
+def format_rules(rules: list[dict[str, Any]]) -> str:
+    """Render :func:`list_conditional_rules` output by tab, one rule per line."""
+    lines: list[str] = []
+    tab = None
+    for entry in rules:
+        if entry["tab"] != tab:
+            tab = entry["tab"]
+            lines.append(f"{tab} (sheetId {entry['sheet_id']})")
+        lines.append(f"  [{entry['index']}] {describe_rule(entry['rule'])}")
+    return "\n".join(lines)
+
+
 # -- CSV interchange --
 
 
@@ -469,3 +862,120 @@ def run_set(
         f"Set {summary['updated_cells']} cell(s) across {len(rows)} row(s) "
         f"(row {row_list}) in {tab}"
     )
+
+
+def run_rules(source: str, *, as_json: bool = False) -> None:
+    """List conditional format rules grouped by tab, or as raw JSON for replay."""
+    from gdrives.auth import build_sheets_service
+
+    spreadsheet_id = _resolve_and_report(source)
+    service = build_sheets_service()
+    rules = list_conditional_rules(service, spreadsheet_id)
+    if as_json:
+        print(json.dumps(rules, indent=2))
+    elif not rules:
+        print("(no conditional format rules)", file=sys.stderr)
+    else:
+        print(format_rules(rules))
+
+
+def run_add_rule(
+    source: str,
+    *,
+    ranges: list[str] | None = None,
+    formula: str | None = None,
+    bold: bool = False,
+    italic: bool = False,
+    strikethrough: bool = False,
+    underline: bool = False,
+    text_color: str | None = None,
+    background: str | None = None,
+    rule_json: str | None = None,
+    index: int = 0,
+) -> None:
+    """Add a custom-formula rule over ``ranges``, or replay one from ``rule_json``.
+
+    Options, colors, and the JSON file are validated before any API call, so a
+    typo fails without a round-trip; only a range's tab needs the tab lookup to
+    check.
+    """
+    from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
+
+    ranges = ranges or []
+    flags = {
+        "bold": bold,
+        "italic": italic,
+        "strikethrough": strikethrough,
+        "underline": underline,
+    }
+    if rule_json is not None:
+        if (
+            ranges
+            or formula is not None
+            or any(flags.values())
+            or text_color
+            or background
+        ):
+            raise ValueError(
+                "--rule-json cannot be combined with --range, --formula, "
+                "or format options"
+            )
+        rule = read_rule_json(rule_json)
+        spreadsheet_id = _resolve_and_report(source)
+        service = build_sheets_service(SHEETS_WRITE_SCOPES)
+    else:
+        if not ranges or formula is None:
+            raise ValueError("pass --range and --formula, or --rule-json")
+        if not (any(flags.values()) or text_color or background):
+            raise ValueError(
+                "a rule needs at least one format option (--bold, --italic, "
+                "--strikethrough, --underline, --text-color, or --background)"
+            )
+        fg = hex_to_color(text_color) if text_color else None
+        bg = hex_to_color(background) if background else None
+        spreadsheet_id = _resolve_and_report(source)
+        service = build_sheets_service(SHEETS_WRITE_SCOPES)
+        ids = tab_sheet_ids(service, spreadsheet_id)
+        rule = build_formula_rule(
+            [a1_to_grid_range(service, spreadsheet_id, r, tab_ids=ids) for r in ranges],
+            formula,
+            text_color=fg,
+            background=bg,
+            # Flags are on/off switches at the CLI: off means "leave unset".
+            **{k: v or None for k, v in flags.items()},
+        )
+    add_conditional_rule(service, spreadsheet_id, rule, index=index)
+    print(f"Added rule at index {index}: {describe_rule(rule)}")
+
+
+def run_delete_rule(
+    source: str, index: int, *, tab: str | None = None, yes: bool = False
+) -> None:
+    """Delete the rule at ``index`` on ``tab`` (default: first tab), confirming first.
+
+    Reads the rule list fresh, so the prompt shows the rule actually at that
+    position and an out-of-range index is refused before anything is sent.
+    """
+    import typer
+
+    from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
+
+    spreadsheet_id = _resolve_and_report(source)
+    service = build_sheets_service(SHEETS_WRITE_SCOPES)
+    # One read supplies both the tab lookup and the rule list.
+    tabs = _rule_tabs(service, spreadsheet_id)
+    ids = _tab_ids(tabs)
+    tab = _lookup_tab(ids, tab)
+    on_tab = [r for r in _flatten_rules(tabs) if r["tab"] == tab]
+    if not 0 <= index < len(on_tab):
+        raise ValueError(
+            f"tab {tab!r} has {len(on_tab)} rule(s); no rule at index {index}"
+        )
+    summary = describe_rule(on_tab[index]["rule"])
+    if not yes and not typer.confirm(
+        f"Delete rule [{index}] on {tab}: {summary}?", default=False
+    ):
+        print("Aborted.", file=sys.stderr)
+        return
+    delete_conditional_rule(service, spreadsheet_id, ids[tab], index)
+    print(f"Deleted rule [{index}] on {tab}: {summary}")
