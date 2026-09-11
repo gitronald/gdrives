@@ -33,7 +33,7 @@ gdrives/
 ├── listing.py   # DriveEntry, recursive collection, and table/markdown/CSV formatters
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
-├── sheets.py    # Read and write Google Sheet cell ranges (Sheets API v4)
+├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
 
@@ -76,7 +76,7 @@ additionally need the **Google Sheets API** enabled, and the `docs-*` commands
 the **Google Docs API**. The write commands request a write scope cached in its
 own token so read-only access is never disturbed: `spreadsheets`
 (`gdrives_token_rw.json`) for `sheets-update`, `sheets-append`, `sheets-clear`,
-and `sheets-set`; `documents` (`gdrives_token_documents.json`) for
+`sheets-set`, `sheets-add-rule`, and `sheets-delete-rule`; `documents` (`gdrives_token_documents.json`) for
 `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, and `docs-create`.
 When more than one is configured, authentication is attempted in order: OAuth,
 then service account, then ADC.
@@ -194,8 +194,8 @@ gdrives sheets-clear <sheet-url> "Sheet1!A1:C10"        # Clear values (prompts 
 ```
 
 Reads use the read-only scope (no re-consent for existing users). The write
-commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`) request
-the `spreadsheets` scope the first time and cache it in a separate token. Cells
+commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, and the
+rule commands below) request the `spreadsheets` scope the first time and cache it in a separate token. Cells
 are plain strings on both sides: `--values-file` reads a local CSV, and by
 default `USER_ENTERED` parses formulas, dates, and numbers like the Sheets UI
 (`--raw` stores the literal text). Use `--raw` when writing data from an
@@ -225,6 +225,37 @@ By default it requires **exactly one** matching row — it refuses (listing the
 rows) when the key is ambiguous, and errors when nothing matches, so a keyed
 update never silently rewrites the wrong row. Pass `--all` to update every match.
 `--raw` and the `USER_ENTERED` default apply as above.
+
+#### Conditional formatting
+
+List, add, and delete conditional format rules — e.g. to re-create the rules an
+uploaded `.xlsx` loses when it is converted to a Google Sheet:
+
+```bash
+gdrives sheets-rules <sheet-url>                        # Rules by tab, each with its [index]
+gdrives sheets-rules <sheet-url> --json > rules.json    # Raw rule dicts, for replay
+gdrives sheets-add-rule <sheet-url> --range "Sheet1!A2:AA" \
+    --formula '=OR($F2="Rejected", $F2="Inactive")' \
+    --strikethrough --text-color "#999999"              # Custom-formula rule
+gdrives sheets-add-rule <sheet-url> --rule-json rule.json   # Replay one captured rule
+gdrives sheets-delete-rule <sheet-url> --tab Sheet1 --index 0  # Prompts first; -y skips
+```
+
+Rules on a tab form an ordered list and the first matching rule wins.
+`sheets-add-rule` inserts at `--index` (default `0`, the top), and deleting a rule
+shifts every later one up, so re-run `sheets-rules` before aiming another delete.
+`--range` is repeatable (all ranges must be on one tab). The format options are
+`--bold`, `--italic`, `--strikethrough`, `--underline`, `--text-color`, and
+`--background`, with colors as hex. `--rule-json` takes one rule object, or one
+entry of the `sheets-rules --json` list (e.g. `jq '.[0]' rules.json`). Its ranges
+keep their numeric `sheetId`, so replaying onto a different spreadsheet needs a
+tab with that ID there.
+
+Two API behaviors to know. First, an open-ended range like `A2:AA` is stored
+clamped to the tab's current size, so it lists back as `A2:AA1000`. Second,
+color-scale (gradient) rules show in `sheets-rules` and replay through
+`--rule-json`, but the builder only makes custom-formula rules. `sheets-rules`
+uses the read-only scope; the other two use the `spreadsheets` write scope.
 
 ### Read and edit Google Docs content
 
@@ -294,6 +325,6 @@ There are a few options out there, but most haven't been touched in years, and n
 
 ## Security & privacy
 
-- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`) and the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`) request write access, via the `spreadsheets` and `documents` scopes respectively; a read command never loads or requests them.
+- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`) and the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`) request write access, via the `spreadsheets` and `documents` scopes respectively; a read command never loads or requests them.
 - The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
