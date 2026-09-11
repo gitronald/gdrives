@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `sheets-add-rule` — add a custom-formula rule over one or more `--range`s with `--bold`, `--italic`, `--strikethrough`, `--underline`, `--text-color`, and `--background` (colors as hex), inserted at `--index` (default: first). `--rule-json` replays one captured rule instead.
   - `sheets-delete-rule` — delete the rule at `--index` on `--tab` (default: first tab); shows the rule and prompts unless `-y`, and refuses an out-of-range index.
 - `gdrives.sheets` helpers behind them: `list_conditional_rules`, `add_conditional_rule`, `delete_conditional_rule`, `build_formula_rule`, `read_rule_json`, `describe_rule`, `a1_to_grid_range` / `grid_range_to_a1` (A1 strings to 0-based `GridRange` dicts and back), `hex_to_color` / `color_to_hex`, `column_index`, `tab_sheet_ids`, and `batch_update_spreadsheet` (the structural `spreadsheets.batchUpdate`, distinct from `batch_update_values`).
+- A test run that skips the live integration tests because they aren't configured now ends with a short "live integration tests skipped" note naming what is missing. Before, the skips only showed up in the skipped count. The README has a new Development section covering how to set up the live tests.
 
 ## [0.7.1] - 2026-09-05
 

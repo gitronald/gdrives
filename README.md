@@ -313,6 +313,48 @@ gdrives show-drives
 Output includes URL, type (personal/shared), name, and ID for each accessible
 drive, and is cached to `.gdrives/cache.json` for use by the other commands.
 
+## Development
+
+```bash
+uv sync --all-groups                    # install with dev tools
+uv run pytest                           # all tests, with coverage
+uv run pytest -m "not integration"      # unit tests only
+uv run ruff check . && uv run pyrefly check
+```
+
+The unit tests run against fake Drive, Sheets, and Docs services, so they need no
+credentials, and they must keep line and branch coverage at 100%.
+
+### Live integration tests
+
+The tests marked `integration` call the real Sheets and Docs APIs, to catch what
+the fakes can't: request-shape mismatches, scope problems, and how the API
+actually stores things. They need your own throwaway files, and they **skip**
+rather than fail when those aren't configured. A run that skips them ends with a
+"live integration tests skipped" note naming what is missing.
+
+1. Set up a **service account** (see [Setup](#service-account--automation-or-sharing-access-with-others)).
+   The live tests always use it, even when OAuth is configured.
+2. In the service account's Google Cloud project, enable the **Google Sheets API**
+   and the **Google Docs API**.
+3. Create a throwaway **Google Sheet** and a throwaway **Google Doc**. Share each
+   one with the service account's email (`client_email` in its key file) as
+   **Editor**.
+4. Put their IDs (the long string in each file's URL) in a `.env` file at the
+   repo root. It is gitignored, so the IDs stay out of version control:
+
+   ```bash
+   GDRIVES_TEST_SPREADSHEET_ID=<sheet id>
+   GDRIVES_TEST_DOCUMENT_ID=<doc id>
+   ```
+
+5. Run `uv run pytest -m integration`.
+
+The tests leave your files as they found them. Each Sheets test adds its own
+temporary `itest_<hex>` tab and deletes it afterward. Each Docs test appends a
+uniquely tagged paragraph and removes it. The whole-body Docs writes are never
+run live, because they would wipe the document.
+
 ## Related projects
 
 There are a few options out there, but most haven't been touched in years, and none did the mapping tasks implemented here.
