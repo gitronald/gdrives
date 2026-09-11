@@ -1,10 +1,10 @@
 ---
 id: 3
 slug: sheets-conditional-formatting
-status: active
+status: done
 branch: feature/sheets-conditional-formatting
 created: 2026-09-08T12:12:39-07:00
-concluded:
+concluded: 2026-09-11T13:59:06-07:00
 pr: https://github.com/gitronald/gdrives/pull/26
 ---
 
@@ -194,3 +194,51 @@ on the `get` response and a recorder for `batchUpdate` requests, then cover:
 - README gained a **Development** section (unit vs. live commands, and a
   step-by-step for the service account, APIs, throwaway sheet/doc shared as
   Editor, and the `.env` IDs); CHANGELOG `[Unreleased]` notes both.
+
+### 2026-09-11 — close
+
+- Commit `e31d960` (review fixes). Check gate (ruff check, ruff format --check,
+  pyrefly, pytest) green: 555 passed, 100% line + branch coverage.
+
+#### Review follow-up
+
+`/code-review` at medium (correctness + reuse/simplification finders, per-file
+verifiers): 5 candidates, 5 confirmed, 0 rejected; the gap sweep added none.
+All five actioned, each with a test:
+
+- **Ranges on more than one tab were not rejected.** `sheets-add-rule` with
+  `--range` on two tabs sent mixed `sheetId`s and got an opaque API 400.
+  `build_formula_rule` now raises (an omitted `sheetId` counts as 0) —
+  `test_ranges_on_two_tabs_raise`, `test_omitted_sheet_id_is_the_first_tab`,
+  `test_ranges_on_two_tabs_refuse_without_writing`.
+- **No-format-option check ran after an API round trip**, contradicting the
+  `run_add_rule` docstring. Now checked before resolving the source —
+  `test_no_format_fails_before_any_call`.
+- **`run_delete_rule` read the spreadsheet twice** (`tab_sheet_ids`, then
+  `list_conditional_rules`). Now one read via `_rule_tabs`, shared by `_tab_ids`
+  and `_flatten_rules` — `test_yes_deletes_on_named_tab` asserts one read, one write.
+- **`delete_conditional_rule` accepted a negative index**, unlike
+  `add_conditional_rule`. Now raises — `test_delete_negative_index_raises`.
+- **Duplicated test helper.** `patch_service` in `test_sheets_rules.py` copied
+  `TestRunWrite._patch_service`; both now use `patch_sheets_service` in
+  `tests/helpers.py`.
+
+No conscious no-ops.
+
+## Retrospective
+
+- The spec held up: the helper set, CLI shape, and scopes landed as planned. The
+  one correction came from the live API, not review — open-ended ranges are
+  stored clamped to the tab's size, which only a live test could reveal.
+- Filling in `--tab`'s default (first tab, like `sheets-set`) and having the
+  delete re-read the rule it targets before prompting were the right calls; both
+  kept the destructive command honest about what it was about to remove.
+- Review found no wrong results, but did find validation gaps at the library
+  boundary: a constraint the README stated (one tab per rule) was enforced by
+  nobody but the API. Worth checking every documented rule constraint for a
+  matching guard while writing the helper, not after.
+- 100% coverage did not catch the redundant read or the late validation —
+  tests asserted outcomes, not call counts or call order. Asserting the exact
+  API call sequence in `run_*` tests is cheap and catches both.
+- Live-test discoverability (the skip notice and README setup steps) was
+  unplanned scope, but it pays off for any future plan that relies on live tests.
