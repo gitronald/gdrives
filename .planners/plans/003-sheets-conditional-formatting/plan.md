@@ -173,3 +173,24 @@ on the `get` response and a recorder for `batchUpdate` requests, then cover:
   `--rule-json` onto a different spreadsheet only works when a tab with that ID
   exists there. Remapping is left to the caller (in line with the out-of-scope
   "copy all rules" convenience).
+
+### 2026-09-11 — live demo and live-test discoverability
+
+- Exercised the three commands end to end through the CLI (the live tests call
+  the helpers directly) on the live test spreadsheet. It now has three demo tabs
+  with the same small roster: `no-rules` (data only; the spreadsheet's original
+  first tab, which it must always keep), `rules-demo` (six rules, including two
+  whole-row rules on a rows-only `2:1000` range, which the API stores clamped to
+  the tab's width, `A2:Z1000`), and `rules-demo-replay` (rules captured with
+  `sheets-rules --json`, `sheetId`-remapped, replayed with `--rule-json`, then one
+  deleted with `sheets-delete-rule`). The live suites ignore these tabs.
+- Found that live-test setup was discoverable only from the integration test
+  modules' docstrings and the marker description: without the test IDs every live
+  test skips, and a plain `uv run pytest` (as CI runs it) only counts the skips.
+  Added a `pytest_terminal_summary` hook in `tests/conftest.py` that prints a
+  "live integration tests skipped" note with each reason and a pointer to the
+  README. It runs `trylast`, so it lands after the coverage table next to the
+  final counts, and it is silent when the live tests run or are deselected.
+- README gained a **Development** section (unit vs. live commands, and a
+  step-by-step for the service account, APIs, throwaway sheet/doc shared as
+  Editor, and the `.env` IDs); CHANGELOG `[Unreleased]` notes both.
