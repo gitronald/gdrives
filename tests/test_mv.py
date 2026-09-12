@@ -244,6 +244,40 @@ class TestRun:
         assert update["addParents"] == "A"
         assert update["body"] == {"name": "new.txt"}
 
+    def test_dest_id_alias_to_current_parent_is_not_a_move(self, monkeypatch):
+        # --dest-id takes aliases like "root", which files.get answers with the
+        # folder's real ID. Comparing the alias against the item's parent would
+        # never match, sending a redundant add/remove of the very same folder.
+        svc = FakeDriveService(
+            {
+                "F": item("notes.txt", parents=["R"]),
+                "root": item("My Drive", id="R", folder=True),
+            }
+        )
+        patch_service(monkeypatch, svc)
+
+        mv.run(None, None, source_id="F", dest_id="root", name="new.txt")
+
+        (update,) = svc.updates
+        assert update["body"] == {"name": "new.txt"}
+        assert "addParents" not in update  # already in that folder
+        assert "removeParents" not in update
+
+    def test_dest_id_alias_sends_the_canonical_id(self, monkeypatch):
+        svc = FakeDriveService(
+            {
+                "F": item("notes.txt", parents=["P"]),
+                "alias": item("archive", id="A", folder=True),
+            }
+        )
+        patch_service(monkeypatch, svc)
+
+        mv.run(None, None, source_id="F", dest_id="alias")
+
+        (update,) = svc.updates
+        assert update["addParents"] == "A"  # the real ID, not "alias"
+        assert update["removeParents"] == "P"
+
     def test_dry_run_makes_no_update_and_stays_read_only(self, monkeypatch, capsys):
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
         rec = patch_service(monkeypatch, svc)

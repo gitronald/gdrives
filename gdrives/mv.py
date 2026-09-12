@@ -175,6 +175,10 @@ def run(
     remove_parent: str | None = None
     if parent_id:
         folder = check_destination(service, parent_id, meta)
+        # Compare the ID the API echoed back, not the one passed in: --dest-id
+        # takes aliases like "root", which never equal the item's real parent ID
+        # and would send a redundant add/remove of the very same folder.
+        parent_id = folder["id"]
         remove_parent = sole_parent(meta)
         if parent_id == remove_parent:
             # Already in the destination folder: a rename may still be pending.
