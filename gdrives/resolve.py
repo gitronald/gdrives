@@ -125,6 +125,8 @@ def resolve_shared_path(
         service: Drive API service instance.
         allow_files: If True, the final segment can match files or folders.
     """
+    if not path.strip("/").strip():
+        raise DrivePathError("Shared with me path must not be empty")
     service = service or build_drive_service()
     parts = path.strip("/").split("/")
     first_segment = parts[0]

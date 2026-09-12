@@ -465,3 +465,39 @@ class TestRun:
         (update,) = svc.updates
         assert update["body"] == {"name": "new.txt"}
         assert "addParents" not in update  # already in that folder
+
+
+@pytest.mark.parametrize("dest", ["Team/2026", "Team/2026/"])
+def test_destination_can_be_a_drive_name_containing_slashes(monkeypatch, dest):
+    monkeypatch.setattr(
+        "gdrives.drives.load",
+        lambda: [{"id": "D", "name": "Team/2026", "type": "shared", "url": ""}],
+    )
+    patch_paths(monkeypatch, {}, {})
+    assert mv.resolve_destination(None, dest) == ("D", None)
+
+
+def test_trailing_slash_requires_existing_destination_folder(monkeypatch):
+    monkeypatch.setattr("gdrives.drives.load", lambda: [])
+    patch_paths(monkeypatch, {"My Drive": "R"}, {})
+    with pytest.raises(DrivePathError, match="not found"):
+        mv.resolve_destination(None, "My Drive/missing/")
+
+
+def test_blank_final_destination_name_is_rejected(monkeypatch):
+    monkeypatch.setattr("gdrives.drives.load", lambda: [])
+    with pytest.raises(ValueError, match="destination name must not be empty"):
+        mv.resolve_destination(None, "My Drive/   ")
+
+
+@pytest.mark.parametrize(
+    "source, source_id, dest_id, label",
+    [
+        ("", None, None, "SOURCE"),
+        (None, " ", None, "--source-id"),
+        ("F", None, "", "--dest-id"),
+    ],
+)
+def test_blank_source_and_id_flags_are_rejected(source, source_id, dest_id, label):
+    with pytest.raises(ValueError, match=f"{label} must not be empty"):
+        mv.check_arguments(source, None, source_id, dest_id, "new")

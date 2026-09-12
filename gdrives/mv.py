@@ -46,6 +46,13 @@ def check_arguments(
     """
     if (source is None) == (source_id is None):
         raise ValueError("pass exactly one of SOURCE or --source-id")
+    for label, value in (
+        ("SOURCE", source),
+        ("--source-id", source_id),
+        ("--dest-id", dest_id),
+    ):
+        if value is not None and not value.strip():
+            raise ValueError(f"{label} must not be empty")
     # An empty string is not a destination. Without this it would slip past the
     # "nothing to do" check below (it is not None) and reach files.update as a
     # request with no name and no parents.
@@ -139,6 +146,7 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
     A path is first tried whole as an existing folder; only if that fails is the
     final segment treated as a new name under an existing parent.
     """
+    from gdrives.drives import find_drive, load
     from gdrives.resolve import (
         AmbiguousPathError,
         DrivePathError,
@@ -152,12 +160,19 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
     if "/" not in stripped:
         # A drive root written with a trailing slash, e.g. "My Drive/".
         return resolve_path(stripped, service), None
+    # Drive names may themselves contain slashes; honor the same cached roots
+    # as source path resolution before splitting off a prospective new name.
+    drive = find_drive(load(), stripped)
+    if drive is not None:
+        return drive["id"], None
     parent_path, _, final = stripped.rpartition("/")
     if not parent_path:
         raise DrivePathError(
             f"destination '{dest}' has no drive name; a Drive path starts with "
             "a drive (e.g. 'My Drive/archive')"
         )
+    if not final.strip():
+        raise ValueError("destination name must not be empty")
     # Resolve the parent once, then probe only the final segment against it.
     # Resolving the whole path first and falling back would re-walk every
     # ancestor a second time.
@@ -170,6 +185,8 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
         # user never asked for, so the ambiguity must surface.
         raise
     except DrivePathError:
+        if dest.endswith("/"):
+            raise
         return parent_id, final
 
 

@@ -3,8 +3,10 @@
 import csv
 import io
 import logging
+import re
 import sys
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 from gdrives.auth import build_drive_service
@@ -113,10 +115,13 @@ def format_markdown(rows: list[DriveEntry]) -> str:
     lines = []
     for r in rows:
         indent = "  " * r.depth
+        name = re.sub(r"([\\`*_\[\]#!])", r"\\\1", escape(r.name, quote=False))
+        name = name.replace("\r", " ").replace("\n", " ")
         if r.url:
-            lines.append(f"{indent}- [{r.name}]({r.url})")
+            url = r.url.replace("(", "%28").replace(")", "%29").replace(" ", "%20")
+            lines.append(f"{indent}- [{name}]({url})")
         else:
-            lines.append(f"{indent}- {r.name}")
+            lines.append(f"{indent}- {name}")
     return "\n".join(lines) + "\n"
 
 
@@ -137,7 +142,7 @@ def format_csv(rows: list[DriveEntry]) -> str:
     for r in rows:
         writer.writerow(
             {
-                "path": r.path.rstrip("/"),
+                "path": r.path.removesuffix("/") if r.is_folder else r.path,
                 "name": r.name,
                 "type": r.file_type,
                 "modified": r.modified,
@@ -196,6 +201,7 @@ def ls(
         for path in save_as:
             out = Path(path)
             text = _render(rows, out.suffix)
+            out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(text, encoding="utf-8")
             print(f"Wrote {out}", file=sys.stderr)
     else:

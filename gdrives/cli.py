@@ -121,6 +121,9 @@ def ls(
     ] = False,
 ):
     """List contents of a Drive folder by path or ID."""
+    if path is not None and drive_id is not None:
+        print("Error: PATH and --drive-id are mutually exclusive", file=sys.stderr)
+        raise SystemExit(1)
     if shared_with_me and drive_id:
         print(
             "Error: --shared-with-me and --drive-id are mutually exclusive",
