@@ -37,6 +37,7 @@ from gdrives.files import (
     WalkItem,
     extract_drive_id,
     file_type,
+    get_file_metadata,
     is_folder,
     is_native,
     walk_tree,
@@ -178,18 +179,6 @@ def unique_path(target: Path) -> Path:
         if not candidate.exists():
             return candidate
         n += 1
-
-
-def get_file_metadata(service: Service, file_id: str) -> DriveFile:
-    """Fetch id, name, and mimeType for a Drive file or folder.
-
-    Includes supportsAllDrives so IDs in shared drives resolve.
-    """
-    return (
-        service.files()
-        .get(fileId=file_id, fields="id, name, mimeType", supportsAllDrives=True)
-        .execute()
-    )
 
 
 def download_file(service: Service, file_id: str, output_path: str) -> int:

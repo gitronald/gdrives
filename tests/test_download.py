@@ -10,7 +10,6 @@ from gdrives.download import (
     download_single,
     download_walk,
     format_bytes,
-    get_file_metadata,
     print_summary,
     run,
     safe_filename,
@@ -105,19 +104,6 @@ class TestUniquePath:
         (tmp_path / "a.txt").write_text("x")
         (tmp_path / "a (1).txt").write_text("x")
         assert unique_path(tmp_path / "a.txt") == tmp_path / "a (2).txt"
-
-
-# -- get_file_metadata --
-
-
-class TestGetFileMetadata:
-    def test_requests_id_name_mime_and_all_drives(self, mock_service):
-        mock_service.files().get().execute.return_value = make_file("a.pdf", id="X")
-        meta = get_file_metadata(mock_service, "X")
-        mock_service.files().get.assert_called_with(
-            fileId="X", fields="id, name, mimeType", supportsAllDrives=True
-        )
-        assert meta["id"] == "X"
 
 
 # -- download_file --

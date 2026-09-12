@@ -7,6 +7,7 @@ from gdrives.files import (
     extract_drive_id,
     file_type,
     file_url,
+    get_file_metadata,
     is_folder,
     is_native,
     list_children,
@@ -236,6 +237,27 @@ class TestPaginateFiles:
         call_kwargs = mock_service.files().list.call_args[1]
         assert "includeItemsFromAllDrives" not in call_kwargs
         assert "supportsAllDrives" not in call_kwargs
+
+
+# -- get_file_metadata --
+
+
+class TestGetFileMetadata:
+    def test_requests_id_name_mime_and_all_drives(self, mock_service):
+        mock_service.files().get().execute.return_value = make_file("a.pdf", id="X")
+        meta = get_file_metadata(mock_service, "X")
+        mock_service.files().get.assert_called_with(
+            fileId="X", fields="id, name, mimeType", supportsAllDrives=True
+        )
+        assert meta["id"] == "X"
+
+    def test_fields_can_be_widened(self, mock_service):
+        # mv asks for parents and driveId on top of the default three.
+        mock_service.files().get().execute.return_value = make_file("a.pdf", id="X")
+        get_file_metadata(mock_service, "X", fields="id, parents, driveId")
+        mock_service.files().get.assert_called_with(
+            fileId="X", fields="id, parents, driveId", supportsAllDrives=True
+        )
 
 
 # -- list_children --

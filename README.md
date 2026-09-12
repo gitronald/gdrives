@@ -4,8 +4,9 @@ Command-line tools for Google Drive.
 
 Browse Google Drives, list folder contents by path or ID, export Google Docs,
 Sheets, and Slides to Office formats, download individual files or whole folder
-trees, read and write Google Sheet cell ranges, read and edit Google Docs
-content in place, and generate hyperlinked folder maps — all from the terminal.
+trees, rename and move files and folders, read and write Google Sheet cell
+ranges, read and edit Google Docs content in place, and generate hyperlinked
+folder maps — all from the terminal.
 Human-readable Drive paths (e.g. `My Drive/projects`) resolve against a local
 drive-name cache, with first-class support for shared drives and "Shared with
 me" items. Listings carry URL, type, modified-date, owner, and sharer columns,
@@ -13,9 +14,10 @@ and can be written as nested markdown or flat CSV from a single API traversal.
 Folder downloads scan and summarize before prompting, auto-exporting
 Google-native files and streaming binaries to disk with atomic writes.
 Authenticates via OAuth, a service account, or Application Default Credentials,
-requesting read-only Drive access (`drive.readonly`) by default; the Sheets and
-Docs write commands opt into `spreadsheets` / `documents` scopes stored in
-separate tokens, so read-only users are never re-prompted. Built on the
+requesting read-only Drive access (`drive.readonly`) by default; the Sheets,
+Docs, and `mv` write commands opt into `spreadsheets` / `documents` / `drive`
+scopes stored in separate tokens, so read-only users are never re-prompted.
+Built on the
 [Google Drive API v3](https://developers.google.com/drive/api/reference/rest/v3),
 [Sheets API v4](https://developers.google.com/sheets/api/reference/rest), and
 [Docs API v1](https://developers.google.com/docs/api/reference/rest) with a
@@ -25,7 +27,7 @@ Typer CLI.
 
 ```
 gdrives/
-├── cli.py       # Typer CLI: ls, export, download, show-drives, sheets-*, docs-*
+├── cli.py       # Typer CLI: ls, export, download, mv, show-drives, sheets-*, docs-*
 ├── auth.py      # OAuth, service-account, and ADC authentication
 ├── drives.py    # Drive name→ID cache (fetch, save, resolve)
 ├── resolve.py   # Path→ID resolution (drive paths and "shared with me")
@@ -33,6 +35,7 @@ gdrives/
 ├── listing.py   # DriveEntry, recursive collection, and table/markdown/CSV formatters
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
+├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
@@ -77,7 +80,9 @@ the **Google Docs API**. The write commands request a write scope cached in its
 own token so read-only access is never disturbed: `spreadsheets`
 (`gdrives_token_rw.json`) for `sheets-update`, `sheets-append`, `sheets-clear`,
 `sheets-set`, `sheets-add-rule`, and `sheets-delete-rule`; `documents` (`gdrives_token_documents.json`) for
-`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, and `docs-create`.
+`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, and `docs-create`;
+and the full `drive` scope (`gdrives_token_drive.json`) for `mv`, the only
+command that changes Drive itself.
 When more than one is configured, authentication is attempted in order: OAuth,
 then service account, then ADC.
 
@@ -104,7 +109,7 @@ Full walkthrough: [docs/setup-oauth.md](docs/setup-oauth.md).
    export GOOGLE_CONFIG_DIR=~/.google   # directory holding service_account.json
    # or: export GOOGLE_SERVICE_ACCOUNT_PATH=/path/to/key.json
    ```
-5. **Share** the target folder or shared drive with the service account's email (e.g. `drive-reader@your-project.iam.gserviceaccount.com`) as **Viewer** — it can only see what's explicitly shared with it.
+5. **Share** the target folder or shared drive with the service account's email (e.g. `drive-reader@your-project.iam.gserviceaccount.com`) as **Viewer** — it can only see what's explicitly shared with it. Share as **Contributor** instead if you want to use `mv`, which writes.
 6. Run `gdrives show-drives`. No browser flow.
 
 Full walkthrough (key rotation, revoking access): [docs/setup-service-account.md](docs/setup-service-account.md).
@@ -141,8 +146,8 @@ Default Credentials.
 ## CLI Commands
 
 Run `gdrives show-drives` once to populate the drive-name cache
-(`.gdrives/cache.json`); the `ls` and `download` commands resolve Drive paths
-against it.
+(`.gdrives/cache.json`); the `ls`, `download`, and `mv` commands resolve Drive
+paths against it.
 
 ### List Drive contents
 
@@ -304,6 +309,39 @@ downloading (`--depth` only affects folders). Google Docs, Sheets, and Slides
 auto-export to `.docx` / `.xlsx` / `.pptx`; other Google-native types (Forms,
 Drawings, etc.) are skipped.
 
+### Rename and move files and folders
+
+```bash
+gdrives mv "My Drive/notes.txt" "renamed.txt"               # Rename in place
+gdrives mv "My Drive/notes.txt" "My Drive/archive"          # Move into an existing folder
+gdrives mv "My Drive/notes.txt" "My Drive/archive/new.txt"  # Move and rename in one call
+gdrives mv "My Drive/notes.txt" "My Drive/archive" --dry-run   # Print the change, make none
+gdrives mv --source-id <file-id> --dest-id <folder-id> --name new.txt  # Skip path resolution
+```
+
+Like Unix `mv`, the destination decides the operation: a bare name (no `/`)
+renames in place, a path that resolves to an existing folder moves the item into
+it under its current name, and a path whose parent folder exists but whose final
+segment does not does both in a single `files.update` call. `--dry-run` resolves
+everything and prints the intended change without writing, so it stays on the
+read-only scope.
+
+This is the one command that changes Drive itself, and it needs the full `drive`
+scope — `drive.readonly` cannot call `files.update` — so any `mv` without
+`--dry-run` authorizes that scope into its own `gdrives_token_drive.json`, even
+if the move turns out to be a no-op. Two moves are refused
+rather than guessed at: one whose item has several parent folders (Drive allows
+that, and `mv` will not choose which one to detach from), and one that crosses
+drives, which `files.update` cannot do; a folder is also refused as a
+destination for itself or for one of its own descendants. Drive permits
+duplicate names within a folder, so renaming onto a name already in use is
+allowed.
+
+Under a **service account**, the `drive` scope is not enough on its own: the
+file or folder must also be shared with the service account as **Contributor**
+or higher. Viewer is read-only and `files.update` fails with a 403 no matter
+which scope was granted.
+
 ### Show available drives
 
 ```bash
@@ -367,6 +405,6 @@ There are a few options out there, but most haven't been touched in years, and n
 
 ## Security & privacy
 
-- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`) and the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`) request write access, via the `spreadsheets` and `documents` scopes respectively; a read command never loads or requests them.
-- The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
+- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope.
+- The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
