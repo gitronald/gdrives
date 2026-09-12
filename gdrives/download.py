@@ -25,6 +25,7 @@ by us.
 
 import re
 import sys
+from os.path import lexists
 from pathlib import Path
 
 import typer
@@ -42,6 +43,7 @@ from gdrives.files import (
     is_native,
     walk_tree,
 )
+from gdrives.local import atomic_output
 
 # Map Google-native type label -> local extension, derived from the canonical
 # export table (export.NATIVE_EXPORTS) so download and `gdrives export` never drift.
@@ -170,13 +172,13 @@ def unique_path(target: Path) -> Path:
     Mirrors Google Drive Web UI's display-time dedup convention so that locally
     disambiguated names look the way Drive would have rendered them.
     """
-    if not target.exists():
+    if not lexists(target):
         return target
     stem, suffix, parent = target.stem, target.suffix, target.parent
     n = 1
     while True:
         candidate = parent / f"{stem} ({n}){suffix}"
-        if not candidate.exists():
+        if not lexists(candidate):
             return candidate
         n += 1
 
@@ -184,23 +186,17 @@ def unique_path(target: Path) -> Path:
 def download_file(service: Service, file_id: str, output_path: str) -> int:
     """Download a binary Drive file to output_path. Returns bytes written.
 
-    Streams chunks straight to a temporary ``.part`` file and renames it into
+    Streams chunks straight to a private temporary file and renames it into
     place, so memory stays bounded regardless of file size. A failed download
-    removes the partial ``.part`` file and leaves nothing at the final path.
+    removes the temporary file and preserves any existing final file.
     """
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     target = Path(output_path)
-    tmp = target.with_name(target.name + ".part")
-    try:
-        with tmp.open("wb") as fh:
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-        tmp.replace(target)
-    finally:
-        # On success tmp was renamed away (no-op); on failure drop the partial.
-        tmp.unlink(missing_ok=True)
+    with atomic_output(target) as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
     return target.stat().st_size
 
 
@@ -233,24 +229,27 @@ def download_walk(service: Service, items: list[WalkItem], output_dir: str) -> N
     """Download a materialized ``walk_tree`` into output_dir, depth-first.
 
     Consumes the same list ``summarize`` counted, so the download can't diverge
-    from the summary. Each item's local parent directory is ``output_dir`` joined
-    with its sanitized ancestor names; a within-depth folder creates its
+    from the summary. A stack tracks each folder's allocated local directory,
+    keeping duplicate or sanitized names distinct. A within-depth folder creates its
     subdirectory (even when empty) and prints ``-> subdir/``, while a
     depth-limited folder prints a skip notice. Messages fire here, at download
     time, in the walk's depth-first order.
     """
     out = Path(output_dir)
     _ensure_dir(out)
+    parents = [out]
 
     for item in items:
-        parent = out.joinpath(*(safe_filename(a) for a in item.ancestors))
+        del parents[item.depth + 1 :]
+        parent = parents[item.depth]
         f = item.file
         if is_folder(f):
             name = safe_filename(f["name"])
             if item.descended:
-                subdir = parent / name
+                subdir = unique_path(parent / name)
                 print(f"  -> {subdir}/", file=sys.stderr)
                 _ensure_dir(subdir)
+                parents.append(subdir)
             else:
                 print(f"  skip subfolder (depth limit): {name}/", file=sys.stderr)
             continue
@@ -308,7 +307,7 @@ def run(
     summary = summarize(items)
     print_summary(summary, output_dir)
 
-    if summary["binary_files"] == 0 and summary["auto_export"] == 0:
+    if not (summary["binary_files"] or summary["auto_export"] or summary["subfolders"]):
         print("\nNothing to download.", file=sys.stderr)
         return
 
