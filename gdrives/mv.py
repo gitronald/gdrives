@@ -46,6 +46,13 @@ def check_arguments(
     """
     if (source is None) == (source_id is None):
         raise ValueError("pass exactly one of SOURCE or --source-id")
+    # An empty string is not a destination. Without this it would slip past the
+    # "nothing to do" check below (it is not None) and reach files.update as a
+    # request with no name and no parents.
+    if dest is not None and not dest.strip():
+        raise ValueError("DEST must not be empty")
+    if name is not None and not name.strip():
+        raise ValueError("--name must not be empty")
     if dest is not None and (dest_id or name):
         raise ValueError("DEST cannot be combined with --dest-id or --name")
     if dest is None and not (dest_id or name):
@@ -73,6 +80,29 @@ def sole_parent(meta: DriveFile) -> str:
     return parents[0]
 
 
+def _is_descendant(service: Service, folder: DriveFile, ancestor_id: str) -> bool:
+    """True when ``folder`` sits somewhere under ``ancestor_id``.
+
+    Walks parents upward to the drive root, one ``files.get`` per level, so the
+    cost is the destination's depth and only moves of a *folder* pay it. The
+    ``seen`` set is a safety belt: if a cycle already exists in the Drive, this
+    returns False instead of looping forever.
+    """
+    seen: set[str] = set()
+    current = folder
+    while True:
+        parents = current.get("parents") or []
+        if not parents:
+            return False
+        parent_id = parents[0]
+        if parent_id == ancestor_id:
+            return True
+        if parent_id in seen:
+            return False
+        seen.add(parent_id)
+        current = get_metadata(service, parent_id)
+
+
 def check_destination(service: Service, parent_id: str, source: DriveFile) -> DriveFile:
     """Fetch the destination folder, refusing a non-folder or a cross-drive move.
 
@@ -88,6 +118,16 @@ def check_destination(service: Service, parent_id: str, source: DriveFile) -> Dr
             f"cannot move '{source['name']}' into '{folder['name']}': "
             "files.update cannot move items between drives"
         )
+    # A folder cannot become its own parent or descend into its own subtree:
+    # files.update would happily build that request, and a cycle in the parent
+    # graph makes walk_tree recurse without end.
+    if folder["id"] == source["id"]:
+        raise ValueError(f"cannot move '{source['name']}' into itself")
+    if is_folder(source) and _is_descendant(service, folder, source["id"]):
+        raise ValueError(
+            f"cannot move '{source['name']}' into '{folder['name']}': "
+            "that folder is inside it"
+        )
     return folder
 
 
@@ -99,17 +139,38 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
     A path is first tried whole as an existing folder; only if that fails is the
     final segment treated as a new name under an existing parent.
     """
-    from gdrives.resolve import DrivePathError, resolve_path
+    from gdrives.resolve import (
+        AmbiguousPathError,
+        DrivePathError,
+        resolve_path,
+        walk_segments,
+    )
 
     if "/" not in dest:
         return None, dest
+    stripped = dest.rstrip("/")
+    if "/" not in stripped:
+        # A drive root written with a trailing slash, e.g. "My Drive/".
+        return resolve_path(stripped, service), None
+    parent_path, _, final = stripped.rpartition("/")
+    if not parent_path:
+        raise DrivePathError(
+            f"destination '{dest}' has no drive name; a Drive path starts with "
+            "a drive (e.g. 'My Drive/archive')"
+        )
+    # Resolve the parent once, then probe only the final segment against it.
+    # Resolving the whole path first and falling back would re-walk every
+    # ancestor a second time.
+    parent_id = resolve_path(parent_path, service)
     try:
-        return resolve_path(dest, service), None
+        return walk_segments(service, parent_id, [final]), None
+    except AmbiguousPathError:
+        # Several folders share this name. Treating that as "no such folder,
+        # so it must be a new name" would silently move the item somewhere the
+        # user never asked for, so the ambiguity must surface.
+        raise
     except DrivePathError:
-        parent_path, _, final = dest.rstrip("/").rpartition("/")
-        if not parent_path:
-            raise
-        return resolve_path(parent_path, service), final
+        return parent_id, final
 
 
 def describe(meta: DriveFile, folder: DriveFile | None, new_name: str | None) -> str:
@@ -140,6 +201,7 @@ def apply_move(
         kwargs["body"] = {"name": name}
     if add_parent:
         kwargs["addParents"] = add_parent
+    if remove_parent:
         kwargs["removeParents"] = remove_parent
     return service.files().update(**kwargs).execute()
 

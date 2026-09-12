@@ -109,7 +109,7 @@ Full walkthrough: [docs/setup-oauth.md](docs/setup-oauth.md).
    export GOOGLE_CONFIG_DIR=~/.google   # directory holding service_account.json
    # or: export GOOGLE_SERVICE_ACCOUNT_PATH=/path/to/key.json
    ```
-5. **Share** the target folder or shared drive with the service account's email (e.g. `drive-reader@your-project.iam.gserviceaccount.com`) as **Viewer** — it can only see what's explicitly shared with it.
+5. **Share** the target folder or shared drive with the service account's email (e.g. `drive-reader@your-project.iam.gserviceaccount.com`) as **Viewer** — it can only see what's explicitly shared with it. Share as **Contributor** instead if you want to use `mv`, which writes.
 6. Run `gdrives show-drives`. No browser flow.
 
 Full walkthrough (key rotation, revoking access): [docs/setup-service-account.md](docs/setup-service-account.md).
@@ -146,8 +146,8 @@ Default Credentials.
 ## CLI Commands
 
 Run `gdrives show-drives` once to populate the drive-name cache
-(`.gdrives/cache.json`); the `ls` and `download` commands resolve Drive paths
-against it.
+(`.gdrives/cache.json`); the `ls`, `download`, and `mv` commands resolve Drive
+paths against it.
 
 ### List Drive contents
 
@@ -327,12 +327,20 @@ everything and prints the intended change without writing, so it stays on the
 read-only scope.
 
 This is the one command that changes Drive itself, and it needs the full `drive`
-scope — `drive.readonly` cannot call `files.update` — so the first real move
-authorizes it into its own `gdrives_token_drive.json`. Two moves are refused
+scope — `drive.readonly` cannot call `files.update` — so any `mv` without
+`--dry-run` authorizes that scope into its own `gdrives_token_drive.json`, even
+if the move turns out to be a no-op. Two moves are refused
 rather than guessed at: one whose item has several parent folders (Drive allows
 that, and `mv` will not choose which one to detach from), and one that crosses
-drives, which `files.update` cannot do. Drive permits duplicate names within a
-folder, so renaming onto a name already in use is allowed.
+drives, which `files.update` cannot do; a folder is also refused as a
+destination for itself or for one of its own descendants. Drive permits
+duplicate names within a folder, so renaming onto a name already in use is
+allowed.
+
+Under a **service account**, the `drive` scope is not enough on its own: the
+file or folder must also be shared with the service account as **Contributor**
+or higher. Viewer is read-only and `files.update` fails with a 403 no matter
+which scope was granted.
 
 ### Show available drives
 

@@ -609,7 +609,7 @@ def mv(
         typer.Option("--dry-run", help="Print the intended change without making it"),
     ] = False,
 ):
-    """Rename and/or move a Drive file or folder (needs Drive write access).
+    """Rename and/or move a Drive file or folder (write access, except --dry-run).
 
     Like Unix mv, DEST decides the operation: a bare name renames in place, an
     existing folder path moves the item into it, and a folder path plus a new

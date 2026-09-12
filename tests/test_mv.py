@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from gdrives import mv
-from gdrives.resolve import DrivePathError
+from gdrives.resolve import AmbiguousPathError, DrivePathError
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
@@ -77,6 +77,38 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, svc: FakeDriveService) -> dic
     return rec
 
 
+def patch_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    paths: dict[str, str],
+    folders: dict[tuple[str, str], str],
+) -> dict[str, list]:
+    """Patch path resolution: ``paths`` maps a parent path to its folder ID and
+    ``folders`` maps (parent_id, segment) to the child folder's ID.
+
+    Anything absent raises DrivePathError, mirroring a name that is not a folder
+    in that parent. The returned dict records each call so a test can assert how
+    many times the tree was walked.
+    """
+    seen: dict[str, list] = {"resolve_path": [], "walk_segments": []}
+
+    def resolve_path(path, service):
+        seen["resolve_path"].append(path)
+        if path in paths:
+            return paths[path]
+        raise DrivePathError(f"folder '{path}' not found in Drive")
+
+    def walk_segments(service, folder_id, segments):
+        seen["walk_segments"].append((folder_id, segments[0]))
+        key = (folder_id, segments[0])
+        if key in folders:
+            return folders[key]
+        raise DrivePathError(f"folder '{segments[0]}' not found in Drive")
+
+    monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
+    monkeypatch.setattr("gdrives.resolve.walk_segments", walk_segments)
+    return seen
+
+
 class TestCheckArguments:
     def test_requires_a_source(self):
         with pytest.raises(ValueError, match="exactly one of SOURCE"):
@@ -93,6 +125,16 @@ class TestCheckArguments:
     def test_requires_a_destination(self):
         with pytest.raises(ValueError, match="pass a DEST path"):
             mv.check_arguments("a", None, None, None, None)
+
+    def test_rejects_empty_dest(self):
+        # Empty is not None, so without this guard it reaches files.update as a
+        # request with nothing to change.
+        with pytest.raises(ValueError, match="DEST must not be empty"):
+            mv.check_arguments("a", "   ", None, None, None)
+
+    def test_rejects_empty_name(self):
+        with pytest.raises(ValueError, match="--name must not be empty"):
+            mv.check_arguments("a", None, None, None, "")
 
 
 class TestSoleParent:
@@ -127,44 +169,123 @@ class TestCheckDestination:
         with pytest.raises(ValueError, match="between drives"):
             mv.check_destination(svc, "A", source)
 
+    def test_folder_into_itself_errors(self):
+        folder = item("A", id="A", parents=["P"], folder=True)
+        svc = FakeDriveService({"A": folder})
+        with pytest.raises(ValueError, match="into itself"):
+            mv.check_destination(svc, "A", folder)
+
+    def test_folder_into_own_descendant_errors(self):
+        # B lives inside A, so moving A into B would make the tree cyclic.
+        svc = FakeDriveService(
+            {
+                "A": item("A", id="A", parents=["P"], folder=True),
+                "B": item("B", id="B", parents=["A"], folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        with pytest.raises(ValueError, match="is inside it"):
+            mv.check_destination(svc, "B", source)
+
+    def test_deeper_descendant_is_detected(self):
+        svc = FakeDriveService(
+            {
+                "A": item("A", id="A", parents=["P"], folder=True),
+                "B": item("B", id="B", parents=["A"], folder=True),
+                "C": item("C", id="C", parents=["B"], folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        with pytest.raises(ValueError, match="is inside it"):
+            mv.check_destination(svc, "C", source)
+
+    def test_unrelated_folder_is_allowed(self):
+        svc = FakeDriveService(
+            {
+                "B": item("B", id="B", parents=["ROOT"], folder=True),
+                "ROOT": item("My Drive", id="ROOT", folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        assert mv.check_destination(svc, "B", source)["id"] == "B"
+
+    def test_moving_a_file_skips_the_ancestry_walk(self):
+        # A file can't contain anything, so no parent walk is needed.
+        svc = FakeDriveService({"B": item("B", id="B", parents=["A"], folder=True)})
+        source = item("notes.txt", id="F", parents=["P"])
+        assert mv.check_destination(svc, "B", source)["id"] == "B"
+        assert [c for c in svc.calls if c[1].get("fileId") == "A"] == []
+
+    def test_existing_cycle_does_not_loop_forever(self):
+        # Defensive: if the Drive already contains a cycle, the walk terminates.
+        svc = FakeDriveService(
+            {
+                "B": item("B", id="B", parents=["C"], folder=True),
+                "C": item("C", id="C", parents=["B"], folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        assert mv.check_destination(svc, "B", source)["id"] == "B"
+
 
 class TestResolveDestination:
     def test_bare_name_is_a_rename(self):
         assert mv.resolve_destination(None, "renamed.txt") == (None, "renamed.txt")
 
+    def test_drive_root_with_trailing_slash_is_a_move(self, monkeypatch):
+        patch_paths(monkeypatch, {"My Drive": "R"}, {})
+        assert mv.resolve_destination(None, "My Drive/") == ("R", None)
+
     def test_existing_folder_is_a_move(self, monkeypatch):
-        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda path, service: "A")
+        patch_paths(monkeypatch, {"My Drive": "R"}, {("R", "archive"): "A"})
         assert mv.resolve_destination(None, "My Drive/archive") == ("A", None)
 
     def test_missing_final_segment_is_move_and_rename(self, monkeypatch):
-        def resolve_path(path, service):
-            if path == "My Drive/archive":
-                return "A"
-            raise DrivePathError(f"folder 'new.txt' not found in Drive: {path}")
-
-        monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
+        patch_paths(monkeypatch, {"My Drive/archive": "A"}, {})
         assert mv.resolve_destination(None, "My Drive/archive/new.txt") == (
             "A",
             "new.txt",
         )
 
-    def test_rootless_path_propagates(self, monkeypatch):
-        # "/new.txt" leaves no parent path to fall back to, so the original
-        # not-found error stands rather than becoming a confusing second one.
-        def resolve_path(path, service):
-            raise DrivePathError("folder 'new.txt' not found in Drive")
+    def test_parent_is_walked_only_once(self, monkeypatch):
+        # Resolving the whole path first and falling back re-walked every
+        # ancestor a second time; the parent-first order must not.
+        seen = patch_paths(monkeypatch, {"My Drive/a/b": "B"}, {})
+        mv.resolve_destination(None, "My Drive/a/b/new.txt")
+        assert seen["resolve_path"] == ["My Drive/a/b"]
+        assert seen["walk_segments"] == [("B", "new.txt")]
 
-        monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
-        with pytest.raises(DrivePathError, match="not found"):
+    def test_ambiguous_final_segment_propagates(self, monkeypatch):
+        # Two folders share the name: treating that as "not found, so it must be
+        # a new name" would move the item somewhere never asked for.
+        def walk_segments(service, folder_id, segments):
+            raise AmbiguousPathError("multiple items named 'archive' in path:")
+
+        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda path, service: "R")
+        monkeypatch.setattr("gdrives.resolve.walk_segments", walk_segments)
+        with pytest.raises(AmbiguousPathError, match="multiple items named"):
+            mv.resolve_destination(None, "My Drive/archive")
+
+    def test_rootless_path_errors(self, monkeypatch):
+        patch_paths(monkeypatch, {}, {})
+        with pytest.raises(DrivePathError, match="has no drive name"):
             mv.resolve_destination(None, "/new.txt")
 
     def test_missing_parent_propagates(self, monkeypatch):
-        def resolve_path(path, service):
-            raise DrivePathError("folder 'nope' not found in Drive")
-
-        monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
-        with pytest.raises(DrivePathError):
+        patch_paths(monkeypatch, {}, {})
+        with pytest.raises(DrivePathError, match="not found"):
             mv.resolve_destination(None, "My Drive/nope/new.txt")
+
+
+class TestApplyMove:
+    def test_omits_remove_parents_when_absent(self):
+        # Guards the helper for a caller that adds a parent without naming one
+        # to detach; sending removeParents=None would be a malformed request.
+        svc = FakeDriveService({"F": item("notes.txt")})
+        mv.apply_move(svc, "F", add_parent="A")
+        (update,) = svc.updates
+        assert update["addParents"] == "A"
+        assert "removeParents" not in update
 
 
 class TestRun:
@@ -192,16 +313,23 @@ class TestRun:
             }
         )
         patch_service(monkeypatch, svc)
-        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda path, service: "A")
+        patch_paths(monkeypatch, {"My Drive": "R"}, {("R", "archive"): "A"})
 
         mv.run("F", "My Drive/archive")
 
-        (update,) = svc.updates
-        assert update["addParents"] == "A"
-        assert update["removeParents"] == "P"
-        assert "body" not in update  # a pure move sends no name
+        # Full-dict equality: a key corrupted only on the move branch would
+        # escape assertions that check addParents/removeParents alone.
+        assert svc.updates == [
+            {
+                "fileId": "F",
+                "fields": mv.MV_FIELDS,
+                "supportsAllDrives": True,
+                "addParents": "A",
+                "removeParents": "P",
+            }
+        ]
 
-    def test_move_and_rename_in_one_call(self, monkeypatch):
+    def test_move_and_rename_in_one_call(self, monkeypatch, capsys):
         svc = FakeDriveService(
             {
                 "F": item("notes.txt", parents=["P"]),
@@ -209,20 +337,24 @@ class TestRun:
             }
         )
         patch_service(monkeypatch, svc)
-
-        def resolve_path(path, service):
-            if path == "My Drive/archive":
-                return "A"
-            raise DrivePathError("not found")
-
-        monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
+        patch_paths(monkeypatch, {"My Drive/archive": "A"}, {})
 
         mv.run("F", "My Drive/archive/new.txt")
 
-        (update,) = svc.updates
-        assert update["body"] == {"name": "new.txt"}
-        assert update["addParents"] == "A"
-        assert update["removeParents"] == "P"
+        assert svc.updates == [
+            {
+                "fileId": "F",
+                "fields": mv.MV_FIELDS,
+                "supportsAllDrives": True,
+                "body": {"name": "new.txt"},
+                "addParents": "A",
+                "removeParents": "P",
+            }
+        ]
+        # Both halves of the action must reach the user, not just the first.
+        out = capsys.readouterr().out
+        assert "rename 'notes.txt' -> 'new.txt'" in out
+        assert "and move it into 'archive'" in out
 
     def test_by_id_flags_skip_resolution(self, monkeypatch):
         svc = FakeDriveService(
@@ -243,6 +375,17 @@ class TestRun:
         (update,) = svc.updates
         assert update["addParents"] == "A"
         assert update["body"] == {"name": "new.txt"}
+
+    def test_name_alone_renames_by_id(self, monkeypatch):
+        # --name with no DEST and no --dest-id is a valid rename-by-ID.
+        svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
+        patch_service(monkeypatch, svc)
+
+        mv.run(None, None, source_id="F", name="new.txt")
+
+        (update,) = svc.updates
+        assert update["body"] == {"name": "new.txt"}
+        assert "addParents" not in update
 
     def test_dest_id_alias_to_current_parent_is_not_a_move(self, monkeypatch):
         # --dest-id takes aliases like "root", which files.get answers with the
@@ -315,13 +458,7 @@ class TestRun:
             }
         )
         patch_service(monkeypatch, svc)
-
-        def resolve_path(path, service):
-            if path == "My Drive/archive":
-                return "A"
-            raise DrivePathError("not found")
-
-        monkeypatch.setattr("gdrives.resolve.resolve_path", resolve_path)
+        patch_paths(monkeypatch, {"My Drive/archive": "A"}, {})
 
         mv.run("F", "My Drive/archive/new.txt")
 

@@ -19,6 +19,16 @@ class DrivePathError(Exception):
     """Raised when a Drive path cannot be resolved."""
 
 
+class AmbiguousPathError(DrivePathError):
+    """Raised when a path segment matches more than one Drive item.
+
+    A distinct type because "not found" and "matched several" call for opposite
+    responses: a caller may reasonably treat a missing final segment as a name
+    to create (``mv`` does), but an ambiguous one must never be guessed at. It
+    subclasses DrivePathError so existing handlers keep catching both.
+    """
+
+
 def _ambiguous_error(
     name: str, location: str, matches: list[DriveFile]
 ) -> DrivePathError:
@@ -33,7 +43,7 @@ def _ambiguous_error(
         kind = "folder" if is_folder(m) else "file"
         owner = owner_email(m) or "unknown"
         lines.append(f"  {kind}  {m['name']}  {m['id']}  (owner: {owner})")
-    return DrivePathError("\n".join(lines))
+    return AmbiguousPathError("\n".join(lines))
 
 
 def walk_segments(
