@@ -1,7 +1,7 @@
 """Atomic local output shared by downloads, exports, and credential caching."""
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -25,7 +25,9 @@ def umask_mode() -> int:
 
 
 @contextmanager
-def atomic_output(target: Path, *, mode: int | None = None) -> Iterator[IO[bytes]]:
+def atomic_output(
+    target: Path, *, mode: int | None = None
+) -> Generator[IO[bytes], None, None]:
     """Replace target only after a successful write to a private sibling file.
 
     Each writer owns a unique temporary file, created with mode 0600. Existing
