@@ -466,3 +466,40 @@ class TestTokenCovers:
 
     def test_missing_file_is_left_to_the_loader(self, tmp_path):
         assert auth._token_covers(tmp_path / "absent.json", auth.SCOPES) is True
+
+
+def test_token_write_does_not_follow_old_temporary_symlink(tmp_path):
+    victim = tmp_path / "unrelated"
+    victim.write_text("keep")
+    token = tmp_path / "token.json"
+    scratch = tmp_path / "token.json.tmp"
+    scratch.symlink_to(victim)
+    creds = MagicMock()
+    creds.to_json.return_value = '{"token": "new"}'
+    auth._write_token(token, creds)
+    assert victim.read_text() == "keep"
+    assert scratch.is_symlink()
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("payload", ["not json", "[]", "null", "{}"])
+def test_invalid_oauth_cache_falls_back_without_deleting_it(
+    monkeypatch, tmp_path, payload, caplog
+):
+    monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+    token = tmp_path / "gdrives_token.json"
+    token.write_text(payload)
+    sentinel = object()
+    monkeypatch.setattr(
+        auth, "authenticate_service_account", lambda scopes=None: sentinel
+    )
+    assert auth.authenticate() is sentinel
+    assert token.read_text() == payload
+    assert "could not load cached OAuth token" in caplog.text
+
+
+def test_unhashable_cached_scope_does_not_crash_scope_check(tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text(json.dumps({"scopes": [{}]}))
+    assert auth._token_covers(token, auth.SCOPES)
