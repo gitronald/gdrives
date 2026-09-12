@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-11
+
 ### Added
 
 - `mv` — rename and move a Drive file or folder via `files.update`, mirroring Unix `mv`. The destination decides the operation: a bare name (no `/`) renames in place, a path that resolves to an existing folder moves the item into it under its current name, and a path whose parent folder exists but whose final segment does not does both in a single call. `--source-id`, `--dest-id`, and `--name` skip path resolution, and `--dry-run` prints the intended change without making it.
