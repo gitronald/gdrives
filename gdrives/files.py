@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit, urlunsplit
 
 # The googleapiclient Drive client (a discovery `Resource`) ships no type
 # stubs; alias it to Any so callers can annotate the `service` parameter.
@@ -42,12 +43,11 @@ def strip_url_suffix(url: str) -> str:
 
     Preserves query params for non-Drive URLs (e.g., Google Maps ?mid=).
     """
-    if "drive.google.com" in url or "docs.google.com" in url:
-        url = url.split("?")[0]
-    for suffix in ("/edit", "/view"):
-        if url.endswith(suffix):
-            url = url[: -len(suffix)]
-    return url
+    parsed = urlsplit(url)
+    if parsed.hostname not in {"drive.google.com", "docs.google.com"}:
+        return url
+    path = parsed.path.removesuffix("/edit").removesuffix("/view")
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", parsed.fragment))
 
 
 def extract_drive_id(url_or_id: str) -> str:
@@ -74,7 +74,7 @@ def escape_query_value(value: str) -> str:
 
 
 def is_folder(f: DriveFile) -> bool:
-    return file_type(f) == "folder"
+    return f.get("mimeType") == "application/vnd.google-apps.folder"
 
 
 def is_native(f: DriveFile) -> bool:
@@ -95,7 +95,11 @@ def file_type(f: DriveFile) -> str:
     mime = f.get("mimeType", "")
     if mime in GOOGLE_MIME_TYPES:
         return GOOGLE_MIME_TYPES[mime]
-    return Path(f["name"]).suffix.lstrip(".") or "unknown"
+    extension = Path(f["name"]).suffix.lstrip(".")
+    # Keep ordinary extensions distinct from the reserved Workspace labels.
+    if extension in GOOGLE_MIME_TYPES.values():
+        return "." + extension
+    return extension or "unknown"
 
 
 def file_url(f: DriveFile) -> str:
@@ -224,6 +228,8 @@ def walk_tree(
     folder is yielded with ``descended=False`` and no descendants. Folders-first
     ordering comes from ``list_children``; this function does not re-sort.
     """
+    if depth is not None and depth < 1:
+        raise ValueError("depth must be at least 1")
     level = len(_ancestors)
     for f in list_children(service, folder_id):
         if is_folder(f):
