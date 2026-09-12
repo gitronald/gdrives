@@ -196,6 +196,19 @@ def a1_quote(tab: str) -> str:
     return "'" + tab.replace("'", "''") + "'"
 
 
+def _column_indices(
+    header: list[str], columns: dict[str, str], role: str
+) -> dict[str, int]:
+    """Resolve named columns, refusing absent or ambiguous headers."""
+    unknown = [col for col in columns if col not in header]
+    if unknown:
+        raise ValueError(f"{role} column(s) not in header {header}: {unknown}")
+    duplicates = [col for col in columns if header.count(col) > 1]
+    if duplicates:
+        raise ValueError(f"ambiguous {role} column(s) in header: {duplicates}")
+    return {col: header.index(col) for col in columns}
+
+
 def find_rows(grid: list[list[str]], match: dict[str, str]) -> list[int]:
     """Return the 1-based row numbers of data rows matching all ``match`` conditions.
 
@@ -206,11 +219,7 @@ def find_rows(grid: list[list[str]], match: dict[str, str]) -> list[int]:
     """
     if not grid:
         return []
-    header = grid[0]
-    unknown = [col for col in match if col not in header]
-    if unknown:
-        raise ValueError(f"match column(s) not in header {header}: {unknown}")
-    idx = {col: header.index(col) for col in match}
+    idx = _column_indices(grid[0], match, "match")
     hits = []
     for r in range(1, len(grid)):
         row = grid[r]
@@ -247,10 +256,7 @@ def set_by_match(
     grid = pull_values(service, spreadsheet_id, quoted)
     if not grid:
         raise ValueError(f"tab {tab!r} is empty (no header row)")
-    header = grid[0]
-    unknown = [col for col in updates if col not in header]
-    if unknown:
-        raise ValueError(f"target column(s) not in header {header}: {unknown}")
+    targets = _column_indices(grid[0], updates, "target")
 
     rows = find_rows(grid, match)
     condition = ", ".join(f"{col}={value!r}" for col, value in match.items())
@@ -261,7 +267,7 @@ def set_by_match(
             f"{condition} matches rows {rows}; pass --all to update every match"
         )
 
-    letters = {col: column_letter(header.index(col)) for col in updates}
+    letters = {col: column_letter(index) for col, index in targets.items()}
     data = [
         (f"{quoted}!{letters[col]}{row}", [[value]])
         for row in rows
@@ -298,7 +304,7 @@ def parse_pairs(pairs: list[str], flag: str) -> dict[str, str]:
 # every rule after it. So list returns each rule's index alongside it, and a
 # delete is aimed by (tab, index) from a fresh list.
 
-_CELL_RE = re.compile(r"([A-Za-z]*)([0-9]*)")
+_CELL_RE = re.compile(r"(?:\$?([A-Za-z]+))?(?:\$?([0-9]+))?")
 
 
 def column_index(letters: str) -> int:
@@ -324,7 +330,7 @@ def split_a1(range_: str) -> tuple[str | None, str]:
     Splits on the *last* ``!``, since a quoted tab name may contain one but the
     cell span never does.
     """
-    if "!" not in range_:
+    if "!" not in range_ or (range_.startswith("'") and range_.endswith("'")):
         return None, range_
     tab, cells = range_.rsplit("!", 1)
     return _unquote(tab), cells
@@ -359,7 +365,6 @@ def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:
 
 def _parse_cell(ref: str, range_: str) -> tuple[int | None, int | None]:
     """Parse one A1 corner (``B3``, ``AA``, ``7``) to (column index, row number)."""
-    ref = ref.replace("$", "")  # absolute refs ($A$2) address the same cells
     match = _CELL_RE.fullmatch(ref)
     if match is None or not ref:
         raise ValueError(f"bad A1 cell reference {ref!r} in {range_!r}")
@@ -411,6 +416,8 @@ def a1_to_grid_range(
     ``tab_ids`` from :func:`tab_sheet_ids` to convert several ranges with one
     lookup.
     """
+    if not range_.strip():
+        raise ValueError("A1 range must not be empty")
     ids = tab_ids if tab_ids is not None else tab_sheet_ids(service, spreadsheet_id)
     tab, cells = split_a1(range_)
     if tab is None and _unquote(cells) in ids:
