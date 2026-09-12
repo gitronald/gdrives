@@ -148,6 +148,22 @@ def paginate_files(
     return items
 
 
+def get_file_metadata(
+    service: Service, file_id: str, *, fields: str = "id, name, mimeType"
+) -> DriveFile:
+    """Fetch metadata for one Drive file or folder.
+
+    Defaults to the id, name, and mimeType that callers dispatching on file kind
+    need; ``fields`` widens it (``mv`` also asks for ``parents`` and ``driveId``).
+    Includes supportsAllDrives so IDs in shared drives resolve.
+    """
+    return (
+        service.files()
+        .get(fileId=file_id, fields=fields, supportsAllDrives=True)
+        .execute()
+    )
+
+
 def list_children(
     service: Service, folder_id: str, *, corpora: str = "allDrives"
 ) -> list[DriveFile]:

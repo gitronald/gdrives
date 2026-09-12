@@ -59,8 +59,7 @@ def create_document(service: Service, title: str) -> str:
     """Create an empty document titled ``title`` and return its ID.
 
     ``documents.create`` places the new file in the root of the caller's My
-    Drive; moving it into a folder needs Drive write access, which this package
-    does not request.
+    Drive; ``gdrives mv`` moves it into a folder afterwards.
     """
     doc = service.documents().create(body={"title": title}).execute()
     return doc["documentId"]

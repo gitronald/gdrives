@@ -571,10 +571,60 @@ def docs_create(
 ):
     """Create a new Google Doc in the root of My Drive (needs write access).
 
-    Prints the new document's URL. It lands in My Drive root: moving it into a
-    folder needs Drive write access, which gdrives does not request.
+    Prints the new document's URL. It lands in My Drive root; move it into a
+    folder afterwards with `gdrives mv`.
     """
     from gdrives.docs import run_create
 
     with _cli_errors():
         run_create(title, text_file=text_file)
+
+
+@app.command()
+def mv(
+    source: Annotated[
+        str | None,
+        typer.Argument(help="Drive path, URL, or file ID to move (e.g. 'My Drive/a')"),
+    ] = None,
+    dest: Annotated[
+        str | None,
+        typer.Argument(
+            help="New name, an existing folder path, or a folder path + new name"
+        ),
+    ] = None,
+    source_id: Annotated[
+        str | None,
+        typer.Option("--source-id", help="Source file/folder ID (skip resolution)"),
+    ] = None,
+    dest_id: Annotated[
+        str | None,
+        typer.Option("--dest-id", help="Destination folder ID (skip resolution)"),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="New name, used with or instead of --dest-id"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the intended change without making it"),
+    ] = False,
+):
+    """Rename and/or move a Drive file or folder (needs Drive write access).
+
+    Like Unix mv, DEST decides the operation: a bare name renames in place, an
+    existing folder path moves the item into it, and a folder path plus a new
+    final segment does both in one call. Examples:
+    gdrives mv "My Drive/notes.txt" "renamed.txt";
+    gdrives mv "My Drive/notes.txt" "My Drive/archive" --dry-run
+    """
+    from gdrives.mv import run
+
+    with _cli_errors():
+        run(
+            source,
+            dest,
+            source_id=source_id,
+            dest_id=dest_id,
+            name=name,
+            dry_run=dry_run,
+        )

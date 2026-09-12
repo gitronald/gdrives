@@ -29,7 +29,7 @@ Run any `gdrives` command (e.g., `uv run gdrives show-drives`). A browser window
 
 If the token expires or is revoked, the auth flow will automatically re-trigger.
 
-The first `sheets-update`, `sheets-append`, `sheets-clear`, or `sheets-set` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Likewise, the first `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, or `docs-create` run authorizes the `documents` write scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_documents.json`. Read commands keep using the read-only token untouched, and each write scope has its own token, so authorizing one never re-prompts for another. A cached token whose grant does not cover the requested scope is discarded and re-authorized instead of failing with a 403.
+The first `sheets-update`, `sheets-append`, `sheets-clear`, or `sheets-set` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Likewise, the first `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, or `docs-create` run authorizes the `documents` write scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_documents.json`. The first `mv` that actually moves or renames something authorizes the full `drive` scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_drive.json` (`mv --dry-run` does not). Read commands keep using the read-only token untouched, and each write scope has its own token, so authorizing one never re-prompts for another. A cached token whose grant does not cover the requested scope is discarded and re-authorized instead of failing with a 403.
 
 ## Files
 
@@ -39,5 +39,6 @@ The first `sheets-update`, `sheets-append`, `sheets-clear`, or `sheets-set` run 
 | `gdrives_token.json` | Read-only token, auto-generated after first authorization |
 | `gdrives_token_rw.json` | Sheets write token, auto-generated on first Sheets write command |
 | `gdrives_token_documents.json` | Docs write token, auto-generated on first Docs write command |
+| `gdrives_token_drive.json` | Drive write token, auto-generated on first `mv` that writes |
 
-Scopes: `drive.readonly` (read commands), `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`), and `documents` (Docs write commands: `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`).
+Scopes: `drive.readonly` (read commands), `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`), `documents` (Docs write commands: `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `drive` (`mv`).
