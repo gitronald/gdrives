@@ -545,3 +545,33 @@ class TestYesFlag:
             assert isinstance(param, typer.core.TyperOption)
             assert param.opts == ["-y", "--yes"], name
             assert param.help == "Skip the confirmation prompt", name
+
+
+class TestMv:
+    def test_delegates_with_options(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.mv.run",
+            lambda source, dest, *, source_id, dest_id, name, dry_run: rec.update(
+                s=source, d=dest, sid=source_id, did=dest_id, n=name, dry=dry_run
+            ),
+        )
+        cli.mv("My Drive/notes.txt", "My Drive/archive", dry_run=True)
+        assert rec == {
+            "s": "My Drive/notes.txt",
+            "d": "My Drive/archive",
+            "sid": None,
+            "did": None,
+            "n": None,
+            "dry": True,
+        }
+
+    def test_value_error_exits_1(self, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise ValueError("pass exactly one of SOURCE or --source-id")
+
+        monkeypatch.setattr("gdrives.mv.run", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.mv()
+        assert exc.value.code == 1
+        assert "Error: pass exactly one of SOURCE" in capsys.readouterr().err

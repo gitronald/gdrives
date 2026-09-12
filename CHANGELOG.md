@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-11
+
+### Added
+
+- `mv` — rename and move a Drive file or folder via `files.update`, mirroring Unix `mv`. The destination decides the operation: a bare name (no `/`) renames in place, a path that resolves to an existing folder moves the item into it under its current name, and a path whose parent folder exists but whose final segment does not does both in a single call. `--source-id`, `--dest-id`, and `--name` skip path resolution, and `--dry-run` prints the intended change without making it.
+- Two moves are refused rather than guessed at: one that crosses drives (`files.update` cannot do it, detected as a `driveId` mismatch) and one whose item has several parent folders (the parents are listed instead of picking one to detach from). Duplicate names within a folder are allowed, as Drive permits them.
+- `gdrives.mv` helpers behind the command: `resolve_destination` (a path to `(parent_id, new_name)`), `check_destination`, `sole_parent`, `check_arguments`, `describe`, and `apply_move`.
+
+### Changed
+
+- `get_file_metadata` moved from `gdrives.download` to `gdrives.files`, where the other Drive API wrappers live, and gained a `fields` parameter — `mv` needs `parents` and `driveId` beyond the default id/name/mimeType. `gdrives.download` imports it from its new home.
+
+### Security
+
+- `mv` is the first command that changes Drive itself, so it requests the full `drive` scope; `drive.readonly` cannot call `files.update`. The grant is cached in its own `gdrives_token_drive.json`, leaving the read-only, Sheets, and Docs tokens untouched, and `mv --dry-run` stays on the read-only default so previewing a move never triggers a write consent. ADC has no per-scope token to fall back on, so an ADC login needs the `drive` scope for `mv` — see `docs/setup-adc.md`.
+
 ## [0.8.0] - 2026-09-11
 
 ### Added

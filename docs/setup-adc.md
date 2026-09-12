@@ -19,6 +19,8 @@ A browser opens for consent. This writes credentials to `~/.config/gcloud/applic
 
 > **The `--scopes` flag is required.** A plain `gcloud auth application-default login` grants only the `cloud-platform` scope, which does **not** include Drive — Drive calls would fail with an insufficient-scope (403) error. Include `drive.readonly` as shown. (`cloud-platform` is added so the quota-project step below can verify the project.)
 
+> **To use `mv` under ADC, log in with the full `drive` scope instead** (`https://www.googleapis.com/auth/drive` in place of `drive.readonly`). Unlike OAuth, ADC has no separate per-scope token to fall back on: `files.update` is refused with a 403 when the login only carries `drive.readonly`.
+
 ## 3. Set a quota project
 
 User ADC needs a project to attribute API usage to:
@@ -43,4 +45,4 @@ No `GOOGLE_CONFIG_DIR`, no credential files. The same login is reused by `ls`, `
 - Other ADC sources work too: set `GOOGLE_APPLICATION_CREDENTIALS` to a service-account key, or run on GCE/Cloud Run, where ADC is provided by the metadata server.
 - To switch identities, re-run the login command; to remove cached ADC, run `gcloud auth application-default revoke`.
 
-Scope: `drive.readonly` (read-only access to Google Drive).
+Scope: `drive.readonly` (read-only access to Google Drive), or `drive` if you want `mv` to be able to rename and move files.

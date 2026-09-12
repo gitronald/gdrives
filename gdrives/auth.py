@@ -27,6 +27,12 @@ SHEETS_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # write token is touched.
 DOCS_WRITE_SCOPES = ["https://www.googleapis.com/auth/documents"]
 
+# Write scope for the Drive API itself (files.update, used by `mv` to rename and
+# reparent). Same opt-in split again: the read-only default cannot call
+# files.update, so only `mv` requests this, and it lands in its own
+# gdrives_token_drive.json rather than replacing the read-only token.
+DRIVE_WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+
 # Token filename per scope set. The read-only default and the Sheets write scope
 # keep their historical names so existing tokens stay valid; any other set gets
 # a name derived from its scopes (see _token_name).
