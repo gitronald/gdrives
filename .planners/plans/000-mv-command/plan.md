@@ -1,8 +1,8 @@
 ---
 id: 0
 slug: mv-command
-status: draft
-branch:
+status: active
+branch: feature/mv-command
 created: 2026-06-09T00:29:25-07:00
 concluded:
 pr:
