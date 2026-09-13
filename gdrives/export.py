@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from gdrives.files import Service, extract_drive_id
+from gdrives.local import atomic_output
 
 _OOXML = "application/vnd.openxmlformats-officedocument"
 
@@ -43,7 +44,8 @@ def export_file(service: Service, file_id: str, output_path: str):
     content = service.files().export(fileId=file_id, mimeType=mime).execute()
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(content)
+    with atomic_output(out) as f:
+        f.write(content)
     print(f"Exported to {output_path} ({len(content)} bytes)")
 
 

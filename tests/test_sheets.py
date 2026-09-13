@@ -636,3 +636,23 @@ class TestRunSet:
         )
         with pytest.raises(ValueError, match="no tabs"):
             run_set("SHEET_ID", {"id": "C300"}, {"status": "paid"})
+
+
+@pytest.mark.parametrize(
+    "header, match, updates, role",
+    [
+        (["id", "id", "v"], {"id": "X"}, {"v": "new"}, "match"),
+        (["id", "v", "v"], {"id": "X"}, {"v": "new"}, "target"),
+    ],
+)
+def test_keyed_update_rejects_ambiguous_columns(header, match, updates, role):
+    svc = FakeSheetsService(get={"values": [header, ["X", "X", "old"]]})
+    with pytest.raises(ValueError, match=f"ambiguous {role} column"):
+        set_by_match(svc, "sid", "S", match, updates)
+    assert [call[0] for call in svc.calls] == ["values.get"]
+
+
+def test_unreferenced_duplicate_headers_do_not_block_update():
+    svc = FakeSheetsService(get={"values": [["id", "unused", "unused"], ["X"]]})
+    set_by_match(svc, "sid", "S", {"id": "X"}, {"id": "Y"})
+    assert svc.calls[-1][1]["body"]["data"] == [{"range": "'S'!A2", "values": [["Y"]]}]

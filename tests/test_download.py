@@ -535,3 +535,90 @@ class TestDownloadWalk:
         (tmp_path / "blocker").write_text("x")
         with pytest.raises(NotADirectoryError, match="a file with that name exists"):
             download_walk(mock_service, [], str(tmp_path / "blocker"))
+
+
+def test_download_preserves_existing_part_file(mock_service, tmp_path, monkeypatch):
+    target = tmp_path / "report"
+    scratch = tmp_path / "report.part"
+    scratch.write_bytes(b"unrelated download")
+
+    class Downloader:
+        def __init__(self, stream, request):
+            self.stream = stream
+            self.chunks = iter([False, True])
+
+        def next_chunk(self):
+            self.stream.write(b"chunk")
+            return None, next(self.chunks)
+
+    monkeypatch.setattr("gdrives.download.MediaIoBaseDownload", Downloader)
+    assert download_file(mock_service, "ID", str(target)) == 10
+    assert target.read_bytes() == b"chunkchunk"
+    assert scratch.read_bytes() == b"unrelated download"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["report", "report.part"]
+
+
+@pytest.mark.parametrize("names", [("dup", "dup"), ("a/b", "a_b")])
+def test_colliding_folders_keep_separate_descendants(
+    mock_service, tmp_path, monkeypatch, names
+):
+    first, second = names
+    items = [
+        _item(make_folder(first), descended=True),
+        _item(make_folder("nested"), depth=1, descended=True),
+        _item(make_file("a"), depth=2),
+        _item(make_folder(second), descended=True),
+        _item(make_file("b"), depth=1),
+        _item(make_file("root")),
+    ]
+    destinations = {}
+    monkeypatch.setattr(
+        "gdrives.download.download_entry",
+        lambda s, f, out: destinations.update({f["name"]: out}),
+    )
+    download_walk(mock_service, items, str(tmp_path))
+    name = safe_filename(first)
+    assert destinations == {
+        "a": tmp_path / name / "nested",
+        "b": tmp_path / f"{name} (1)",
+        "root": tmp_path,
+    }
+
+
+@pytest.mark.parametrize("existing_kind", ["file", "directory", "symlink"])
+def test_folder_download_avoids_existing_local_entries(
+    mock_service, tmp_path, existing_kind
+):
+    occupied = tmp_path / "sub"
+    if existing_kind == "file":
+        occupied.write_text("keep")
+    elif existing_kind == "directory":
+        occupied.mkdir()
+    else:
+        occupied.symlink_to(tmp_path / "missing", target_is_directory=True)
+    items = [_item(make_folder("sub"), descended=True)]
+    download_walk(mock_service, items, str(tmp_path))
+    assert (tmp_path / "sub (1)").is_dir()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_unique_path_avoids_dangling_symlinks(tmp_path):
+    (tmp_path / "a").symlink_to(tmp_path / "missing")
+    (tmp_path / "a (1)").symlink_to(tmp_path / "also-missing")
+    assert unique_path(tmp_path / "a") == tmp_path / "a (2)"
+
+
+def test_folder_run_preserves_empty_subfolders(mock_service, tmp_path, monkeypatch):
+    monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: mock_service)
+    mock_service.files().get().execute.return_value = make_folder("root", id="root")
+    monkeypatch.setattr(
+        "gdrives.files.list_children",
+        lambda s, fid: [make_folder("empty", id="E")] if fid == "root" else [],
+    )
+    run("https://drive.google.com/drive/folders/root", str(tmp_path), yes=True)
+    assert (tmp_path / "empty").is_dir()
+
+
+def test_unknown_native_does_not_export_based_on_extension():
+    f = make_file("x.gdoc", mime="application/vnd.google-apps.x")
+    assert classify_entry(f) == "skip"

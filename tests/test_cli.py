@@ -575,3 +575,13 @@ class TestMv:
             cli.mv()
         assert exc.value.code == 1
         assert "Error: pass exactly one of SOURCE" in capsys.readouterr().err
+
+
+def test_ls_rejects_conflicting_targets_before_resolution(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "gdrives.resolve.resolve_path", lambda *a, **k: pytest.fail("must not resolve")
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.ls(path="My Drive", drive_id="OTHER")
+    assert exc.value.code == 1
+    assert "PATH and --drive-id are mutually exclusive" in capsys.readouterr().err

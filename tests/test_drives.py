@@ -118,3 +118,16 @@ class TestResolveName:
         cache_path = tmp_path / "cache.json"
         save([], path=cache_path)
         assert resolve_name("anything", path=cache_path) is None
+
+
+def test_duplicate_drive_names_refuse_to_guess(tmp_path):
+    import pytest
+
+    drives: list[DriveInfo] = [
+        {"id": "a", "type": "shared", "name": "Team", "url": "u"},
+        {"id": "b", "type": "shared", "name": "TEAM", "url": "u"},
+    ]
+    path = tmp_path / "nested" / "cache" / "cache.json"
+    save(drives, path)
+    with pytest.raises(ValueError, match="multiple drives.*a, b"):
+        resolve_name("team", path)

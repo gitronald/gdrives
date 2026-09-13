@@ -374,3 +374,41 @@ class TestWalkTree:
     def test_empty_folder_yields_nothing(self, mock_service, monkeypatch):
         monkeypatch.setattr("gdrives.files.list_children", lambda s, fid: [])
         assert list(walk_tree(mock_service, "root")) == []
+
+
+def test_regular_file_with_folder_extension_is_not_traversed(mock_service):
+    f = make_file("archive.folder")
+    mock_service.files().list().execute.return_value = mock_list_response([f])
+    assert not is_folder(f)
+    assert file_type(f) == ".folder"
+    assert file_url(f) == "https://drive.google.com/file/d/file_id"
+    assert [item.file for item in walk_tree(mock_service, "root")] == [f]
+    assert mock_service.files().list().execute.call_count == 1
+
+
+@pytest.mark.parametrize("depth", [0, -1])
+def test_walk_rejects_invalid_depth_before_listing(mock_service, depth):
+    with pytest.raises(ValueError, match="depth must be at least 1"):
+        list(walk_tree(mock_service, "root", depth=depth))
+    mock_service.files.assert_not_called()
+
+
+def test_url_cleanup_handles_fragment_after_edit_suffix():
+    assert (
+        strip_url_suffix(
+            "https://docs.google.com/spreadsheets/d/ID/edit?usp=sharing#gid=7"
+        )
+        == "https://docs.google.com/spreadsheets/d/ID#gid=7"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/edit",
+        "https://example.com/docs.google.com?keep=1",
+        "https://docs.google.com.example.com/view?keep=1",
+    ],
+)
+def test_url_cleanup_only_changes_google_drive_hosts(url):
+    assert strip_url_suffix(url) == url

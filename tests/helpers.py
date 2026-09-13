@@ -441,7 +441,7 @@ class FakeDocsService:
                 import re
 
                 pattern = re.compile(re.escape(find), re.IGNORECASE)
-                return pattern.subn(req["replaceText"], current)
+                return pattern.subn(lambda match: req["replaceText"], current)
 
             changed = 0
             for tab_id in tab_ids:

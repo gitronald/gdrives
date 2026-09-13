@@ -309,3 +309,39 @@ class TestLs:
         ls(shared_with_me=True)
         out = capsys.readouterr().out
         assert out == ""
+
+
+@pytest.mark.parametrize("folder", [True, False])
+def test_csv_preserves_slashes_in_actual_names(folder):
+    import csv
+    import io
+
+    name = "literal//"
+    row = DriveEntry(
+        "url",
+        name + "/" if folder else name,
+        name,
+        "folder" if folder else "txt",
+        "",
+        "",
+    )
+    (parsed,) = list(csv.DictReader(io.StringIO(format_csv([row]))))
+    assert parsed["path"] == name
+
+
+def test_listing_creates_nested_output_directory(monkeypatch, tmp_path):
+    row = DriveEntry("url", "a", "a", "txt", "", "")
+    monkeypatch.setattr("gdrives.listing.collect", lambda *a, **k: [row])
+    target = tmp_path / "nested" / "directory" / "map.md"
+    ls("root", save_as=[str(target)])
+    assert target.read_text() == "- [a](url)\n"
+
+
+@pytest.mark.parametrize("url", ["", "https://example.com/a (b)"])
+def test_markdown_keeps_special_names_literal(url):
+    row = DriveEntry(url, "", "[draft] *a* <b>&\nnext", "txt", "", "")
+    name = r"\[draft\] \*a\* &lt;b&gt;&amp; next"
+    expected = (
+        f"- [{name}](https://example.com/a%20%28b%29)\n" if url else f"- {name}\n"
+    )
+    assert format_markdown([row]) == expected

@@ -806,3 +806,24 @@ class TestRunDeleteRule:
         patch_sheets_service(monkeypatch, FakeSheetsService())
         with pytest.raises(ValueError, match="no tabs"):
             run_delete_rule("SHEET_ID", 0, yes=True)
+
+
+def test_quoted_whole_tab_can_contain_exclamation_mark():
+    title = "Hi! O'Brien"
+    quoted = "'Hi! O''Brien'"
+    assert split_a1(quoted) == (None, quoted)
+    assert a1_to_grid_range(None, "sid", quoted, tab_ids={title: 7}) == {"sheetId": 7}
+
+
+@pytest.mark.parametrize("ref", ["A$B1", "A1$", "$$A1", "$A$$1", "A$$1"])
+def test_misplaced_absolute_markers_are_rejected(ref):
+    with pytest.raises(ValueError, match="bad A1 cell reference"):
+        a1_to_grid_range(None, "sid", ref, tab_ids=TABS)
+
+
+@pytest.mark.parametrize("ref", ["", "  "])
+def test_empty_range_cannot_accidentally_format_whole_tab(ref):
+    svc = FakeSheetsService()
+    with pytest.raises(ValueError, match="range must not be empty"):
+        a1_to_grid_range(svc, "sid", ref)
+    assert svc.calls == []

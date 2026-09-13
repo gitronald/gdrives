@@ -58,7 +58,7 @@ def fetch(service: Service) -> list[DriveInfo]:
 
 def save(drives: list[DriveInfo], path: Path = CACHE_PATH) -> None:
     """Save drives list to JSON cache."""
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(drives, indent=2) + "\n", encoding="utf-8")
 
 
@@ -75,10 +75,11 @@ def find_drive(drives: list[DriveInfo], name: str) -> DriveInfo | None:
     Returns the full drive dict (id, type, name, url) or None. Lets callers that
     match several names (e.g. path-prefix resolution) load the cache once.
     """
-    for d in drives:
-        if d["name"].lower() == name.lower():
-            return d
-    return None
+    matches = [d for d in drives if d["name"].lower() == name.lower()]
+    if len(matches) > 1:
+        ids = ", ".join(d["id"] for d in matches)
+        raise ValueError(f"multiple drives named {name!r}; use a drive ID: {ids}")
+    return matches[0] if matches else None
 
 
 def resolve_name(name: str, path: Path = CACHE_PATH) -> DriveInfo | None:

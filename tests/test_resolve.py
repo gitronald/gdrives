@@ -228,3 +228,10 @@ class TestResolveAndReport:
         )
         assert resolve_and_report("My Drive/x", "Spreadsheet", mock_service) == "FID"
         assert rec == {"s": "My Drive/x", "svc": mock_service}
+
+
+@pytest.mark.parametrize("path", ["", "/", "///", "   "])
+def test_empty_shared_path_never_matches_an_arbitrary_shared_item(mock_service, path):
+    with pytest.raises(DrivePathError, match="path must not be empty"):
+        resolve_shared_path(path, mock_service)
+    mock_service.files.assert_not_called()

@@ -10,6 +10,8 @@ from typing import Any
 import google.auth.exceptions
 from dotenv import load_dotenv
 
+from gdrives.local import PRIVATE, atomic_output
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,7 @@ def _token_covers(token_path: Path, scopes: list[str]) -> bool:
         return True
     if isinstance(granted, str):
         granted = granted.split()
-    if not isinstance(granted, list):
+    if not isinstance(granted, list) or not all(isinstance(s, str) for s in granted):
         return True
     return set(scopes) <= set(granted)
 
@@ -135,11 +137,8 @@ def _write_token(token_path: Path, creds: Any) -> None:
     credentials for this run.
     """
     try:
-        tmp = token_path.with_name(token_path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(creds.to_json())
-        tmp.replace(token_path)
+        with atomic_output(token_path, mode=PRIVATE) as f:
+            f.write(creds.to_json().encode("utf-8"))
     except OSError:
         logger.warning("could not persist OAuth token to %s", token_path)
 
@@ -165,7 +164,10 @@ def authenticate_oauth(scopes: list[str] | None = None):
     creds = None
     if token_path.exists():
         if _token_covers(token_path, scopes):
-            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+            try:
+                creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+            except (OSError, ValueError, AttributeError, TypeError):
+                logger.warning("could not load cached OAuth token %s", token_path)
         else:
             logger.warning(
                 "cached OAuth token %s does not cover the requested scopes; "

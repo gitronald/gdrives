@@ -176,10 +176,10 @@ def _text_runs(content: list[Document]) -> Iterator[str]:
 def raw_text(doc: Document, tab_id: str | None = None) -> str:
     """Return a tab's text runs concatenated verbatim, with no decoration.
 
-    Covers every segment ``replaceAllText`` matches against (body, headers,
-    footers, and footnotes, in that order), so it is what
-    :func:`count_occurrences` searches; :func:`document_text` is the readable
-    body-only view with list and table decoration.
+    Covers body, headers, footers, and footnotes, in that order. Segment
+    boundaries are lost in this display view; :func:`count_occurrences` searches
+    each segment separately. :func:`document_text` is the readable body-only view
+    with list and table decoration.
     """
     return "".join(
         "".join(_text_runs(segment.get("content", [])))
@@ -235,10 +235,15 @@ def count_occurrences(
     """
     if not find:
         raise ValueError("search text must not be empty")
-    text = raw_text(doc, tab_id)
     if not match_case:
-        text, find = text.casefold(), find.casefold()
-    return text.count(find)
+        find = find.casefold()
+    count = 0
+    for segment in tab_segments(doc, tab_id):
+        text = "".join(_text_runs(segment.get("content", [])))
+        if not match_case:
+            text = text.casefold()
+        count += text.count(find)
+    return count
 
 
 def body_range(doc: Document, tab_id: str | None = None) -> tuple[int, int]:

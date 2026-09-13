@@ -828,3 +828,25 @@ class TestRunCreate:
             "documents.create",
             "documents.batchUpdate",
         ]
+
+
+@pytest.mark.parametrize("match_case", [True, False])
+def test_count_does_not_join_independent_segments(match_case):
+    svc = FakeDocsService("end", headers={"h": "start"}, footers={"f": "end\nstart"})
+    find = "end\nstart" if match_case else "END\nSTART"
+    assert count_occurrences(svc.document(), find, match_case=match_case) == 1
+
+
+def test_replace_rejects_phrase_created_only_by_joining_segments(monkeypatch):
+    svc = FakeDocsService("end", headers={"h": "start"})
+    patch_service(monkeypatch, svc)
+    with pytest.raises(ValueError, match="no occurrence"):
+        run_replace("DOC", "end\nstart", "replacement")
+    assert [call[0] for call in svc.calls] == ["documents.get"]
+
+
+def test_case_insensitive_replacement_keeps_literal_backslashes(monkeypatch):
+    svc = FakeDocsService("Draft")
+    patch_service(monkeypatch, svc)
+    run_replace("DOC", "draft", r"\1\notes", match_case=False)
+    assert svc.text == "\\1\\notes\n"
