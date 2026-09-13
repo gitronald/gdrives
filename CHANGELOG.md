@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-12
+
 ### Changed
 
 - Local writes are atomic. A new `gdrives.local.atomic_output` helper streams to a private temporary file beside the target and renames it into place only after a successful write, so `download`, `export`, and the OAuth token cache never leave a partial file behind or clobber an existing one on failure. Downloads and exports keep the permissions a direct write would have produced; the token cache stays owner-only (`0600`).
