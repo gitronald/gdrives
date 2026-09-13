@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Local writes are atomic. A new `gdrives.local.atomic_output` helper streams to a private temporary file beside the target and renames it into place only after a successful write, so `download`, `export`, and the OAuth token cache never leave a partial file behind or clobber an existing one on failure. Downloads and exports keep the permissions a direct write would have produced; the token cache stays owner-only (`0600`).
+- `download` keeps colliding folder names distinct. Two sibling folders that share a name (or sanitize to the same name) now land in `name/` and `name (1)/` instead of merging into one local directory, and a folder whose only contents are subfolders no longer prints "Nothing to download".
+- `file_type` no longer reports an ordinary `.doc`/`.sheet`-style extension with the label reserved for Google Workspace files; it is prefixed with a dot so the two stay distinct in `ls` output.
+- `ls --save-as` creates the output file's parent directory, and `show-drives` creates a nested cache directory.
+
+### Fixed
+
+- Drive URLs are recognized by host, not substring: `strip_url_suffix` parses the URL and only strips `/edit`, `/view`, and the query string when the host is `drive.google.com` or `docs.google.com`, so a non-Drive URL that merely mentions one of them keeps its query.
+- `docs-replace` counts matches per segment (body, headers, footers, footnotes), so a match that would have spanned a segment boundary in the concatenated text no longer inflates the count.
+- `sheets-set` refuses a match or target column whose header appears more than once instead of silently using the first, and A1 ranges with absolute references (`$A$2:$C`) parse correctly. A range consisting only of a quoted tab name is treated as the whole tab, and an empty range is rejected.
+- Empty and ambiguous arguments are rejected up front: `ls` refuses `PATH` together with `--drive-id`, `mv` refuses blank `SOURCE`, `--source-id`, `--dest-id`, or destination names and no longer treats a trailing-slash destination as a new file name, `resolve_shared_path` refuses an empty path, `walk_tree` refuses `depth < 1`, and `find_drive` raises when several cached drives share a name instead of returning the first.
+- `mv` accepts a destination that is a cached drive name containing a slash.
+- A cached OAuth token that is unreadable or malformed is logged and re-consented instead of crashing, and a `scopes` list with non-string entries is treated as not covering the request.
+- Markdown listings (`ls --save-as map.md`) escape names and URLs so a file whose name contains `]`, `*`, or a newline no longer breaks the link, and CSV listings strip the trailing `/` only from folder paths.
+
 ## [0.9.0] - 2026-09-11
 
 ### Added
