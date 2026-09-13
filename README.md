@@ -36,6 +36,7 @@ gdrives/
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
+├── local.py     # Atomic local writes shared by download, export, and the token cache
 ├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
