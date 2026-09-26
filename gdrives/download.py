@@ -53,7 +53,7 @@ from gdrives.files import (
     is_native,
     walk_tree,
 )
-from gdrives.local import atomic_output, printable
+from gdrives.local import CONTROL_CHARACTERS, atomic_output, printable
 
 # Map Google-native type label -> local extension, derived from the canonical
 # export table (export.NATIVE_EXPORTS) so download and `gdrives export` never drift.
@@ -75,7 +75,7 @@ def safe_filename(name: str) -> str:
     traverse on Windows, where ``\\`` is a separator. Legitimate dotfiles like
     ``.env`` are preserved.
     """
-    cleaned = re.sub(r"[/\\\x00-\x1f\x7f-\x9f]", "_", name).strip()
+    cleaned = re.sub(r"[/\\]", "_", CONTROL_CHARACTERS.sub("_", name)).strip()
     if cleaned in {".", ".."}:
         cleaned = cleaned.replace(".", "_")  # "." -> "_", ".." -> "__"
     return cleaned or "file"

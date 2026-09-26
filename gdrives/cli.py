@@ -4,7 +4,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -16,7 +16,7 @@ YesFlag = Annotated[
 ]
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     """Print ``Error: message`` to stderr and exit 1.
 
     Control characters are escaped line by line: messages quote Drive names,
@@ -164,31 +164,18 @@ def ls(
 ):
     """List contents of a Drive folder by path or ID."""
     if path is not None and drive_id is not None:
-        print("Error: PATH and --drive-id are mutually exclusive", file=sys.stderr)
-        raise SystemExit(1)
+        _fail("PATH and --drive-id are mutually exclusive")
     if shared_with_me and drive_id:
-        print(
-            "Error: --shared-with-me and --drive-id are mutually exclusive",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail("--shared-with-me and --drive-id are mutually exclusive")
 
     bad_save_as = [
         p for p in (save_as or []) if Path(p).suffix.lower() not in {".md", ".csv"}
     ]
     if bad_save_as:
-        print(
-            f"Error: --save-as must end in .md or .csv: {', '.join(bad_save_as)}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail(f"--save-as must end in .md or .csv: {', '.join(bad_save_as)}")
 
     if shared_with_me and path is None and depth != 1:
-        print(
-            "Error: --depth is not supported when listing all shared items",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail("--depth is not supported when listing all shared items")
 
     from gdrives.auth import build_drive_service
     from gdrives.listing import ls as remote_ls
@@ -273,8 +260,7 @@ def sheets_get(
     will open in Excel or LibreOffice.
     """
     if csv_out and tsv_out:
-        print("Error: --csv and --tsv are mutually exclusive", file=sys.stderr)
-        raise SystemExit(1)
+        _fail("--csv and --tsv are mutually exclusive")
 
     from gdrives.sheets import run_get
 

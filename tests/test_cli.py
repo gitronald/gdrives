@@ -115,6 +115,15 @@ class TestLs:
         assert exc.value.code == 1
         assert "mutually exclusive" in capsys.readouterr().err
 
+    def test_argument_errors_escape_control_characters(self, capsys):
+        # Argument errors go through the same seam as every other failure.
+        with pytest.raises(SystemExit) as exc:
+            cli.ls(path="My Drive", save_as=["bad\x1b[2J.txt"])
+        assert exc.value.code == 1
+        assert capsys.readouterr().err == (
+            "Error: --save-as must end in .md or .csv: bad\\x1b[2J.txt\n"
+        )
+
     def test_bad_save_as_extension_is_named(self, capsys):
         with pytest.raises(SystemExit) as exc:
             cli.ls(path="My Drive", save_as=["map.md", "data.txt"])

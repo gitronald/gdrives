@@ -91,15 +91,18 @@ def escape_formula(cell: str) -> str:
 
     Excel and LibreOffice evaluate a cell starting with ``=``, ``+``, ``-``, or
     ``@`` when they open a CSV, so a shared file named
-    ``=HYPERLINK("http://...")`` would run on open. The apostrophe makes the
-    cell text.
+    ``=HYPERLINK("http://...")`` would run on open; a leading tab or carriage
+    return can hide one of those, so it is escaped too. The apostrophe makes
+    the cell text.
     """
     return "'" + cell if cell.startswith(_FORMULA_PREFIXES) else cell
 
 
-# C0 and C1 control characters and DEL: ESC starts ANSI and OSC sequences, and
-# C1 holds single-character forms of the same introducers (CSI, OSC).
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+#: C0 and C1 control characters and DEL: ESC starts ANSI and OSC sequences, and
+#: C1 holds single-character forms of the same introducers (CSI, OSC). Escaped
+#: for the terminal by :func:`printable`; download's ``safe_filename`` replaces
+#: them in local file names.
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def _escape_control(match: re.Match[str]) -> str:
@@ -113,4 +116,4 @@ def printable(text: str) -> str:
     sequence could rewrite or hide lines of output, retitle the terminal, or set
     the clipboard (OSC 52). Each control character is shown as ``\\xNN``.
     """
-    return _CONTROL.sub(_escape_control, text)
+    return CONTROL_CHARACTERS.sub(_escape_control, text)
