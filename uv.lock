@@ -396,6 +396,8 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "types-httplib2" },
+    { name = "types-oauthlib" },
 ]
 
 [package.metadata]
@@ -413,6 +415,8 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov" },
     { name = "ruff", specifier = ">=0.16.4" },
+    { name = "types-httplib2", specifier = ">=0.32.0.20260720" },
+    { name = "types-oauthlib", specifier = ">=3.3.0.20260724" },
 ]
 
 [[package]]
@@ -962,6 +966,24 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/40/4a3db7990d1f62a53182aa96eaef57aeb2886a27f90a195bc66713565d31/typer-0.27.1.tar.gz", hash = "sha256:a79bef8469a79c45498e7b814ecf8d603cc7644e9acbd9e19cac0334240b18df", size = 203994, upload-time = "2026-08-03T14:41:03.438Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/89/9518bc0c3929bee36b3a4a8e3daddd6e03f92f9961c66d4983b837160543/typer-0.27.1-py3-none-any.whl", hash = "sha256:53150287edd11baeb4e4722c8e394fcdf8181c0ae89485cba8d25c778d5edd56", size = 122874, upload-time = "2026-08-03T14:41:04.391Z" },
+]
+
+[[package]]
+name = "types-httplib2"
+version = "0.32.0.20260720"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/74/d53a569942f365caa033f135012979d82f96c8b02ab8a9c5614617f12f65/types_httplib2-0.32.0.20260720.tar.gz", hash = "sha256:fdf42301174bccd6cede13dcffe130753f5c32c64b0a2b681a011504ffe6d1eb", size = 11746, upload-time = "2026-07-20T05:26:53.42Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/aa/9a6c889f79b97017244d9abbe9b886c196716ac6da47f0413e141871bb2b/types_httplib2-0.32.0.20260720-py3-none-any.whl", hash = "sha256:c8e838557fccd39bb08569839c7e625489c5b2db1c89ab54b6a3b808b9e9b392", size = 11466, upload-time = "2026-07-20T05:26:52.603Z" },
+]
+
+[[package]]
+name = "types-oauthlib"
+version = "3.3.0.20260724"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/ed/72823bc9c60e8f5354827eec6b85aa1baec94b3ca6c62f8e104c3717c31b/types_oauthlib-3.3.0.20260724.tar.gz", hash = "sha256:00c7dab6a2f764e991180bff4bdb1ba8bddb1d546013b1c81f903192c30f2386", size = 26194, upload-time = "2026-07-24T04:58:57.564Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/e8/96d1e19015c1384022a296a2e73d7843739ccc2f13afcaed5c2f797c86e4/types_oauthlib-3.3.0.20260724-py3-none-any.whl", hash = "sha256:73bc776c00ed00957bc1422a3a53696d8aa18f24c47a628e08566c0d4e0a6bbd", size = 48967, upload-time = "2026-07-24T04:58:56.634Z" },
 ]
 
 [[package]]
