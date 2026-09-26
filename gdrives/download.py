@@ -206,7 +206,8 @@ class LocalNames:
     overwritten. With ``skip_existing`` the suffix is chosen against the paths
     this run has already handed out instead: a rerun then maps every entry to
     the path the first run gave it (a second ``a.pdf`` is ``a (1).pdf`` both
-    times), and an entry whose path is already there is skipped rather than
+    times, since ``list_children`` orders duplicates the same way on every
+    call), and an entry whose path is already there is skipped rather than
     saved again as a copy.
     """
 

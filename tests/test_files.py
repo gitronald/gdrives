@@ -301,6 +301,21 @@ class TestListChildren:
         assert result[1]["name"] == "a.txt"
         assert result[2]["name"] == "b.txt"
 
+    def test_same_named_items_have_a_stable_order(self, mock_service):
+        # files.list promises no order; duplicates must not swap between calls.
+        items = [
+            make_file("dup.pdf", id="Y"),
+            make_file("Dup.pdf", id="Z"),
+            make_file("dup.pdf", id="X"),
+        ]
+        orders = []
+        for listing in (items, list(reversed(items))):
+            mock_service.files().list().execute.return_value = mock_list_response(
+                listing
+            )
+            orders.append([f["id"] for f in list_children(mock_service, "parent")])
+        assert orders == [["Z", "X", "Y"], ["Z", "X", "Y"]]
+
     def test_empty_folder(self, mock_service):
         mock_service.files().list().execute.return_value = mock_list_response([])
         result = list_children(mock_service, "parent_id")

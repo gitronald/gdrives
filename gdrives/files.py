@@ -132,9 +132,15 @@ def shared_by(f: DriveFile) -> str:
     return (f.get("sharingUser") or {}).get("emailAddress", "")
 
 
-def _folders_first(f: DriveFile) -> tuple[bool, str]:
-    """Sort key placing folders before files, then case-insensitively by name."""
-    return (not is_folder(f), f["name"].lower())
+def _folders_first(f: DriveFile) -> tuple[bool, str, str, str]:
+    """Sort key placing folders before files, then case-insensitively by name.
+
+    Ties fall back to the exact name and then the file ID, so items that share a
+    name (Drive allows duplicates) come back in the same order on every call:
+    files.list promises no order, and ``download --skip-existing`` relies on a
+    rerun seeing duplicates in the order the first run did.
+    """
+    return (not is_folder(f), f["name"].lower(), f["name"], f["id"])
 
 
 def paginate_files(
