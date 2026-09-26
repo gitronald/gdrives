@@ -46,6 +46,15 @@ def _ambiguous_error(
     return AmbiguousPathError("\n".join(lines))
 
 
+def _is_blank_path(path: str) -> bool:
+    """True for a path of nothing but slashes and whitespace ("", "/", " / ").
+
+    Such a path names no drive and no item, so resolvers refuse it up front
+    rather than looking for a drive named "" (or " ").
+    """
+    return not path.replace("/", "").strip()
+
+
 def walk_segments(
     service: Service,
     folder_id: str,
@@ -87,6 +96,10 @@ def resolve_path(
         allow_files: If True, the final segment can match files or folders.
             If False (default), all segments must be folders.
     """
+    if _is_blank_path(path):
+        # Without this, "" or "/" would look for a drive named "" and blame a
+        # missing cache ("Run 'gdrives show-drives' first").
+        raise DrivePathError("Drive path must not be empty")
     service = service or build_drive_service()
 
     # Load the drive cache once, then try progressively longer prefixes against it.
@@ -125,7 +138,7 @@ def resolve_shared_path(
         service: Drive API service instance.
         allow_files: If True, the final segment can match files or folders.
     """
-    if not path.strip("/").strip():
+    if _is_blank_path(path):
         raise DrivePathError("Shared with me path must not be empty")
     service = service or build_drive_service()
     parts = path.strip("/").split("/")
@@ -166,6 +179,8 @@ def resolve_file_id(source: str, service: Service | None = None) -> str:
     allowed. ``service`` is the *Drive* service used for path resolution; when
     omitted, ``resolve_path`` builds a read-only one.
     """
+    if not source.strip():
+        raise DrivePathError("source must not be empty")
     if source.startswith(("http://", "https://")):
         return extract_drive_id(source)
     if "/" in source:

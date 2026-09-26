@@ -12,6 +12,14 @@ def mock_service():
     return MagicMock()
 
 
+@pytest.fixture(autouse=True)
+def _forget_credentials():
+    """Start each test without credentials cached by an earlier one."""
+    from gdrives import auth
+
+    auth._credentials.cache_clear()
+
+
 @pytest.hookimpl(trylast=True)  # after pytest-cov's table, next to the final counts
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """Note live integration tests that skipped for lack of configuration.

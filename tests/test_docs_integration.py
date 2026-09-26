@@ -17,9 +17,9 @@ repo. Set it to a throwaway document:
 Each test appends its own uniquely tagged paragraph and removes it afterward,
 so runs never collide with each other or leave state behind — the document's
 existing content is never modified. The whole-body operations (``set_text``,
-``clear_text``) are deliberately not run here, since they would wipe the shared
-document; their index arithmetic is covered by the stateful fake. Select or skip
-the suite with ``-m integration`` / ``-m "not integration"``.
+``clear_text``) would wipe a shared tab, so they run only on a temporary tab
+the test adds and then deletes. Select or skip the suite with
+``-m integration`` / ``-m "not integration"``.
 """
 
 import os
@@ -27,6 +27,7 @@ import uuid
 
 import pytest
 from googleapiclient.errors import HttpError
+from helpers import raw_text
 
 import gdrives.auth  # import loads .env (python-dotenv), so a .env-set id is visible
 from gdrives import docs
@@ -119,9 +120,9 @@ def test_append_with_explicit_tab_continues_last_line(tagged):
 
 def test_replace_text_changes_only_the_tagged_phrase(tagged):
     service, did, tag = tagged
-    before = docs.raw_text(docs.pull_document(service, did))
+    before = raw_text(docs.pull_document(service, did))
     assert docs.replace_text(service, did, tag, f"{tag}-final") == 1
-    after = docs.raw_text(docs.pull_document(service, did))
+    after = raw_text(docs.pull_document(service, did))
     assert after == before.replace(tag, f"{tag}-final")
 
 
@@ -133,7 +134,7 @@ def test_replace_with_stale_revision_is_refused(tagged):
         docs.replace_text(
             service, did, tag, f"{tag}-x", required_revision=stale["revisionId"]
         )
-    assert f"{tag}-x" not in docs.raw_text(docs.pull_document(service, did))
+    assert f"{tag}-x" not in raw_text(docs.pull_document(service, did))
 
 
 def test_body_range_excludes_the_final_newline(tagged):
@@ -153,3 +154,113 @@ def test_tab_resolution(live_service):
     assert docs.resolve_tab_id(doc, tab_id) == tab_id
     title = next(iter(docs.iter_tabs(doc)))["tabProperties"]["title"]
     assert docs.resolve_tab_id(doc, title) == tab_id
+
+
+@pytest.fixture
+def scratch_tab(live_service):
+    """Yield (service, document_id, tab_id) for a temporary tab, deleted after.
+
+    The whole-body writes replace everything in a tab, so they get a tab of
+    their own instead of one the shared document keeps.
+    """
+    service, did = live_service
+    title = "itest_" + uuid.uuid4().hex[:8]
+    added = docs.batch_update(
+        service, did, [{"addDocumentTab": {"tabProperties": {"title": title}}}]
+    )
+    tab_id = added["replies"][0]["addDocumentTab"]["tabProperties"]["tabId"]
+    try:
+        yield service, did, tab_id
+    finally:
+        docs.batch_update(service, did, [{"deleteTab": {"tabId": tab_id}}])
+
+
+def _seed_formatted_body(service, did: str, tab_id: str) -> None:
+    """Fill the tab with a centered heading over a bulleted list ending in bold."""
+
+    def span(start: int, end: int) -> dict:
+        return {"startIndex": start, "endIndex": end, "tabId": tab_id}
+
+    # "Title\n" is [1, 7), "item one\n" [7, 16), "item two\n" [16, 25).
+    docs.batch_update(
+        service,
+        did,
+        [
+            {
+                "insertText": {
+                    "text": "Title\nitem one\nitem two",
+                    "location": {"index": 1, "tabId": tab_id},
+                }
+            },
+            {
+                "updateParagraphStyle": {
+                    "range": span(1, 7),
+                    "paragraphStyle": {
+                        "namedStyleType": "HEADING_1",
+                        "alignment": "CENTER",
+                    },
+                    "fields": "namedStyleType,alignment",
+                }
+            },
+            {
+                "createParagraphBullets": {
+                    "range": span(7, 25),
+                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                }
+            },
+            {
+                "updateTextStyle": {
+                    "range": span(16, 25),
+                    "textStyle": {"bold": True},
+                    "fields": "bold",
+                }
+            },
+        ],
+    )
+
+
+def _assert_plain(paragraph: dict) -> None:
+    """No list, heading, alignment, indent, or text formatting survives."""
+    assert "bullet" not in paragraph
+    style = paragraph.get("paragraphStyle", {})
+    assert style.get("namedStyleType") == "NORMAL_TEXT"
+    assert style.get("alignment", "START") == "START"
+    assert not style.get("indentStart", {}).get("magnitude")
+    assert not style.get("indentFirstLine", {}).get("magnitude")
+    for element in paragraph["elements"]:
+        assert element["textRun"].get("textStyle", {}) == {}
+
+
+def _paragraphs(service, did: str, tab_id: str) -> list[dict]:
+    doc = docs.pull_document(service, did)
+    content = docs.tab_body(doc, tab_id)["content"]
+    return [element["paragraph"] for element in content if "paragraph" in element]
+
+
+def test_set_text_replaces_formatting_with_plain_paragraphs(scratch_tab):
+    service, did, tab_id = scratch_tab
+    _seed_formatted_body(service, did, tab_id)
+    (last,) = _paragraphs(service, did, tab_id)[-1:]
+    assert "bullet" in last  # the leftover paragraph would carry this over
+
+    doc = docs.pull_document(service, did)
+    docs.set_text(service, did, "plain one\nplain two", doc=doc, tab_id=tab_id)
+
+    paragraphs = _paragraphs(service, did, tab_id)
+    assert docs.document_text(docs.pull_document(service, did), tab_id) == (
+        "plain one\nplain two\n"
+    )
+    assert len(paragraphs) == 2
+    for paragraph in paragraphs:
+        _assert_plain(paragraph)
+
+
+def test_clear_text_leaves_one_plain_paragraph(scratch_tab):
+    service, did, tab_id = scratch_tab
+    _seed_formatted_body(service, did, tab_id)
+
+    docs.clear_text(service, did, doc=docs.pull_document(service, did), tab_id=tab_id)
+
+    (paragraph,) = _paragraphs(service, did, tab_id)
+    assert docs.document_text(docs.pull_document(service, did), tab_id) == "\n"
+    _assert_plain(paragraph)

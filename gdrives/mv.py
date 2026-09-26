@@ -19,6 +19,7 @@ import sys
 from typing import Any
 
 from gdrives.files import DriveFile, Service, get_file_metadata, is_folder
+from gdrives.local import printable
 
 # files.update needs the current parents (to detach on a move) and the drive the
 # item lives in (to refuse a cross-drive move); neither is in the default
@@ -90,24 +91,23 @@ def sole_parent(meta: DriveFile) -> str:
 def _is_descendant(service: Service, folder: DriveFile, ancestor_id: str) -> bool:
     """True when ``folder`` sits somewhere under ``ancestor_id``.
 
-    Walks parents upward to the drive root, one ``files.get`` per level, so the
-    cost is the destination's depth and only moves of a *folder* pay it. The
-    ``seen`` set is a safety belt: if a cycle already exists in the Drive, this
-    returns False instead of looping forever.
+    Walks parents upward to the drive root, one ``files.get`` per ancestor, so
+    the cost is the destination's depth and only moves of a *folder* pay it.
+    Every parent is followed, not just the first: a legacy multi-parent folder
+    can sit under the source through any of them. The ``seen`` set skips an
+    ancestor reached twice, so a cycle already in the Drive can't loop forever.
     """
     seen: set[str] = set()
-    current = folder
-    while True:
-        parents = current.get("parents") or []
-        if not parents:
-            return False
-        parent_id = parents[0]
+    pending = list(folder.get("parents") or [])
+    while pending:
+        parent_id = pending.pop()
         if parent_id == ancestor_id:
             return True
         if parent_id in seen:
-            return False
+            continue
         seen.add(parent_id)
-        current = get_metadata(service, parent_id)
+        pending.extend(get_metadata(service, parent_id).get("parents") or [])
+    return False
 
 
 def check_destination(service: Service, parent_id: str, source: DriveFile) -> DriveFile:
@@ -191,12 +191,16 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
 
 
 def describe(meta: DriveFile, folder: DriveFile | None, new_name: str | None) -> str:
-    """Phrase the pending change for the dry-run and the result message."""
+    """Phrase the pending change for the dry-run and the result message.
+
+    Names pass through :func:`printable`, so an item named with an escape
+    sequence can't rewrite the terminal the message is printed to.
+    """
     parts = []
     if new_name:
-        parts.append(f"rename '{meta['name']}' -> '{new_name}'")
+        parts.append(f"rename '{printable(meta['name'])}' -> '{printable(new_name)}'")
     if folder:
-        parts.append(f"move it into '{folder['name']}' ({folder['id']})")
+        parts.append(f"move it into '{printable(folder['name'])}' ({folder['id']})")
     return " and ".join(parts)
 
 
@@ -266,7 +270,8 @@ def run(
         new_name = None
 
     if new_name is None and parent_id is None:
-        print(f"Nothing to do: '{meta['name']}' is already there, under that name")
+        name = printable(meta["name"])
+        print(f"Nothing to do: '{name}' is already there, under that name")
         return
 
     action = describe(meta, folder, new_name)

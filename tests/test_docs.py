@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeDocsService, render_content
+from helpers import FakeDocsService, raw_text
 
 from gdrives.docs import (
     append_text,
@@ -30,10 +30,8 @@ from gdrives.docs import (
     first_tab_id,
     iter_tabs,
     pull_document,
-    raw_text,
     read_text_file,
     replace_text,
-    resolve_document_id,
     resolve_tab_id,
     run_append,
     run_clear,
@@ -43,6 +41,7 @@ from gdrives.docs import (
     run_update,
     set_text,
     tab_body,
+    url_tab_id,
 )
 
 # -- element builders (the parts of the model the fake does not render) --
@@ -87,6 +86,28 @@ def doc_with(content: list[dict[str, Any]], *, tab_id: str = "t.0") -> dict[str,
             }
         ],
     }
+
+
+def plain(tab_id: str | None = None) -> list[dict[str, Any]]:
+    """The requests resetting the body's leftover paragraph at [1, 2) to plain."""
+
+    def span() -> dict[str, Any]:
+        rng: dict[str, Any] = {"startIndex": 1, "endIndex": 2}
+        if tab_id is not None:
+            rng["tabId"] = tab_id
+        return rng
+
+    return [
+        {"deleteParagraphBullets": {"range": span()}},
+        {
+            "updateParagraphStyle": {
+                "range": span(),
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                "fields": "*",
+            }
+        },
+        {"updateTextStyle": {"range": span(), "textStyle": {}, "fields": "*"}},
+    ]
 
 
 def patch_service(monkeypatch, svc):
@@ -171,11 +192,6 @@ class TestTabs:
         assert body_text(tab_body(doc)["content"]) == "first\n"
         assert body_text(tab_body(doc, "t.1")["content"]) == "second\n"
 
-    def test_tab_body_accepts_legacy_body(self):
-        # A get without includeTabsContent puts the first tab in `body`.
-        doc = {"body": {"content": render_content("legacy\n")}}
-        assert body_text(tab_body(doc)["content"]) == "legacy\n"
-
     def test_tab_body_unknown_tab_raises(self):
         with pytest.raises(ValueError, match="tab 'zz' not found"):
             tab_body(FakeDocsService("x").document(), "zz")
@@ -183,6 +199,21 @@ class TestTabs:
     def test_tab_body_no_tabs_raises(self):
         with pytest.raises(ValueError, match="not found"):
             tab_body({"tabs": []})
+
+    @pytest.mark.parametrize(
+        "source, tab",
+        [
+            ("https://docs.google.com/document/d/DOC/edit?tab=t.abc", "t.abc"),
+            ("https://docs.google.com/document/d/DOC/edit?usp=x&tab=t.1#h=h.2", "t.1"),
+            ("https://docs.google.com/document/d/DOC/edit", None),
+            ("https://docs.google.com/document/d/DOC/edit?tab=", ""),
+            ("https://drive.google.com/open?id=DOC&tab=t.abc", None),
+            ("DOC", None),
+            ("My Drive/notes", None),
+        ],
+    )
+    def test_url_tab_id(self, source, tab):
+        assert url_tab_id(source) == tab
 
 
 # -- body_text / document_text --
@@ -239,7 +270,8 @@ class TestRawText:
     def test_has_no_decoration(self):
         doc = doc_with([paragraph("Item\n", bullet={"listId": "l"}), table([["c"]])])
         assert document_text(doc) == "- Item\nc\n"
-        assert raw_text(doc) == "Item\nc\n"
+        # the table, its row, and its cell each hold an index: one placeholder each
+        assert raw_text(doc) == "Item\n\ufffc\ufffc\ufffcc\n"
 
     def test_count_is_case_sensitive_by_default(self):
         doc = doc_with([paragraph("foo Foo foo\n")])
@@ -252,7 +284,8 @@ class TestRawText:
 
     def test_walks_table_of_contents(self):
         toc = {"tableOfContents": {"content": [paragraph("Heading\n")]}}
-        assert raw_text(doc_with([toc, paragraph("body\n")])) == "Heading\nbody\n"
+        text = raw_text(doc_with([toc, paragraph("body\n")]))
+        assert text == "\ufffcHeading\nbody\n"
 
     def test_empty_search_text_raises(self):
         with pytest.raises(ValueError, match="must not be empty"):
@@ -269,15 +302,34 @@ class TestRawText:
         )
         doc = svc.document()
         assert count_occurrences(doc, "draft") == 4
-        assert raw_text(doc) == "draft body\ndraft header\ndraft footer\ndraft note\n"
+        # each segment the fake renders opens with a section break
+        assert raw_text(doc).replace("\ufffc", "") == (
+            "draft body\ndraft header\ndraft footer\ndraft note\n"
+        )
         assert document_text(doc) == "draft body\n"
 
-    def test_segments_on_tabless_document(self):
-        doc = {
-            "body": {"content": [paragraph("x\n")]},
-            "footers": {"f.0": {"content": [paragraph("x\n")]}},
-        }
-        assert count_occurrences(doc, "x") == 2
+    def test_no_match_across_an_inline_image(self):
+        # "See B" + image + "C now": the API's text has the image between B and
+        # C, so replaceAllText finds no "BC", and neither must the count.
+        doc = doc_with(
+            [
+                paragraph(
+                    "See B",
+                    extra=[
+                        {"inlineObjectElement": {"inlineObjectId": "img"}},
+                        {"textRun": {"content": "C now\n"}},
+                    ],
+                )
+            ]
+        )
+        assert count_occurrences(doc, "BC") == 0
+        assert count_occurrences(doc, "See B") == 1
+        assert document_text(doc) == "See BC now\n"  # the readable view drops it
+
+    def test_no_match_across_table_cells(self):
+        doc = doc_with([table([["left", "right"]])])
+        assert count_occurrences(doc, "left\nright") == 0
+        assert count_occurrences(doc, "left\n") == 1
 
 
 # -- body_range --
@@ -293,9 +345,6 @@ class TestBodyRange:
 
     def test_no_content(self):
         assert body_range(doc_with([])) == (1, 1)
-
-    def test_legacy_body(self):
-        assert body_range({"body": {"content": render_content("ab\n")}}) == (1, 3)
 
     def test_explicit_tab(self):
         doc = FakeDocsService(tabs={"t.0": "a", "t.1": "longer"}).document()
@@ -369,6 +418,16 @@ class TestAppendText:
         with pytest.raises(ValueError, match="must not be empty"):
             append_text(FakeDocsService("x"), "DOC", "")
 
+    def test_required_revision_guards_the_insert(self):
+        svc = FakeDocsService("Hello")
+        append_text(svc, "DOC", "!", required_revision="rev-1")
+        assert svc.calls[0][1]["body"]["writeControl"] == {
+            "requiredRevisionId": "rev-1"
+        }
+        with pytest.raises(HttpError):
+            append_text(svc, "DOC", "?", required_revision="rev-1")  # now rev-2
+        assert svc.text == "Hello!\n"
+
 
 # -- replace_text --
 
@@ -424,15 +483,16 @@ class TestReplaceText:
 
 
 class TestSetText:
-    def test_overwrites_body_with_delete_then_insert(self):
+    def test_overwrites_body_with_delete_reset_then_insert(self):
         svc = FakeDocsService("old text\nline 2")
-        set_text(svc, "DOC", "new")
+        set_text(svc, "DOC", "new", doc=pull_document(svc, "DOC"))
         assert svc.text == "new\n"
         method, kwargs = svc.calls[1]
         assert method == "documents.batchUpdate"
         assert kwargs["body"] == {
             "requests": [
                 {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 16}}},
+                *plain(),
                 {"insertText": {"text": "new", "location": {"index": 1}}},
             ],
             "writeControl": {"requiredRevisionId": "rev-1"},
@@ -441,29 +501,34 @@ class TestSetText:
 
     def test_multi_line_text_becomes_paragraphs(self):
         svc = FakeDocsService("x")
-        set_text(svc, "DOC", "a\nb")
+        set_text(svc, "DOC", "a\nb", doc=pull_document(svc, "DOC"))
         assert document_text(pull_document(svc, "DOC")) == "a\nb\n"
 
-    def test_empty_body_only_inserts(self):
+    def test_empty_body_resets_style_then_inserts(self):
         svc = FakeDocsService("")
-        set_text(svc, "DOC", "hi")
+        set_text(svc, "DOC", "hi", doc=pull_document(svc, "DOC"))
         assert svc.text == "hi\n"
-        assert [list(r) for r in svc.calls[1][1]["body"]["requests"]] == [
-            ["insertText"]
+        assert svc.calls[1][1]["body"]["requests"] == [
+            *plain(),
+            {"insertText": {"text": "hi", "location": {"index": 1}}},
         ]
 
-    def test_empty_text_only_deletes(self):
+    def test_empty_text_deletes_and_resets_style(self):
         svc = FakeDocsService("abc")
-        set_text(svc, "DOC", "")
+        set_text(svc, "DOC", "", doc=pull_document(svc, "DOC"))
         assert svc.text == "\n"
         assert [list(r) for r in svc.calls[1][1]["body"]["requests"]] == [
-            ["deleteContentRange"]
+            ["deleteContentRange"],
+            ["deleteParagraphBullets"],
+            ["updateParagraphStyle"],
+            ["updateTextStyle"],
         ]
 
-    def test_nothing_to_do_skips_the_write(self):
+    def test_empty_body_and_text_still_resets_the_leftover_style(self):
+        # An empty body can still be a heading or a list item.
         svc = FakeDocsService("")
-        assert set_text(svc, "DOC", "") == {}
-        assert [c[0] for c in svc.calls] == ["documents.get"]
+        set_text(svc, "DOC", "", doc=pull_document(svc, "DOC"))
+        assert svc.calls[1][1]["body"]["requests"] == plain()
 
     def test_stale_snapshot_is_refused_and_leaves_body_intact(self):
         svc = FakeDocsService("old")
@@ -473,7 +538,7 @@ class TestSetText:
             set_text(svc, "DOC", "new", doc=doc)
         assert svc.text == "changed by a collaborator\n"
 
-    def test_explicit_doc_skips_fetch(self):
+    def test_writes_from_the_given_snapshot_without_fetching(self):
         svc = FakeDocsService("old")
         doc = pull_document(svc, "DOC")
         svc.calls.clear()
@@ -482,11 +547,12 @@ class TestSetText:
 
     def test_targets_tab(self):
         svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
-        set_text(svc, "DOC", "z", tab_id="t.1")
+        set_text(svc, "DOC", "z", doc=pull_document(svc, "DOC"), tab_id="t.1")
         assert svc.tabs == {"t.0": "a\n", "t.1": "z\n"}
         requests = svc.calls[1][1]["body"]["requests"]
         assert requests[0]["deleteContentRange"]["range"]["tabId"] == "t.1"
-        assert requests[1]["insertText"]["location"]["tabId"] == "t.1"
+        assert requests[1:4] == plain("t.1")
+        assert requests[4]["insertText"]["location"]["tabId"] == "t.1"
 
 
 # -- clear_text --
@@ -495,18 +561,20 @@ class TestSetText:
 class TestClearText:
     def test_clears_body_under_revision_guard(self):
         svc = FakeDocsService("abc\ndef")
-        clear_text(svc, "DOC")
+        clear_text(svc, "DOC", doc=pull_document(svc, "DOC"))
         assert svc.text == "\n"
         body = svc.calls[1][1]["body"]
         assert body["requests"] == [
-            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 8}}}
+            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 8}}},
+            *plain(),
         ]
         assert body["writeControl"] == {"requiredRevisionId": "rev-1"}
 
-    def test_empty_body_skips_the_write(self):
+    def test_empty_body_only_resets_the_style(self):
         svc = FakeDocsService("")
-        assert clear_text(svc, "DOC") == {}
-        assert [c[0] for c in svc.calls] == ["documents.get"]
+        clear_text(svc, "DOC", doc=pull_document(svc, "DOC"))
+        assert svc.calls[1][1]["body"]["requests"] == plain()
+        assert svc.text == "\n"
 
     def test_stale_snapshot_is_refused(self):
         svc = FakeDocsService("abc")
@@ -515,29 +583,6 @@ class TestClearText:
         with pytest.raises(HttpError):
             clear_text(svc, "DOC", doc=doc)
         assert svc.text == "abcd\n"
-
-
-# -- resolve_document_id --
-
-
-class TestResolveDocumentId:
-    def test_url_extracts_id(self):
-        url = "https://docs.google.com/document/d/DOC123/edit?tab=t.0"
-        assert resolve_document_id(url) == "DOC123"
-
-    def test_bare_id_returned_as_is(self):
-        assert resolve_document_id("DOC123") == "DOC123"
-
-    def test_path_uses_resolve_path(self, monkeypatch):
-        rec = {}
-        monkeypatch.setattr(
-            "gdrives.resolve.resolve_path",
-            lambda path, service=None, *, allow_files=False: (
-                rec.update(path=path, allow_files=allow_files) or "RESOLVED"
-            ),
-        )
-        assert resolve_document_id("My Drive/notes") == "RESOLVED"
-        assert rec == {"path": "My Drive/notes", "allow_files": True}
 
 
 # -- read_text_file --
@@ -558,6 +603,11 @@ class TestReadTextFile:
         path = tmp_path / "body.txt"
         path.write_text("a\n\n", encoding="utf-8")
         assert read_text_file(str(path)) == "a\n"
+
+    def test_drops_a_utf8_bom(self, tmp_path):
+        path = tmp_path / "body.txt"
+        path.write_bytes(b"\xef\xbb\xbfHello\n")
+        assert read_text_file(str(path)) == "Hello"
 
 
 # -- run_get --
@@ -600,6 +650,23 @@ class TestRunGet:
         with pytest.raises(ValueError, match="tab 'nope' not found"):
             run_get("DOC", tab="nope")
 
+    def test_url_tab_is_the_default(self, monkeypatch, capsys):
+        svc = FakeDocsService(tabs={"t.0": "one", "t.1": "two"})
+        patch_service(monkeypatch, svc)
+        run_get("https://docs.google.com/document/d/DOC/edit?tab=t.1")
+        assert capsys.readouterr().out == "two\n"
+
+    def test_explicit_tab_wins_over_url_tab(self, monkeypatch, capsys):
+        svc = FakeDocsService(tabs={"t.0": "one", "t.1": "two"})
+        patch_service(monkeypatch, svc)
+        run_get("https://docs.google.com/document/d/DOC/edit?tab=t.1", tab="Tab 1")
+        assert capsys.readouterr().out == "one\n"
+
+    def test_empty_tab_is_an_error_not_the_first_tab(self, monkeypatch):
+        patch_service(monkeypatch, FakeDocsService(tabs={"t.0": "a", "t.1": "b"}))
+        with pytest.raises(ValueError, match="tab '' not found"):
+            run_get("DOC", tab="")
+
 
 # -- run_update --
 
@@ -620,26 +687,85 @@ class TestRunUpdate:
         assert svc.text == "new body\n"
         assert "Replaced body with 8 character(s)" in capsys.readouterr().out
 
-    def test_declined_confirm_aborts_before_any_call(
+    def test_declined_confirm_aborts_before_any_write(
         self, monkeypatch, tmp_path, capsys
     ):
-        svc = FakeDocsService("old")
+        svc = FakeDocsService("old", title="Notes")
         patch_service(monkeypatch, svc)
-        monkeypatch.setattr("typer.confirm", lambda *a, **k: False)
+        prompts = []
+        monkeypatch.setattr(
+            "typer.confirm", lambda text, **k: prompts.append(text) or False
+        )
         body = tmp_path / "body.txt"
         body.write_text("new", encoding="utf-8")
         run_update("DOC", str(body))
-        assert svc.calls == []
+        assert prompts == ["Replace the entire body of 'Notes', tab 'Tab 1'?"]
+        assert [c[0] for c in svc.calls] == ["documents.get"]
         assert "Aborted." in capsys.readouterr().err
 
     def test_accepted_confirm_writes_tab(self, monkeypatch, tmp_path):
         svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
         patch_service(monkeypatch, svc)
-        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        prompts = []
+        monkeypatch.setattr(
+            "typer.confirm", lambda text, **k: prompts.append(text) or True
+        )
         body = tmp_path / "body.txt"
         body.write_text("z", encoding="utf-8")
         run_update("DOC", str(body), tab="Tab 2")
+        assert prompts == ["Replace the entire body of 'Untitled', tab 'Tab 2'?"]
         assert svc.tabs == {"t.0": "a\n", "t.1": "z\n"}
+
+    def test_url_tab_is_the_target(self, monkeypatch, tmp_path):
+        # A link copied while viewing Tab 2 must not overwrite Tab 1.
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        body = tmp_path / "body.txt"
+        body.write_text("z", encoding="utf-8")
+        run_update(
+            "https://docs.google.com/document/d/DOC/edit?tab=t.1", str(body), yes=True
+        )
+        assert svc.tabs == {"t.0": "a\n", "t.1": "z\n"}
+
+    def test_empty_url_tab_refuses_instead_of_writing_the_first_tab(
+        self, monkeypatch, tmp_path
+    ):
+        # "...edit?tab=$TAB" with TAB unset: same refusal as --tab "".
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        body = tmp_path / "body.txt"
+        body.write_text("z", encoding="utf-8")
+        url = "https://docs.google.com/document/d/DOC/edit?tab="
+        with pytest.raises(ValueError, match="tab '' not found"):
+            run_update(url, str(body), yes=True)
+        assert svc.tabs == {"t.0": "a\n", "t.1": "b\n"}
+
+    def test_empty_tab_refuses_instead_of_writing_the_first_tab(
+        self, monkeypatch, tmp_path
+    ):
+        # `--tab "$TAB"` with TAB unset must not fall back to Tab 1.
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        body = tmp_path / "body.txt"
+        body.write_text("z", encoding="utf-8")
+        with pytest.raises(ValueError, match="tab '' not found"):
+            run_update("DOC", str(body), tab="", yes=True)
+        assert svc.tabs == {"t.0": "a\n", "t.1": "b\n"}
+
+    def test_edit_during_the_prompt_refuses_the_write(self, monkeypatch, tmp_path):
+        svc = FakeDocsService("old")
+        patch_service(monkeypatch, svc)
+
+        def collaborator_edits(*a, **k):
+            svc.edit_externally("typed while the prompt waited")
+            return True
+
+        monkeypatch.setattr("typer.confirm", collaborator_edits)
+        body = tmp_path / "body.txt"
+        body.write_text("new", encoding="utf-8")
+        with pytest.raises(HttpError):
+            run_update("DOC", str(body))
+        assert svc.text == "typed while the prompt waited\n"
 
 
 # -- run_append --
@@ -675,6 +801,31 @@ class TestRunAppend:
         patch_service(monkeypatch, svc)
         run_append("DOC", text="c", tab="t.1")
         assert svc.tabs == {"t.0": "a\n", "t.1": "b\nc\n"}
+
+    def test_url_tab_is_the_target(self, monkeypatch):
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        run_append("https://docs.google.com/document/d/DOC/edit?tab=t.1", text="c")
+        assert svc.tabs == {"t.0": "a\n", "t.1": "b\nc\n"}
+
+    def test_write_is_tied_to_the_read(self, monkeypatch):
+        # The leading-newline choice comes from the read; an edit in between
+        # (here, into the empty body) must refuse the write, not glue onto it.
+        svc = FakeDocsService("")
+        patch_service(monkeypatch, svc)
+        real_pull = pull_document
+
+        def pull_then_edit(service, document_id):
+            doc = real_pull(service, document_id)
+            svc.edit_externally("someone's line")
+            return doc
+
+        monkeypatch.setattr("gdrives.docs.pull_document", pull_then_edit)
+        with pytest.raises(HttpError):
+            run_append("DOC", text="mine")
+        assert svc.text == "someone's line\n"
+        body = svc.calls[-1][1]["body"]
+        assert body["writeControl"] == {"requiredRevisionId": "rev-1"}
 
     @pytest.mark.parametrize("kwargs", [{}, {"text": "x", "text_file": "f"}])
     def test_requires_exactly_one_source(self, monkeypatch, kwargs):
@@ -767,6 +918,29 @@ class TestRunReplace:
         run_replace("DOC", "same", "other", tab="Tab 2")
         assert svc.tabs == {"t.0": "same\n", "t.1": "other\n"}
 
+    def test_url_tab_scopes_count_and_replacement(self, monkeypatch):
+        svc = FakeDocsService(tabs={"t.0": "same", "t.1": "same"})
+        patch_service(monkeypatch, svc)
+        run_replace(
+            "https://docs.google.com/document/d/DOC/edit?tab=t.1", "same", "other"
+        )
+        assert svc.tabs == {"t.0": "same\n", "t.1": "other\n"}
+
+    @pytest.mark.parametrize("changed", [0, 2])
+    def test_count_the_api_disagrees_with_is_an_error(
+        self, monkeypatch, capsys, changed
+    ):
+        svc = FakeDocsService("status: draft")
+        patch_service(monkeypatch, svc)
+        monkeypatch.setattr("gdrives.docs.replace_text", lambda *a, **k: changed)
+        with pytest.raises(
+            ValueError,
+            match=f"counted 1 occurrence\\(s\\) of 'draft', but the API replaced "
+            f"{changed}",
+        ):
+            run_replace("DOC", "draft", "final")
+        assert "Replaced" not in capsys.readouterr().out
+
 
 # -- run_clear --
 
@@ -786,18 +960,34 @@ class TestRunClear:
         assert "Cleared document body" in capsys.readouterr().out
 
     def test_declined_confirm_aborts(self, monkeypatch, capsys):
-        svc = FakeDocsService("abc")
+        svc = FakeDocsService("abc", title="Notes")
         patch_service(monkeypatch, svc)
-        monkeypatch.setattr("typer.confirm", lambda *a, **k: False)
+        prompts = []
+        monkeypatch.setattr(
+            "typer.confirm", lambda text, **k: prompts.append(text) or False
+        )
         run_clear("DOC")
-        assert svc.calls == []
+        assert prompts == ["Clear the entire body of 'Notes', tab 'Tab 1'?"]
+        assert [c[0] for c in svc.calls] == ["documents.get"]
+        assert svc.text == "abc\n"
         assert "Aborted." in capsys.readouterr().err
 
     def test_accepted_confirm_clears_tab(self, monkeypatch):
         svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
         patch_service(monkeypatch, svc)
-        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        prompts = []
+        monkeypatch.setattr(
+            "typer.confirm", lambda text, **k: prompts.append(text) or True
+        )
         run_clear("DOC", tab="t.1")
+        assert prompts == ["Clear the entire body of 'Untitled', tab 'Tab 2'?"]
+        assert svc.tabs == {"t.0": "a\n", "t.1": "\n"}
+
+    def test_url_tab_is_the_target(self, monkeypatch):
+        # The scenario from the review: a URL copied while viewing Tab 2.
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        run_clear("https://docs.google.com/document/d/DOC/edit?tab=t.1", yes=True)
         assert svc.tabs == {"t.0": "a\n", "t.1": "\n"}
 
 

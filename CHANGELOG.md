@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-26
+
+### Added
+
+- `download --skip-existing` resumes a folder download. Each entry maps to the local path the first run gave it (a second `a.pdf` is `a (1).pdf` both times), and entries already there are skipped instead of being saved again as ` (1)` copies.
+- `download` accepts a bare file or folder ID, as `export`, `mv`, and the `sheets-*` and `docs-*` commands already did. A bare name that matches a cached drive still downloads that whole drive.
+- `sheets-get --escape-formulas` prefixes `'` to every cell starting with `=`, `+`, `-`, `@`, a tab, or a carriage return, for output headed to Excel or LibreOffice. Values stay exact by default.
+- The `docs-*` commands target the tab a Doc URL points at (`?tab=`), so a link copied while viewing a tab edits that tab. `--tab` still wins over the URL.
+- Helpers behind these: `gdrives.local.write_text` (an atomic UTF-8 write), `escape_formula`, and `printable`; `gdrives.download.LocalNames` and `DownloadError`; `gdrives.files.IncompleteSearchError`; and `gdrives.docs.url_tab_id`.
+
+### Changed
+
+- A folder download no longer stops at the first failure. An entry that fails with an API or filesystem error (a Doc over the export size limit, a download-restricted file, a name too long for the local filesystem) is reported, and the rest still download. The failures are listed at the end and the command exits 1. A subfolder that can't be created is reported once, and its contents are skipped.
+- `sheets-append` inserts its rows (`insertDataOption=INSERT_ROWS`) instead of writing over whatever follows the table, so a second block of data one blank row below is pushed down rather than overwritten.
+- `docs-update` and `docs-clear` leave plain `NORMAL_TEXT` paragraphs. The body's last paragraph no longer passes its heading, list bullet, indent, alignment, or text formatting on to the new text. Both now read the document before prompting, name the document and tab in the prompt, and refuse the write if the document changed while the prompt waited.
+- `docs-append` sends the revision it read, so the write is refused if the body changed first instead of the text being glued onto someone else's line.
+- `sheets-set` reads the tab again just before writing and refuses if the header or the matching rows moved since the first read. `sheets-delete-rule` reads the rules again after its prompt and refuses if a different rule now sits at that index.
+- Listings request 1,000 items per `files.list` page instead of 100, so a large folder takes a tenth of the calls.
+- Items that share a name are listed in a fixed order (by exact name, then file ID) instead of whatever order Drive returns, so `ls` output is stable and a `download --skip-existing` rerun maps duplicates to the same local names as the first run.
+- The `.env` file is found by searching upward from the working directory, not from the installed package's directory. An installed `gdrives` now reads the project's `.env` instead of missing it or loading an unrelated one such as `~/.env`.
+- A path-based `ls`, `sheets-get`, `sheets-rules`, or `docs-get` authenticates once instead of twice: every client that needs the same scopes reuses one set of credentials.
+- `ls --save-as`, `sheets-get -o`, `docs-get -o`, and the drive cache are written atomically, like downloads and exports, so an interrupted `show-drives` no longer truncates `.gdrives/cache.json`. Their bytes are written untranslated, so CSV rows end in `\r\n` on Windows too, not `\r\r\n`.
+- Replacing an existing file (`export -o`, `docs-get -o`, `sheets-get -o`, `ls --save-as`) keeps that file's permissions instead of resetting them from the umask, as the 0.9.1 entry already claimed.
+- `ls --save-as` accepts the extension in any letter case (`.CSV`, `.Md`).
+- Input files that start with a UTF-8 byte-order mark (Excel's "CSV UTF-8" format) no longer carry it into the first cell or the document: `--values-file`, `--text-file`, and `--rule-json` drop it.
+- `docs.set_text` and `docs.clear_text` require the `doc` they write against (a `pull_document` result) instead of fetching one when it is omitted, and `docs.tab_content` no longer accepts a document fetched without its tabs.
+
+### Fixed
+
+- Network, DNS, and authentication failures end in a one-line error and exit 1 instead of a traceback. These include a service-account or ADC token refresh that fails, a denied OAuth consent, and the network dropping during an OAuth refresh. That last one is now reported as a network error instead of starting a new browser consent.
+- A malformed drive cache is reported along with the fix (rerun `gdrives show-drives`) instead of as a `KeyError` or `TypeError`. A `--values-file` field too large for the csv module names the file and line.
+- `mv` checks every parent of the destination, not just the first, before moving a folder, so a legacy multi-parent folder can no longer make a folder its own ancestor. `ls` and `download` stop at a folder that already contains itself instead of recursing until they crash, and `download` reports it as skipped because it contains itself.
+- `docs-replace` no longer counts a match that spans an image, chip, or table cell, which the API never replaces. If the API replaces a different number of occurrences than were counted, the command says so and exits 1 instead of printing "Replaced 0 occurrence(s)" as a success.
+- A listing that Drive marks `incompleteSearch` (results may be missing) is refused instead of being used as if complete.
+- `--tab ""` on a `docs-*` command, or a Doc URL ending in an empty `?tab=`, as from an unset shell variable, is an error instead of silently targeting the first tab.
+- A Drive path of nothing but slashes and spaces (`""`, `/`, ` / `) is refused with "Drive path must not be empty" instead of the misleading "Run 'gdrives show-drives' first"; `ls --shared-with-me` applies the same check.
+
+### Removed
+
+- `sheets.resolve_spreadsheet_id`, `docs.resolve_document_id`, `docs.raw_text`, and `drives.resolve_name`, which nothing called; use `resolve.resolve_file_id` and `drives.find_drive`.
+
+### Security
+
+- Terminal escape injection: `ls`, `download`, `mv`, `show-drives`, and CLI error messages escape control characters in Drive names, so a shared item whose name holds an ANSI or OSC sequence can't rewrite output, retitle the terminal, or set the clipboard. `ls --save-as` escapes them the same way in the CSV and markdown it writes, so viewing a saved listing with `cat` or `less` is safe too. Local file names replace those characters with `_`.
+- CSV formula injection: `ls --save-as` CSVs prefix cells starting with `=`, `+`, `-`, `@`, a tab, or a carriage return with `'`, so a shared file named `=HYPERLINK(...)` doesn't run when the CSV is opened in a spreadsheet app.
+
 ## [0.9.2] - 2026-09-26
 
 ### Changed

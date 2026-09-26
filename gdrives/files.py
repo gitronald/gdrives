@@ -1,11 +1,14 @@
 """Drive API wrappers and file helpers."""
 
+import logging
 import re
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
 
 # The googleapiclient Drive client (a discovery `Resource`) ships no type
 # stubs; alias it to Any so callers can annotate the `service` parameter.
@@ -29,13 +32,21 @@ GOOGLE_MIME_TYPES = {
     "application/vnd.google-apps.shortcut": "shortcut",
 }
 
-# Fields requested from files.list — see docs/drive-api.md
+# Fields requested from files.list — see docs/drive-api.md. incompleteSearch is
+# how the API flags a page that may be missing results (see paginate_files).
 LIST_FIELDS = (
-    "nextPageToken, "
+    "nextPageToken, incompleteSearch, "
     "files(id, name, mimeType, size, webViewLink, "
     "modifiedTime, owners(displayName, emailAddress), "
     "sharingUser(displayName, emailAddress))"
 )
+
+# files.list's largest page: a 5,000-item folder takes 5 calls instead of 50.
+PAGE_SIZE = 1000
+
+
+class IncompleteSearchError(Exception):
+    """Raised when files.list reports that some results may be missing."""
 
 
 def strip_url_suffix(url: str) -> str:
@@ -121,15 +132,29 @@ def shared_by(f: DriveFile) -> str:
     return (f.get("sharingUser") or {}).get("emailAddress", "")
 
 
-def _folders_first(f: DriveFile) -> tuple[bool, str]:
-    """Sort key placing folders before files, then case-insensitively by name."""
-    return (not is_folder(f), f["name"].lower())
+def _folders_first(f: DriveFile) -> tuple[bool, str, str, str]:
+    """Sort key placing folders before files, then case-insensitively by name.
+
+    Ties fall back to the exact name and then the file ID, so items that share a
+    name (Drive allows duplicates) come back in the same order on every call:
+    files.list promises no order, and ``download --skip-existing`` relies on a
+    rerun seeing duplicates in the order the first run did.
+    """
+    return (not is_folder(f), f["name"].lower(), f["name"], f["id"])
 
 
 def paginate_files(
     service: Service, query: str, fields: str, corpora: str
 ) -> list[DriveFile]:
-    """Paginate through a files.list query and return all results."""
+    """Paginate through a files.list query and return all results.
+
+    Drive marks a page ``incompleteSearch`` when it could not search every drive
+    in the corpus, which an ``allDrives`` query can hit, so results may be
+    missing. A listing short of items would pass for complete: an ``ls`` that
+    leaves files out, a ``download`` that skips them, or a "not found" that
+    ``mv`` takes for a new name. So that raises IncompleteSearchError instead.
+    ``fields`` must request ``incompleteSearch``, as :data:`LIST_FIELDS` does.
+    """
     items: list[DriveFile] = []
     page_token = None
     while True:
@@ -137,7 +162,7 @@ def paginate_files(
             "q": query,
             "fields": fields,
             "corpora": corpora,
-            "pageSize": 100,
+            "pageSize": PAGE_SIZE,
         }
         if corpora == "allDrives":
             kwargs["includeItemsFromAllDrives"] = True
@@ -145,6 +170,11 @@ def paginate_files(
         if page_token:
             kwargs["pageToken"] = page_token
         results = service.files().list(**kwargs).execute()
+        if results.get("incompleteSearch"):
+            raise IncompleteSearchError(
+                "Drive reported an incomplete search, so this listing may be "
+                "missing items; nothing was done with it"
+            )
         items.extend(results.get("files", []))
         page_token = results.get("nextPageToken")
         if not page_token:
@@ -203,12 +233,15 @@ class WalkItem(NamedTuple):
     only matters for folders: ``True`` means the walk recursed into it (its
     descendants follow) and ``False`` means it hit the depth limit (no
     descendants follow); it is always ``False`` for non-folder entries.
+    ``cycle`` marks the other reason a folder is not descended into: it is one
+    of its own ancestors.
     """
 
     file: DriveFile
     ancestors: tuple[str, ...]
     depth: int
     descended: bool
+    cycle: bool = False
 
 
 def walk_tree(
@@ -217,6 +250,7 @@ def walk_tree(
     *,
     depth: int | None = None,
     _ancestors: tuple[str, ...] = (),
+    _ancestor_ids: frozenset[str] = frozenset(),
 ) -> Iterator[WalkItem]:
     """Yield every descendant of a folder, folders-first, in depth-first order.
 
@@ -227,20 +261,40 @@ def walk_tree(
     ``descended=True`` immediately followed by its descendants; a depth-limited
     folder is yielded with ``descended=False`` and no descendants. Folders-first
     ordering comes from ``list_children``; this function does not re-sort.
+
+    A folder that is one of its own ancestors (a cycle, which legacy
+    multi-parent items make possible) is yielded without being descended into,
+    with a warning, so an unlimited walk always ends.
     """
     if depth is not None and depth < 1:
         raise ValueError("depth must be at least 1")
     level = len(_ancestors)
+    path_ids = _ancestor_ids | {folder_id}
     for f in list_children(service, folder_id):
         if is_folder(f):
             descend = depth is None or level + 1 < depth
-            yield WalkItem(file=f, ancestors=_ancestors, depth=level, descended=descend)
+            cycle = descend and f["id"] in path_ids
+            if cycle:
+                logger.warning(
+                    "folder %r (%s) contains itself; not descending into it again",
+                    f["name"],
+                    f["id"],
+                )
+                descend = False
+            yield WalkItem(
+                file=f,
+                ancestors=_ancestors,
+                depth=level,
+                descended=descend,
+                cycle=cycle,
+            )
             if descend:
                 yield from walk_tree(
                     service,
                     f["id"],
                     depth=depth,
                     _ancestors=_ancestors + (f["name"],),
+                    _ancestor_ids=path_ids,
                 )
         else:
             yield WalkItem(file=f, ancestors=_ancestors, depth=level, descended=False)

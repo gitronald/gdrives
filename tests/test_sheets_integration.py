@@ -115,6 +115,26 @@ def test_append_adds_rows_after_table(tab):
     assert sheets.pull_values(service, sid, f"'{name}'") == [["h1", "h2"], ["x", "y"]]
 
 
+def test_append_inserts_rows_instead_of_overwriting_the_next_block(tab):
+    service, sid, name = tab
+    # A table in A1:B2, a blank row 3, and a second block from row 4. The API
+    # appends at row 3; OVERWRITE would write the second row over "other".
+    sheets.update_values(service, sid, f"'{name}'!A1:B2", [["h1", "h2"], ["a", "b"]])
+    sheets.update_values(
+        service, sid, f"'{name}'!A4:B5", [["other", "block"], ["keep", "me"]]
+    )
+    sheets.append_values(service, sid, f"'{name}'!A1:B2", [["x", "y"], ["z", "w"]])
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["h1", "h2"],
+        ["a", "b"],
+        ["x", "y"],
+        ["z", "w"],
+        [],
+        ["other", "block"],
+        ["keep", "me"],
+    ]
+
+
 def test_clear_empties_range(tab):
     service, sid, name = tab
     sheets.update_values(service, sid, f"'{name}'!A1:B2", [["1", "2"], ["3", "4"]])

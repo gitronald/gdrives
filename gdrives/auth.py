@@ -1,5 +1,6 @@
 """Shared Google Drive authentication and service builder."""
 
+import functools
 import json
 import logging
 import os
@@ -8,11 +9,25 @@ from pathlib import Path
 from typing import Any
 
 import google.auth.exceptions
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from gdrives.local import PRIVATE, atomic_output
 
-load_dotenv()
+
+def _load_env() -> None:
+    """Load the ``.env`` in the working directory or its nearest ancestor.
+
+    A bare ``load_dotenv()`` searches upward from this module's own directory,
+    which for an installed tool is site-packages, not the project a command
+    runs in: it would miss the project's ``.env`` and could load an unrelated
+    one such as ``~/.env``. Starting from the working directory matches
+    ``.gdrives/cache.json``, which is relative to it too. Variables already
+    set in the environment win.
+    """
+    load_dotenv(find_dotenv(usecwd=True))
+
+
+_load_env()
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +193,10 @@ def authenticate_oauth(scopes: list[str] | None = None):
         try:
             creds.refresh(Request())
         except google.auth.exceptions.RefreshError:
+            # The grant is revoked or expired: consent again below. A network
+            # failure (TransportError) propagates instead. A new consent can't
+            # fix it and a service account can't reach Google either, so the
+            # CLI reports it as is rather than opening a browser flow.
             creds = None
         else:
             _write_token(token_path, creds)
@@ -230,11 +249,23 @@ def authenticate(scopes: list[str] | None = None):
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
 
 
+@functools.cache
+def _credentials(scopes: frozenset[str]):
+    """Authenticate once per scope set for the life of the process.
+
+    A command that builds two clients with the same scopes, such as the Drive
+    client that resolves a path and the Sheets or Docs client that reads the
+    file, then authenticates once instead of twice. With a service account or
+    ADC, each authentication costs a token round-trip.
+    """
+    return authenticate(sorted(scopes))
+
+
 def _build_service(api: str, version: str, scopes: list[str] | None):
-    """Authenticate with ``scopes`` and build the ``api``/``version`` client."""
+    """Build the ``api``/``version`` client with credentials for ``scopes``."""
     from googleapiclient.discovery import build
 
-    creds = authenticate(scopes)
+    creds = _credentials(frozenset(scopes or SCOPES))
     return build(api, version, credentials=creds)
 
 
