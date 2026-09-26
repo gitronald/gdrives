@@ -383,6 +383,7 @@ class TestWalkTree:
         assert [it.file["id"] for it in items] == ["SUB", "A"]  # no descent
         sub = next(it for it in items if it.file["id"] == "SUB")
         assert sub.descended is False
+        assert sub.cycle is False  # held back by depth, not by a cycle
 
     def test_depth_2_descends_one_level(self, mock_service, monkeypatch):
         def children(s, fid):
@@ -430,11 +431,11 @@ class TestWalkTree:
         monkeypatch.setattr("gdrives.files.list_children", lambda s, fid: tree[fid])
 
         items = list(walk_tree(mock_service, "root"))
-        assert [(it.file["id"], it.depth, it.descended) for it in items] == [
-            ("A", 0, True),
-            ("B", 1, True),
-            ("A", 2, False),  # A is B's ancestor: listed, not walked again
-            ("F", 2, False),
+        assert [(it.file["id"], it.depth, it.descended, it.cycle) for it in items] == [
+            ("A", 0, True, False),
+            ("B", 1, True, False),
+            ("A", 2, False, True),  # A is B's ancestor: listed, not walked again
+            ("F", 2, False, False),
         ]
         assert "folder 'A' (A) contains itself" in caplog.text
 

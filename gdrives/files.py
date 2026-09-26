@@ -233,12 +233,15 @@ class WalkItem(NamedTuple):
     only matters for folders: ``True`` means the walk recursed into it (its
     descendants follow) and ``False`` means it hit the depth limit (no
     descendants follow); it is always ``False`` for non-folder entries.
+    ``cycle`` marks the other reason a folder is not descended into: it is one
+    of its own ancestors.
     """
 
     file: DriveFile
     ancestors: tuple[str, ...]
     depth: int
     descended: bool
+    cycle: bool = False
 
 
 def walk_tree(
@@ -270,14 +273,21 @@ def walk_tree(
     for f in list_children(service, folder_id):
         if is_folder(f):
             descend = depth is None or level + 1 < depth
-            if descend and f["id"] in path_ids:
+            cycle = descend and f["id"] in path_ids
+            if cycle:
                 logger.warning(
                     "folder %r (%s) contains itself; not descending into it again",
                     f["name"],
                     f["id"],
                 )
                 descend = False
-            yield WalkItem(file=f, ancestors=_ancestors, depth=level, descended=descend)
+            yield WalkItem(
+                file=f,
+                ancestors=_ancestors,
+                depth=level,
+                descended=descend,
+                cycle=cycle,
+            )
             if descend:
                 yield from walk_tree(
                     service,

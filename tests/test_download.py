@@ -300,6 +300,25 @@ class TestSummarize:
         assert summary["auto_export"] == 2  # gdoc + gslides
         assert summary["skipped_natives"] == 1
 
+    def test_counts_a_cycle_apart_from_the_depth_limit(self, capsys):
+        items = [
+            _item(make_folder("A", id="A"), descended=True),
+            WalkItem(
+                file=make_folder("A", id="A"),
+                ancestors=("A",),
+                depth=1,
+                descended=False,
+                cycle=True,
+            ),
+        ]
+        summary = summarize(items)
+        assert summary["cyclic_subfolders"] == 1
+        assert summary["skipped_subfolders"] == 0
+        print_summary(summary, "out")
+        err = capsys.readouterr().err
+        assert "1 subfolder(s) skipped (contains itself)" in err
+        assert "depth limit" not in err
+
     def test_counts_descended_and_skipped_subfolders(self):
         items = [
             _item(make_folder("in", id="IN"), descended=True),
@@ -460,6 +479,7 @@ class TestPrintSummary:
             "skipped_natives": 1,
             "subfolders": 4,
             "skipped_subfolders": 5,
+            "cyclic_subfolders": 0,
         }
         print_summary(summary, "out")
         err = capsys.readouterr().err
@@ -506,6 +526,22 @@ class TestDownloadWalk:
         items = [_item(make_folder("empty", id="E"), descended=True)]
         download_walk(mock_service, items, str(tmp_path))
         assert (tmp_path / "empty").is_dir()
+
+    def test_cyclic_folder_is_named_as_such(
+        self, mock_service, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr("gdrives.download.download_entry", lambda *a: None)
+        item = WalkItem(
+            file=make_folder("A", id="A"),
+            ancestors=(),
+            depth=0,
+            descended=False,
+            cycle=True,
+        )
+        download_walk(mock_service, [item], str(tmp_path))
+        err = capsys.readouterr().err
+        assert "skip subfolder (contains itself): A/" in err
+        assert "depth limit" not in err
 
     def test_depth_limited_folder_skips_with_message(
         self, mock_service, tmp_path, monkeypatch, capsys

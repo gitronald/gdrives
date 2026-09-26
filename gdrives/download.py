@@ -126,12 +126,15 @@ def summarize(items: list[WalkItem]) -> dict[str, int]:
         "skipped_natives": 0,
         "subfolders": 0,
         "skipped_subfolders": 0,
+        "cyclic_subfolders": 0,
     }
     for item in items:
         f = item.file
         if is_folder(f):
             if item.descended:
                 summary["subfolders"] += 1
+            elif item.cycle:
+                summary["cyclic_subfolders"] += 1
             else:
                 summary["skipped_subfolders"] += 1
             continue
@@ -177,6 +180,12 @@ def print_summary(summary: dict[str, int], output_dir: str) -> None:
     if summary["skipped_subfolders"]:
         print(
             f"  {summary['skipped_subfolders']:>4} subfolder(s) skipped (depth limit)",
+            file=sys.stderr,
+        )
+    if summary["cyclic_subfolders"]:
+        print(
+            f"  {summary['cyclic_subfolders']:>4} subfolder(s) skipped "
+            "(contains itself)",
             file=sys.stderr,
         )
 
@@ -317,7 +326,8 @@ def download_walk(
         if is_folder(f):
             name = safe_filename(f["name"])
             if not item.descended:
-                print(f"  skip subfolder (depth limit): {name}/", file=sys.stderr)
+                reason = "contains itself" if item.cycle else "depth limit"
+                print(f"  skip subfolder ({reason}): {name}/", file=sys.stderr)
                 continue
             subdir = names.claim(parent / name)
             print(f"  -> {subdir}/", file=sys.stderr)
