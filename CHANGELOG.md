@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Dependabot opens its version-update PRs against `dev` instead of `main`, for both GitHub Actions and Python dependencies. Dependabot reads its config from the default branch only, so this takes effect once the release reaches `main`.
-- Repo tooling synced with proj-template 0.10.0, recorded as `[tool.proj-template] version` in `pyproject.toml` (it never reaches the wheel or the PyPI metadata): the ruff pre-commit hook moves to v0.16.6, `planners-validate` runs from its own `local` hook block, and the CI test workflow passes `--python` to `uv sync` alongside `UV_PYTHON`.
+- Repo tooling synced with proj-template 0.10.0, recorded as `[tool.proj-template] version` in `pyproject.toml` (it never reaches the wheel or the PyPI metadata): the ruff pre-commit hook moves to v0.16.6, and `planners-validate` runs from its own `local` hook block.
 
 ### Security
 
