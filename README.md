@@ -172,12 +172,14 @@ gdrives ls "My Drive/projects" --depth 3 --save-as map.md
 gdrives ls "My Drive/projects" --save-as map.md --save-as data.csv  # both, one traversal
 ```
 
-File names come from whoever owns a file, so the terminal table and the CSV
-treat them as untrusted. In the terminal, `ls` shows a control character in a
-name (which could otherwise drive the terminal) as `\xNN`. In a CSV, a cell
-starting with `=`, `+`, `-`, `@`, a tab, or a carriage return gets a leading `'`
-so that Excel or LibreOffice shows it as text instead of running it as a
-formula. The markdown map keeps names as they are, apart from markdown escaping.
+File names come from whoever owns a file, so `ls` treats them as untrusted in
+every output. A control character in a name (which could otherwise drive the
+terminal) is shown as `\xNN` in the terminal table and in the saved CSV and
+markdown alike, so viewing a saved listing with `cat` or `less` is safe too. In
+a CSV, a cell starting with `=`, `+`, `-`, `@`, a tab, or a carriage return also
+gets a leading `'` so that Excel or LibreOffice shows it as text instead of
+running it as a formula. The markdown map otherwise keeps names as they are,
+apart from markdown escaping.
 
 ### Export Google Docs, Sheets, and Slides
 

@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- Terminal escape injection: `ls`, `download`, `mv`, `show-drives`, and CLI error messages escape control characters in Drive names, so a shared item whose name holds an ANSI or OSC sequence can't rewrite output, retitle the terminal, or set the clipboard. Local file names replace those characters with `_`.
+- Terminal escape injection: `ls`, `download`, `mv`, `show-drives`, and CLI error messages escape control characters in Drive names, so a shared item whose name holds an ANSI or OSC sequence can't rewrite output, retitle the terminal, or set the clipboard. `ls --save-as` escapes them the same way in the CSV and markdown it writes, so viewing a saved listing with `cat` or `less` is safe too. Local file names replace those characters with `_`.
 - CSV formula injection: `ls --save-as` CSVs prefix cells starting with `=`, `+`, `-`, `@`, a tab, or a carriage return with `'`, so a shared file named `=HYPERLINK(...)` doesn't run when the CSV is opened in a spreadsheet app.
 
 ## [0.9.2] - 2026-09-26
