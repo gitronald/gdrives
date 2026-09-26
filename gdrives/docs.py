@@ -125,12 +125,15 @@ def url_tab_id(source: str) -> str | None:
     """Return the tab ID a Docs URL points at (its ``?tab=`` value), or None.
 
     A URL copied while viewing a tab carries it (``/edit?tab=t.abc``);
-    :func:`gdrives.files.extract_drive_id` keeps only the document ID.
+    :func:`gdrives.files.extract_drive_id` keeps only the document ID. A
+    ``tab=`` with no value comes back as ``""``, not None, so it is refused
+    like ``--tab ""`` rather than taken to mean the first tab (a URL built from
+    an unset shell variable).
     """
     parsed = urlsplit(source)
     if parsed.hostname != "docs.google.com":
         return None
-    return parse_qs(parsed.query).get("tab", [None])[0]
+    return parse_qs(parsed.query, keep_blank_values=True).get("tab", [None])[0]
 
 
 def _find_tab(doc: Document, tab_id: str | None) -> Document:

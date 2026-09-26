@@ -206,6 +206,7 @@ class TestTabs:
             ("https://docs.google.com/document/d/DOC/edit?tab=t.abc", "t.abc"),
             ("https://docs.google.com/document/d/DOC/edit?usp=x&tab=t.1#h=h.2", "t.1"),
             ("https://docs.google.com/document/d/DOC/edit", None),
+            ("https://docs.google.com/document/d/DOC/edit?tab=", ""),
             ("https://drive.google.com/open?id=DOC&tab=t.abc", None),
             ("DOC", None),
             ("My Drive/notes", None),
@@ -725,6 +726,19 @@ class TestRunUpdate:
             "https://docs.google.com/document/d/DOC/edit?tab=t.1", str(body), yes=True
         )
         assert svc.tabs == {"t.0": "a\n", "t.1": "z\n"}
+
+    def test_empty_url_tab_refuses_instead_of_writing_the_first_tab(
+        self, monkeypatch, tmp_path
+    ):
+        # "...edit?tab=$TAB" with TAB unset: same refusal as --tab "".
+        svc = FakeDocsService(tabs={"t.0": "a", "t.1": "b"})
+        patch_service(monkeypatch, svc)
+        body = tmp_path / "body.txt"
+        body.write_text("z", encoding="utf-8")
+        url = "https://docs.google.com/document/d/DOC/edit?tab="
+        with pytest.raises(ValueError, match="tab '' not found"):
+            run_update(url, str(body), yes=True)
+        assert svc.tabs == {"t.0": "a\n", "t.1": "b\n"}
 
     def test_empty_tab_refuses_instead_of_writing_the_first_tab(
         self, monkeypatch, tmp_path
