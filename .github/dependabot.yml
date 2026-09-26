@@ -1,9 +1,15 @@
+# Dependabot version updates. Rationale and setup:
+# https://github.com/gitronald/proj-template/blob/main/docs/guides/github-automation.md
+#
+# Dependabot reads this file from the DEFAULT branch only, whatever `target-branch`
+# says — an edit landed on `dev` alone is inert until it reaches the default branch.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    target-branch: dev
     groups:
       github-actions:
         patterns: ["*"]
@@ -13,6 +19,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    target-branch: dev
     groups:
       python:
         patterns: ["*"]
