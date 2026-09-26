@@ -20,10 +20,14 @@ away from callers:
   index-addressed operations (:func:`set_text`, :func:`clear_text`) compute
   the body span from a fetched document and send that document's
   ``revisionId`` as ``writeControl.requiredRevisionId``, so the write fails
-  cleanly (HTTP 400) if the document changed in between.
+  cleanly (HTTP 400) if the document changed in between. Every write that
+  depends on an earlier read (including :func:`run_append`'s choice of a
+  leading newline) is guarded the same way.
 - Docs can have several tabs, each with its own index space. Every operation
   takes an optional ``tab_id``; ``None`` targets the first tab, the API's own
-  default for a request without one.
+  default for a request without one. The exception is :func:`replace_text`,
+  where ``None`` means every tab (``replaceAllText``'s default); the
+  ``docs-replace`` command always names one.
 """
 
 import json
@@ -31,11 +35,20 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from gdrives.files import Service
+from gdrives.local import write_text
 
 # A Docs API document, tab, body, or structural element (JSON as a dict).
 Document = dict[str, Any]
+
+# Stands in, when searching, for anything that holds a document index without
+# holding text: an inline image or other non-text paragraph element, a section
+# break, or the start of a table, row, cell, or table of contents. The API's own
+# text has something there too, so a phrase split by one is no match for
+# ``replaceAllText`` and must not be counted as one.
+_OBJECT = "\ufffc"
 
 
 # -- fetch and create --
@@ -108,21 +121,36 @@ def resolve_tab_id(doc: Document, tab: str) -> str:
     raise ValueError(f"tab {tab!r} not found; tabs: {listing or 'none'}")
 
 
-def tab_content(doc: Document, tab_id: str | None = None) -> Document:
-    """Return one tab's ``documentTab`` (the first when ``tab_id`` is None).
+def url_tab_id(source: str) -> str | None:
+    """Return the tab ID a Docs URL points at (its ``?tab=`` value), or None.
 
-    That dict holds the tab's ``body`` plus its ``headers``, ``footers``, and
-    ``footnotes`` maps. Also accepts a document fetched without tabs content,
-    whose first-tab fields sit at the top level of the document itself.
+    A URL copied while viewing a tab carries it (``/edit?tab=t.abc``);
+    :func:`gdrives.files.extract_drive_id` keeps only the document ID.
     """
-    if "tabs" not in doc and tab_id is None:
-        return doc
+    parsed = urlsplit(source)
+    if parsed.hostname != "docs.google.com":
+        return None
+    return parse_qs(parsed.query).get("tab", [None])[0]
+
+
+def _find_tab(doc: Document, tab_id: str | None) -> Document:
+    """Return the tab whose ID is ``tab_id`` (the first tab when None)."""
     if tab_id is None:
         tab_id = first_tab_id(doc)
     for tab in iter_tabs(doc):
         if tab["tabProperties"]["tabId"] == tab_id:
-            return tab.get("documentTab", {})
+            return tab
     raise ValueError(f"tab {tab_id!r} not found")
+
+
+def tab_content(doc: Document, tab_id: str | None = None) -> Document:
+    """Return one tab's ``documentTab`` (the first when ``tab_id`` is None).
+
+    That dict holds the tab's ``body`` plus its ``headers``, ``footers``, and
+    ``footnotes`` maps. ``doc`` is a :func:`pull_document` result, which always
+    carries its tabs.
+    """
+    return _find_tab(doc, tab_id).get("documentTab", {})
 
 
 def tab_body(doc: Document, tab_id: str | None = None) -> Document:
@@ -146,45 +174,43 @@ def tab_segments(doc: Document, tab_id: str | None = None) -> Iterator[Document]
 # -- reading --
 
 
-def _paragraph_text(paragraph: Document) -> str:
-    """Concatenate a paragraph's text runs (its trailing newline included)."""
+def _paragraph_text(paragraph: Document, placeholder: str = "") -> str:
+    """Concatenate a paragraph's text runs (its trailing newline included).
+
+    Any other element (an inline image, a footnote reference, a page break, a
+    chip) becomes ``placeholder``: nothing in the readable view, and one
+    :data:`_OBJECT` in the searchable one.
+    """
     return "".join(
-        pe["textRun"].get("content", "")
+        pe["textRun"].get("content", "") if "textRun" in pe else placeholder
         for pe in paragraph.get("elements", [])
-        if "textRun" in pe
     )
 
 
 def _text_runs(content: list[Document]) -> Iterator[str]:
-    """Yield the raw text of every paragraph under ``content``, in order.
+    """Yield the searchable text of the elements in ``content``, in order.
 
     Tables are walked row by row and cell by cell; tables of contents recurse.
-    Non-text paragraph elements (inline images, footnote references, page
-    breaks, ...) contribute nothing, though each still occupies one index.
+    Every element that holds an index without holding text (a section break,
+    the start of a table, row, cell, or table of contents, or a non-text
+    paragraph element such as an inline image) yields one :data:`_OBJECT`, so a
+    search can't match across it, just as ``replaceAllText`` doesn't.
     """
     for element in content:
         if "paragraph" in element:
-            yield _paragraph_text(element["paragraph"])
+            yield _paragraph_text(element["paragraph"], _OBJECT)
         elif "table" in element:
+            yield _OBJECT
             for row in element["table"].get("tableRows", []):
+                yield _OBJECT
                 for cell in row.get("tableCells", []):
+                    yield _OBJECT
                     yield from _text_runs(cell.get("content", []))
         elif "tableOfContents" in element:
+            yield _OBJECT
             yield from _text_runs(element["tableOfContents"].get("content", []))
-
-
-def raw_text(doc: Document, tab_id: str | None = None) -> str:
-    """Return a tab's text runs concatenated verbatim, with no decoration.
-
-    Covers body, headers, footers, and footnotes, in that order. Segment
-    boundaries are lost in this display view; :func:`count_occurrences` searches
-    each segment separately. :func:`document_text` is the readable body-only view
-    with list and table decoration.
-    """
-    return "".join(
-        "".join(_text_runs(segment.get("content", [])))
-        for segment in tab_segments(doc, tab_id)
-    )
+        else:  # a section break
+            yield _OBJECT
 
 
 def body_text(content: list[Document]) -> str:
@@ -225,6 +251,10 @@ def count_occurrences(
     doc: Document, find: str, *, match_case: bool = True, tab_id: str | None = None
 ) -> int:
     """Count non-overlapping occurrences of ``find`` in a tab's raw text.
+
+    Each segment (body, headers, footers, footnotes) is searched on its own, in
+    the text :func:`_text_runs` yields, so a match never spans two segments or
+    an image, table cell, or other non-text element.
 
     Case-insensitive counting uses ``str.casefold()``, the closest match to
     the API's ``matchCase: false`` comparison: a live probe showed the API
@@ -292,20 +322,30 @@ def _with_tab(target: Document, tab_id: str | None) -> Document:
 
 
 def append_text(
-    service: Service, document_id: str, text: str, *, tab_id: str | None = None
+    service: Service,
+    document_id: str,
+    text: str,
+    *,
+    tab_id: str | None = None,
+    required_revision: str | None = None,
 ) -> Document:
     """Insert ``text`` at the end of a tab's body (before its final newline).
 
     Index-free (``endOfSegmentLocation``), so no prior read is needed. The text
     continues the body's last line; start it with a newline to begin a new
-    paragraph — :func:`run_append` does exactly that when the body has content.
+    paragraph — :func:`run_append` does exactly that when the body has content,
+    and passes that read's revision as ``required_revision``: the newline
+    decision depends on the body as read, so a body that changed since is
+    refused rather than glued onto.
     """
     if not text:
         raise ValueError("text to append must not be empty")
     request = {
         "insertText": {"text": text, "endOfSegmentLocation": _with_tab({}, tab_id)}
     }
-    return batch_update(service, document_id, [request])
+    return batch_update(
+        service, document_id, [request], required_revision=required_revision
+    )
 
 
 def replace_text(
@@ -343,33 +383,72 @@ def replace_text(
     return replies[0].get("replaceAllText", {}).get("occurrencesChanged", 0)
 
 
-def _delete_body(doc: Document, tab_id: str | None) -> list[Document]:
-    """Build the request deleting a tab's whole body span, or none if empty."""
+def _plain_style(start: int, end: int, tab_id: str | None) -> list[Document]:
+    """Build requests making the paragraphs overlapping ``[start, end)`` plain.
+
+    Bullets are removed first because the API then indents each paragraph to
+    keep its nesting level visible; the paragraph-style reset that follows
+    (``NORMAL_TEXT``, with ``"*"`` resetting every other field) clears that
+    indent along with any heading, alignment, or spacing. The text-style reset
+    drops bold, links, fonts, and colors.
+    """
+
+    def span() -> Document:
+        return _with_tab({"startIndex": start, "endIndex": end}, tab_id)
+
+    return [
+        {"deleteParagraphBullets": {"range": span()}},
+        {
+            "updateParagraphStyle": {
+                "range": span(),
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                "fields": "*",
+            }
+        },
+        {"updateTextStyle": {"range": span(), "textStyle": {}, "fields": "*"}},
+    ]
+
+
+def _rewrite_body(doc: Document, tab_id: str | None, text: str) -> list[Document]:
+    """Build the requests replacing a tab's body with plain ``text``.
+
+    The body is deleted down to the one paragraph Docs requires, at index 1,
+    which keeps the style of the last paragraph deleted. ``insertText`` copies
+    the paragraph style at its insertion point (lists and bullets included) and
+    generally continues the text style there, so that paragraph is made plain
+    before anything is inserted. The delete comes first so the insert's index
+    (1, the start of the now-empty body) never needs adjusting.
+    """
     start, end = body_range(doc, tab_id)
-    if end <= start:
-        return []
-    span = _with_tab({"startIndex": start, "endIndex": end}, tab_id)
-    return [{"deleteContentRange": {"range": span}}]
+    requests: list[Document] = []
+    if end > start:
+        span = _with_tab({"startIndex": start, "endIndex": end}, tab_id)
+        requests.append({"deleteContentRange": {"range": span}})
+    requests += _plain_style(1, 2, tab_id)
+    if text:
+        requests.append(
+            {"insertText": {"text": text, "location": _with_tab({"index": 1}, tab_id)}}
+        )
+    return requests
 
 
 def clear_text(
     service: Service,
     document_id: str,
     *,
+    doc: Document,
     tab_id: str | None = None,
-    doc: Document | None = None,
 ) -> Document:
-    """Delete a tab's whole body, leaving the one empty paragraph Docs requires.
+    """Empty a tab's body, leaving the one plain paragraph Docs requires.
 
-    Reads the document (or uses ``doc``, an earlier :func:`pull_document`
-    result) to find the body span; that snapshot's ``revisionId`` guards the
-    delete, so a body that changed since is refused rather than mis-trimmed.
+    ``doc`` is a :func:`pull_document` result: it supplies the body span, and
+    its ``revisionId`` guards the delete, so a body that changed since is
+    refused rather than mis-trimmed.
     """
-    doc = doc or pull_document(service, document_id)
     return batch_update(
         service,
         document_id,
-        _delete_body(doc, tab_id),
+        _rewrite_body(doc, tab_id, ""),
         required_revision=doc.get("revisionId"),
     )
 
@@ -379,37 +458,21 @@ def set_text(
     document_id: str,
     text: str,
     *,
+    doc: Document,
     tab_id: str | None = None,
-    doc: Document | None = None,
 ) -> Document:
-    """Overwrite a tab's body with ``text`` in one batch (delete, then insert).
+    """Overwrite a tab's body with plain ``text`` in one batch.
 
-    Reads the document (or uses ``doc``) for the body span and revision, like
-    :func:`clear_text`. The delete comes first so the insert's index (1, the
-    start of the now-empty body) never needs adjusting for the shifted content.
+    ``doc`` supplies the body span and revision, as for :func:`clear_text`.
+    The new text replaces the formatting too: it lands as ``NORMAL_TEXT``
+    paragraphs, never as the heading or list the body used to end with.
     """
-    doc = doc or pull_document(service, document_id)
-    requests = _delete_body(doc, tab_id)
-    if text:
-        requests.append(
-            {"insertText": {"text": text, "location": _with_tab({"index": 1}, tab_id)}}
-        )
     return batch_update(
-        service, document_id, requests, required_revision=doc.get("revisionId")
+        service,
+        document_id,
+        _rewrite_body(doc, tab_id, text),
+        required_revision=doc.get("revisionId"),
     )
-
-
-# -- source resolution --
-
-
-def resolve_document_id(source: str, service: Service | None = None) -> str:
-    """Resolve a Doc URL, bare file ID, or Drive path to a document ID.
-
-    The Docs-facing name for :func:`gdrives.resolve.resolve_file_id`.
-    """
-    from gdrives.resolve import resolve_file_id
-
-    return resolve_file_id(source, service)
 
 
 # -- local text interchange --
@@ -419,9 +482,11 @@ def read_text_file(path: str) -> str:
     """Read a local UTF-8 text file, dropping one trailing newline.
 
     Editors end files with a newline and Docs ends every body with one of its
-    own, so writing the file verbatim would leave an empty last paragraph.
+    own, so writing the file verbatim would leave an empty last paragraph. A
+    byte-order mark, which some Windows editors write, is dropped too, rather
+    than becoming an invisible first character of the document.
     """
-    text = Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8-sig")
     return text[:-1] if text.endswith("\n") else text
 
 
@@ -435,9 +500,23 @@ def _resolve_and_report(source: str) -> str:
     return resolve_and_report(source, "Document")
 
 
-def _target_tab(doc: Document, tab: str | None) -> str | None:
-    """Resolve a ``--tab`` (title or ID) to a tab ID; None keeps the first tab."""
-    return resolve_tab_id(doc, tab) if tab else None
+def _target_tab(doc: Document, source: str, tab: str | None) -> str | None:
+    """Resolve the tab a command targets to a tab ID; None keeps the first tab.
+
+    ``--tab`` (a title or ID) wins, then the tab a Docs URL points at
+    (``?tab=``), so a link copied while viewing a tab edits that tab. An empty
+    ``--tab ""`` is an error, not the first tab: an unset shell variable must
+    not quietly retarget a write.
+    """
+    if tab is None:
+        tab = url_tab_id(source)
+    return resolve_tab_id(doc, tab) if tab is not None else None
+
+
+def _describe_target(doc: Document, tab_id: str | None) -> str:
+    """Name what a whole-body write replaces, for its confirmation prompt."""
+    title = _find_tab(doc, tab_id)["tabProperties"].get("title", "")
+    return f"{doc.get('title', '')!r}, tab {title!r}"
 
 
 def run_get(
@@ -456,13 +535,11 @@ def run_get(
     if as_json:
         content = json.dumps(doc, indent=2)
     else:
-        content = document_text(doc, _target_tab(doc, tab))
+        content = document_text(doc, _target_tab(doc, source, tab))
     if content and not content.endswith("\n"):
         content += "\n"
     if output:
-        out = Path(output)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(content, encoding="utf-8")
+        write_text(Path(output), content)
         print(f"Wrote {len(content)} character(s) to {output}", file=sys.stderr)
     else:
         sys.stdout.write(content)
@@ -471,21 +548,27 @@ def run_get(
 def run_update(
     source: str, text_file: str, *, tab: str | None = None, yes: bool = False
 ) -> None:
-    """Overwrite the body with a local text file, confirming first unless ``yes``."""
+    """Overwrite the body with a local text file, confirming first unless ``yes``.
+
+    The document is read before the prompt so it can name the document and tab
+    being replaced. The write is tied to that read's revision, so an edit made
+    while the prompt waited refuses the write instead of being overwritten.
+    """
     import typer
 
     from gdrives.auth import DOCS_WRITE_SCOPES, build_docs_service
 
     document_id = _resolve_and_report(source)
     text = read_text_file(text_file)
+    service = build_docs_service(DOCS_WRITE_SCOPES)
+    doc = pull_document(service, document_id)
+    tab_id = _target_tab(doc, source, tab)
     if not yes and not typer.confirm(
-        "Replace the entire document body?", default=False
+        f"Replace the entire body of {_describe_target(doc, tab_id)}?", default=False
     ):
         print("Aborted.", file=sys.stderr)
         return
-    service = build_docs_service(DOCS_WRITE_SCOPES)
-    doc = pull_document(service, document_id)
-    set_text(service, document_id, text, tab_id=_target_tab(doc, tab), doc=doc)
+    set_text(service, document_id, text, doc=doc, tab_id=tab_id)
     print(f"Replaced body with {len(text)} character(s)")
 
 
@@ -515,10 +598,14 @@ def run_append(
     document_id = _resolve_and_report(source)
     service = build_docs_service(DOCS_WRITE_SCOPES)
     doc = pull_document(service, document_id)
-    tab_id = _target_tab(doc, tab)
+    tab_id = _target_tab(doc, source, tab)
     start, end = body_range(doc, tab_id)
     append_text(
-        service, document_id, ("\n" if end > start else "") + text, tab_id=tab_id
+        service,
+        document_id,
+        ("\n" if end > start else "") + text,
+        tab_id=tab_id,
+        required_revision=doc.get("revisionId"),
     )
     print(f"Appended {len(text)} character(s)")
 
@@ -536,7 +623,10 @@ def run_replace(
 
     Counts occurrences from a fresh read first: zero is an error, and more than
     one is refused unless ``allow_multiple`` — so a targeted edit never rewrites
-    the wrong sentence. The write is tied to that read's revision.
+    the wrong sentence. The write is tied to that read's revision. The count
+    reads the document model while the API matches its own text, so if the two
+    disagree on how many were replaced, that is reported as an error rather than
+    as success.
     """
     from gdrives.auth import DOCS_WRITE_SCOPES, build_docs_service
 
@@ -545,7 +635,7 @@ def run_replace(
     document_id = _resolve_and_report(source)
     service = build_docs_service(DOCS_WRITE_SCOPES)
     doc = pull_document(service, document_id)
-    tab_id = _target_tab(doc, tab) or first_tab_id(doc)
+    tab_id = _target_tab(doc, source, tab) or first_tab_id(doc)
     count = count_occurrences(doc, find, match_case=match_case, tab_id=tab_id)
     if count == 0:
         raise ValueError(f"no occurrence of {find!r}")
@@ -562,22 +652,34 @@ def run_replace(
         tab_id=tab_id,
         required_revision=doc.get("revisionId"),
     )
+    if changed != count:
+        raise ValueError(
+            f"counted {count} occurrence(s) of {find!r}, but the API replaced "
+            f"{changed}; review the document"
+        )
     print(f"Replaced {changed} occurrence(s) of {find!r}")
 
 
 def run_clear(source: str, *, tab: str | None = None, yes: bool = False) -> None:
-    """Empty the body, confirming first unless ``yes``."""
+    """Empty the body, confirming first unless ``yes``.
+
+    Reads first so the prompt can name the document and tab, and ties the
+    write to that read's revision, as :func:`run_update` does.
+    """
     import typer
 
     from gdrives.auth import DOCS_WRITE_SCOPES, build_docs_service
 
     document_id = _resolve_and_report(source)
-    if not yes and not typer.confirm("Clear the entire document body?", default=False):
-        print("Aborted.", file=sys.stderr)
-        return
     service = build_docs_service(DOCS_WRITE_SCOPES)
     doc = pull_document(service, document_id)
-    clear_text(service, document_id, tab_id=_target_tab(doc, tab), doc=doc)
+    tab_id = _target_tab(doc, source, tab)
+    if not yes and not typer.confirm(
+        f"Clear the entire body of {_describe_target(doc, tab_id)}?", default=False
+    ):
+        print("Aborted.", file=sys.stderr)
+        return
+    clear_text(service, document_id, doc=doc, tab_id=tab_id)
     print("Cleared document body")
 
 

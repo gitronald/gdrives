@@ -218,6 +218,21 @@ def patch_sheets_service(
 # -- Docs API fake --
 
 
+def raw_text(doc: dict[str, Any], tab_id: str | None = None) -> str:
+    """A tab's searchable text, all segments joined: what a replace can match.
+
+    ``count_occurrences`` searches each segment separately; tests use this
+    joined view to assert exactly what a replacement changed. Non-text elements
+    show as the U+FFFC placeholder the search uses.
+    """
+    from gdrives.docs import _text_runs, tab_segments
+
+    return "".join(
+        "".join(_text_runs(segment.get("content", [])))
+        for segment in tab_segments(doc, tab_id)
+    )
+
+
 def http_error(status: int, reason: str) -> Any:
     """Build the ``HttpError`` the discovery client raises for an API failure."""
     from googleapiclient.errors import HttpError
@@ -297,7 +312,9 @@ class FakeDocsService:
     every tab ends with the newline Docs requires) and applies ``insertText``,
     ``deleteContentRange``, and ``replaceAllText`` requests to that text with
     real index arithmetic, so shifted-index and stale-revision paths are
-    testable without the API. ``headers`` / ``footers`` / ``footnotes`` (each
+    testable without the API. The formatting requests (``deleteParagraphBullets``,
+    ``updateParagraphStyle``, ``updateTextStyle``) change no text but have their
+    ranges checked against it. ``headers`` / ``footers`` / ``footnotes`` (each
     segment ID -> text) render as the first tab's extra segments; only
     ``replaceAllText`` touches them, as in the API. Every successful batch
     bumps ``revision``; a batch whose ``writeControl.requiredRevisionId`` is
@@ -451,6 +468,26 @@ class FakeDocsService:
                     400, "deleteContentRange: cannot delete the final newline"
                 )
             self.tabs[tab_id] = current[:start] + current[end:]
+            return {}
+        style = next(
+            (
+                request[kind]
+                for kind in (
+                    "deleteParagraphBullets",
+                    "updateParagraphStyle",
+                    "updateTextStyle",
+                )
+                if kind in request
+            ),
+            None,
+        )
+        if style is not None:
+            # Formatting is not modelled, but the range is checked like the
+            # API does: inside the tab, final newline included.
+            span = style["range"]
+            current = self.tabs[span.get("tabId") or self._first_tab()]
+            if not 1 <= span["startIndex"] < span["endIndex"] <= len(current) + 1:
+                raise http_error(400, f"style range {span} out of bounds")
             return {}
         if "replaceAllText" in request:
             req = request["replaceAllText"]
