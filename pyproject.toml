@@ -1,6 +1,6 @@
 [project]
 name = "gdrives"
-version = "0.9.1"
+version = "0.9.2"
 description = ""
 authors = [
     {name = "gitronald", email = "gitronald@users.noreply.github.com"}
@@ -21,6 +21,13 @@ repository = "https://github.com/gitronald/gdrives"
 [project.scripts]
 gdrives = "gdrives.cli:app"
 
+# Which proj-template release this repo was scaffolded from, stamped by
+# proj-init.sh and re-stamped by the install-template skill on upgrade. Inert to
+# consumers: build backends translate only [project], so this never reaches the
+# wheel or the PyPI metadata. Read it to audit template drift across repos.
+[tool.proj-template]
+version = "0.10.0"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -33,6 +40,13 @@ packages = ["gdrives"]
 # filenames don't glob at every depth — this keeps internal plan files
 # (.planners/), guides (docs/), the .claude/ holder, tests, and tooling out of
 # the published sdist.
+#
+# Not exhaustive: hatchling force-includes pyproject.toml, PKG-INFO, and
+# .gitignore in every sdist regardless of this list, and neither `exclude` nor
+# `ignore-vcs` drops them. Wheels are unaffected — they carry only the package
+# and .dist-info — so treat anything in this file as sdist-visible and keep
+# secrets out of it. Adding a path here does not make it importable; wheel
+# contents come from the package dir, not this list.
 only-include = [
     "/gdrives",
     "/README.md",
