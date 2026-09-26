@@ -1,9 +1,12 @@
 """Tests for gdrives.download — single-file and folder downloads."""
 
+from pathlib import Path
+
 import pytest
-from helpers import make_file, make_folder, make_gdoc, make_gslides
+from helpers import http_error, make_file, make_folder, make_gdoc, make_gslides
 
 from gdrives.download import (
+    DownloadError,
     classify_entry,
     download_entry,
     download_file,
@@ -64,6 +67,11 @@ class TestSafeFilename:
     def test_replaces_backslash(self):
         # On Windows '\' is a path separator; neutralize it like '/'.
         assert safe_filename("a\\b") == "a_b"
+
+    def test_control_characters_replaced(self):
+        # ESC would reach the terminal in every progress line that prints the
+        # local path; newlines and tabs make awkward local names too.
+        assert safe_filename("\x1b]0;x\x07a\nb\tc\x9bd.pdf") == "_]0;x_a_b_c_d.pdf"
 
     def test_backslash_traversal_neutralized(self):
         # '..\\..\\evil' must not survive as a Windows path traversal.
@@ -250,7 +258,7 @@ class TestDownloadSingle:
         rec = {}
         monkeypatch.setattr(
             "gdrives.download.download_entry",
-            lambda s, f, out: rec.update(out=out, f=f),
+            lambda s, f, out, names=None: rec.update(out=out, f=f),
         )
         meta = make_file("a.pdf", id="X", mime=PDF_MIME)
         download_single(mock_service, meta, str(dest))
@@ -342,7 +350,7 @@ class TestRun:
         rec = {}
         monkeypatch.setattr(
             "gdrives.download.download_single",
-            lambda s, meta, od: rec.update(meta=meta, od=od),
+            lambda s, meta, od, **k: rec.update(meta=meta, od=od, **k),
         )
         monkeypatch.setattr(
             "gdrives.download.download_walk",
@@ -351,6 +359,7 @@ class TestRun:
         run("https://drive.google.com/file/d/FID/view", str(tmp_path))
         assert rec["meta"]["id"] == "FID"
         assert rec["od"] == str(tmp_path)
+        assert rec["skip_existing"] is False
 
     def test_path_file_resolves_with_allow_files(
         self, mock_service, tmp_path, monkeypatch
@@ -366,7 +375,7 @@ class TestRun:
         mock_service.files().get().execute.return_value = make_file(
             "a.pdf", id="RID", mime=PDF_MIME
         )
-        monkeypatch.setattr("gdrives.download.download_single", lambda *a: None)
+        monkeypatch.setattr("gdrives.download.download_single", lambda *a, **k: None)
         run("My Drive/refs/a.pdf", str(tmp_path))
         assert rec["path"] == "My Drive/refs/a.pdf"
         assert rec["allow_files"] is True
@@ -387,7 +396,8 @@ class TestRun:
         monkeypatch.setattr("gdrives.files.list_children", spy)
         got = []
         monkeypatch.setattr(
-            "gdrives.download.download_entry", lambda s, f, out: got.append(f["id"])
+            "gdrives.download.download_entry",
+            lambda s, f, out, names=None: got.append(f["id"]),
         )
         monkeypatch.setattr(
             "gdrives.download.download_single",
@@ -478,7 +488,7 @@ class TestDownloadWalk:
         ]
         got = {}
 
-        def rec(s, f, out):
+        def rec(s, f, out, names=None):
             got[f["id"]] = str(out)
 
         monkeypatch.setattr("gdrives.download.download_entry", rec)
@@ -521,7 +531,7 @@ class TestDownloadWalk:
         ]
         got = {}
 
-        def rec(s, f, out):
+        def rec(s, f, out, names=None):
             got[f["id"]] = str(out)
 
         monkeypatch.setattr("gdrives.download.download_entry", rec)
@@ -574,7 +584,7 @@ def test_colliding_folders_keep_separate_descendants(
     destinations = {}
     monkeypatch.setattr(
         "gdrives.download.download_entry",
-        lambda s, f, out: destinations.update({f["name"]: out}),
+        lambda s, f, out, names=None: destinations.update({f["name"]: out}),
     )
     download_walk(mock_service, items, str(tmp_path))
     name = safe_filename(first)
@@ -602,6 +612,15 @@ def test_folder_download_avoids_existing_local_entries(
     assert not (tmp_path / "missing").exists()
 
 
+def test_unique_path_accepts_a_taken_predicate(tmp_path):
+    (tmp_path / "a.txt").write_text("on disk, but not taken")
+    used = {tmp_path / "a.txt", tmp_path / "a (1).txt"}
+    assert unique_path(tmp_path / "a.txt", used.__contains__) == (
+        tmp_path / "a (2).txt"
+    )
+    assert unique_path(tmp_path / "b.txt", used.__contains__) == tmp_path / "b.txt"
+
+
 def test_unique_path_avoids_dangling_symlinks(tmp_path):
     (tmp_path / "a").symlink_to(tmp_path / "missing")
     (tmp_path / "a (1)").symlink_to(tmp_path / "also-missing")
@@ -622,3 +641,220 @@ def test_folder_run_preserves_empty_subfolders(mock_service, tmp_path, monkeypat
 def test_unknown_native_does_not_export_based_on_extension():
     f = make_file("x.gdoc", mime="application/vnd.google-apps.x")
     assert classify_entry(f) == "skip"
+
+
+# -- failures and reruns --
+
+
+def _fake_io(monkeypatch, fetched, fail=()):
+    """Stand-ins for download_file/export_file that write real local files.
+
+    Each records the file ID it was asked for; IDs in ``fail`` raise the 403 the
+    API returns for a download-restricted file or an oversized export.
+    """
+
+    def download_file(s, fid, path):
+        fetched.append(fid)
+        if fid in fail:
+            raise http_error(403, "cannotDownloadFile")
+        Path(path).write_bytes(b"x")
+        return 1
+
+    def export_file(s, fid, path):
+        fetched.append(fid)
+        if fid in fail:
+            raise http_error(403, "exportSizeLimitExceeded")
+        Path(path).write_bytes(b"doc")
+
+    monkeypatch.setattr("gdrives.download.download_file", download_file)
+    monkeypatch.setattr("gdrives.download.export_file", export_file)
+
+
+def _tree():
+    return [
+        _item(make_folder("sub", id="SUB"), descended=True),
+        _item(make_file("b.pdf", id="B", mime=PDF_MIME), ancestors=("sub",), depth=1),
+        _item(make_file("a.pdf", id="A", mime=PDF_MIME)),
+        _item(make_gdoc("Big", id="BIG")),
+        _item(make_file("c.pdf", id="C", mime=PDF_MIME)),
+    ]
+
+
+def _local_files(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+
+
+class TestFailuresAndReruns:
+    def test_one_failure_does_not_stop_the_rest(
+        self, mock_service, tmp_path, monkeypatch, capsys
+    ):
+        fetched = []
+        _fake_io(monkeypatch, fetched, fail={"BIG"})
+        failures = download_walk(mock_service, _tree(), str(tmp_path))
+        assert fetched == ["B", "A", "BIG", "C"]  # C still tried after BIG failed
+        assert _local_files(tmp_path) == ["a.pdf", "c.pdf", "sub/b.pdf"]
+        (line,) = failures
+        assert line.startswith("Big: <HttpError 403")
+        assert "failed: Big: <HttpError 403" in capsys.readouterr().err
+
+    def test_rerun_with_skip_existing_fetches_only_what_is_missing(
+        self, mock_service, tmp_path, monkeypatch, capsys
+    ):
+        _fake_io(monkeypatch, [], fail={"BIG"})
+        download_walk(mock_service, _tree(), str(tmp_path))
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        failures = download_walk(
+            mock_service, _tree(), str(tmp_path), skip_existing=True
+        )
+        assert failures == []
+        assert fetched == ["BIG"]
+        # no "a (1).pdf"-style duplicates of what the first run saved
+        assert _local_files(tmp_path) == ["Big.docx", "a.pdf", "c.pdf", "sub/b.pdf"]
+        assert f"skip (already there): {tmp_path / 'a.pdf'}" in capsys.readouterr().err
+
+    def test_rerun_maps_duplicate_names_to_the_same_paths(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        # Two Drive files share a name; the second one failed the first time.
+        items = [
+            _item(make_file("dup.pdf", id="D1", mime=PDF_MIME)),
+            _item(make_file("dup.pdf", id="D2", mime=PDF_MIME)),
+            _item(make_folder("f", id="F1"), descended=True),
+            _item(make_file("x.pdf", id="X1", mime=PDF_MIME), depth=1),
+            _item(make_folder("f", id="F2"), descended=True),
+            _item(make_file("x.pdf", id="X2", mime=PDF_MIME), depth=1),
+        ]
+        _fake_io(monkeypatch, [], fail={"D2", "X2"})
+        download_walk(mock_service, items, str(tmp_path))
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        download_walk(mock_service, items, str(tmp_path), skip_existing=True)
+        assert fetched == ["D2", "X2"]
+        assert _local_files(tmp_path) == [
+            "dup (1).pdf",
+            "dup.pdf",
+            "f (1)/x.pdf",
+            "f/x.pdf",
+        ]
+
+    def test_folder_that_cannot_be_created_skips_its_contents(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        long_name = "x" * 300  # past the usual 255-byte file name limit
+        items = [
+            _item(make_folder(long_name, id="L"), descended=True),
+            _item(make_folder("inner", id="I"), depth=1, descended=True),
+            _item(make_file("deep.pdf", id="D", mime=PDF_MIME), depth=2),
+            _item(make_file("a.pdf", id="A", mime=PDF_MIME)),
+        ]
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        failures = download_walk(mock_service, items, str(tmp_path))
+        assert fetched == ["A"]  # the long folder's subtree was never attempted
+        (line,) = failures
+        assert line.startswith(long_name + ": ")
+        assert line.endswith("(its contents were not downloaded)")
+
+    def test_file_name_the_filesystem_rejects_is_a_failure(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        items = [
+            _item(make_file("y" * 300 + ".pdf", id="Y", mime=PDF_MIME)),
+            _item(make_file("a.pdf", id="A", mime=PDF_MIME)),
+        ]
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        failures = download_walk(mock_service, items, str(tmp_path))
+        assert fetched == ["Y", "A"]
+        assert len(failures) == 1 and "y" * 300 in failures[0]
+        assert _local_files(tmp_path) == ["a.pdf"]
+
+    def test_run_reports_failures_after_downloading_the_rest(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: mock_service)
+        mock_service.files().get().execute.return_value = make_folder("refs", id="R")
+        monkeypatch.setattr(
+            "gdrives.files.list_children",
+            lambda s, fid: [
+                make_file("a.pdf", id="A", mime=PDF_MIME),
+                make_file("b.pdf", id="B", mime=PDF_MIME),
+            ],
+        )
+        fetched = []
+        _fake_io(monkeypatch, fetched, fail={"A"})
+        with pytest.raises(DownloadError) as exc:
+            run("https://drive.google.com/drive/folders/R", str(tmp_path), yes=True)
+        assert fetched == ["A", "B"]
+        message = str(exc.value)
+        assert message.startswith("1 item(s) failed to download:\n  a.pdf: ")
+        assert message.endswith(
+            "Rerun with --skip-existing to fetch only what is missing."
+        )
+
+    def test_run_passes_skip_existing_to_the_walk(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: mock_service)
+        mock_service.files().get().execute.return_value = make_folder("refs", id="R")
+        monkeypatch.setattr(
+            "gdrives.files.list_children",
+            lambda s, fid: [make_file("a.pdf", id="A", mime=PDF_MIME)],
+        )
+        (tmp_path / "a.pdf").write_bytes(b"from last time")
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        run(
+            "https://drive.google.com/drive/folders/R",
+            str(tmp_path),
+            yes=True,
+            skip_existing=True,
+        )
+        assert fetched == []
+        assert (tmp_path / "a.pdf").read_bytes() == b"from last time"
+
+    def test_single_file_skip_existing_leaves_it_alone(
+        self, mock_service, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / "a.pdf").write_bytes(b"keep")
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        meta = make_file("a.pdf", id="A", mime=PDF_MIME)
+        download_single(mock_service, meta, str(tmp_path), skip_existing=True)
+        assert fetched == []
+        assert "skip (already there)" in capsys.readouterr().err
+        download_single(mock_service, meta, str(tmp_path))  # default: a copy
+        assert _local_files(tmp_path) == ["a (1).pdf", "a.pdf"]
+
+
+# -- source forms --
+
+
+class TestRunSources:
+    def _run(self, monkeypatch, mock_service, tmp_path, source, drives=()):
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: mock_service)
+        monkeypatch.setattr("gdrives.drives.load", lambda: list(drives))
+        mock_service.files().get().execute.return_value = make_file(
+            "a.pdf", id="X", mime=PDF_MIME
+        )
+        monkeypatch.setattr("gdrives.download.download_single", lambda *a, **k: None)
+        run(source, str(tmp_path))
+        return mock_service.files().get.call_args.kwargs["fileId"]
+
+    def test_bare_file_id_is_fetched_directly(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "gdrives.resolve.resolve_path",
+            lambda *a, **k: pytest.fail("a bare ID is not a path"),
+        )
+        file_id = self._run(monkeypatch, mock_service, tmp_path, "1AbC_xyz-9")
+        assert file_id == "1AbC_xyz-9"
+
+    def test_bare_drive_name_downloads_that_drive(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        drives = [{"id": "DRV", "type": "shared", "name": "Team Drive", "url": "u"}]
+        file_id = self._run(monkeypatch, mock_service, tmp_path, "team drive", drives)
+        assert file_id == "DRV"
