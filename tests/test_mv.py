@@ -216,6 +216,36 @@ class TestCheckDestination:
         assert mv.check_destination(svc, "B", source)["id"] == "B"
         assert [c for c in svc.calls if c[1].get("fileId") == "A"] == []
 
+    def test_descendant_through_a_second_parent_is_detected(self):
+        # A legacy multi-parent destination: B is filed under OTHER and under A.
+        # Following only its first parent would allow moving A into B, creating
+        # an A -> B -> A cycle that ls and download then recurse through.
+        svc = FakeDriveService(
+            {
+                "B": item("B", id="B", parents=["OTHER", "A"], folder=True),
+                "OTHER": item("Other", id="OTHER", parents=["ROOT"], folder=True),
+                "ROOT": item("My Drive", id="ROOT", folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        with pytest.raises(ValueError, match="is inside it"):
+            mv.check_destination(svc, "B", source)
+
+    def test_shared_ancestor_is_fetched_once(self):
+        # Two parents that meet at the same grandparent: one files.get for it.
+        svc = FakeDriveService(
+            {
+                "B": item("B", id="B", parents=["X", "Y"], folder=True),
+                "X": item("X", id="X", parents=["ROOT"], folder=True),
+                "Y": item("Y", id="Y", parents=["ROOT"], folder=True),
+                "ROOT": item("My Drive", id="ROOT", folder=True),
+            }
+        )
+        source = item("A", id="A", parents=["P"], folder=True)
+        assert mv.check_destination(svc, "B", source)["id"] == "B"
+        fetched = [kwargs["fileId"] for method, kwargs in svc.calls]
+        assert fetched.count("ROOT") == 1
+
     def test_existing_cycle_does_not_loop_forever(self):
         # Defensive: if the Drive already contains a cycle, the walk terminates.
         svc = FakeDriveService(
@@ -275,6 +305,18 @@ class TestResolveDestination:
         patch_paths(monkeypatch, {}, {})
         with pytest.raises(DrivePathError, match="not found"):
             mv.resolve_destination(None, "My Drive/nope/new.txt")
+
+
+class TestDescribe:
+    def test_names_are_escaped_for_the_terminal(self):
+        meta = item("\x1b]0;pwned\x07notes.txt")
+        folder = item("\x1b[2Jarchive", id="A", folder=True)
+        text = mv.describe(meta, folder, "new\x1b[31m.txt")
+        assert "\x1b" not in text and "\x07" not in text
+        assert text == (
+            "rename '\\x1b]0;pwned\\x07notes.txt' -> 'new\\x1b[31m.txt' and "
+            "move it into '\\x1b[2Jarchive' (A)"
+        )
 
 
 class TestApplyMove:
