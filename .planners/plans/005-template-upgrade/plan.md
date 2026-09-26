@@ -70,3 +70,41 @@ is involved.
   inert until the next release carries it to `main`. Until then Dependabot keeps
   opening PRs against `main`; the open github-actions PR (setup-uv 8.3.2 to
   10.1.0) edits the same lines this upgrade re-pins.
+
+## Log
+
+### 2026-09-25 — upgrade applied on `feature/template-upgrade`
+
+- Divergence triage: every managed file except `.claude/CLAUDE.md` was either
+  identical or an older template revision with nothing repo-specific to lose, so
+  those rows applied without a question. The one batched question covered
+  CLAUDE.md, and the user chose **merge**: the "Before finishing a task" section
+  now lists the template's three checks (adding `uv run ruff format --check .`),
+  since the Stop hook installed here runs that check too. The rest of CLAUDE.md
+  is untouched.
+- Commits: `sync pre-commit and pyproject with template` (ruff-pre-commit
+  `v0.16.6`, `planners-validate` in its own `local` block, the second sdist
+  comment paragraph); `sync workflows and dependabot with template` (SHA pins,
+  the `env` placement and `--python` comment in `test.yml`, `target-branch: dev`
+  and the header comment in `dependabot.yml`); `stamp proj-template version
+  0.10.0`, written after every other row was applied and verified.
+- `.claude/` is gitignored, so the absent `settings.json`, `settings.local.json`,
+  and `hooks/lint-typecheck.sh` were copied into the main checkout, and the
+  CLAUDE.md edit was made there too. None of it rides in the branch.
+- The repo's Dependabot toggles already matched the standard (alerts on,
+  automated security fixes off), so nothing changed there.
+- Verification in the worktree, all green: `ruff check`, `ruff format --check`
+  (44 files), `pyrefly check` (0 errors), `pre-commit run --all-files`
+  (ruff v0.16.6, pyrefly, planners-validate), and `pytest` (657 passed, coverage
+  100% against the kept floor of 100).
+- `pre-commit install` ran from the main checkout only, never from the worktree,
+  so the shared `.git/hooks/pre-commit` kept its `INSTALL_PYTHON` on the main
+  checkout's `.venv` (checked; nothing points into `.worktrees/`).
+- Finding, not addressed here: `gdrives/auth.py` calls `load_dotenv()` at import,
+  and python-dotenv searches parent directories for `.env`. From a worktree under
+  `.worktrees/` it finds the main checkout's gitignored `.env`, so `uv run pytest`
+  in a worktree runs the live integration tests against the test sheet and doc
+  even though the worktree has no `.env` of its own. The verification run passed
+  with them included. Later runs of only `-m integration` errored in the `tab`
+  fixture's live `addSheet` setup call, before any tab was created; the error
+  message was not captured.
