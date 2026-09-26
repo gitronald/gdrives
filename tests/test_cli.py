@@ -6,8 +6,12 @@ delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
 import pytest
+from google.auth.exceptions import RefreshError, TransportError
+from httplib2 import ServerNotFoundError
+from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
 
 from gdrives import cli
+from gdrives.files import IncompleteSearchError
 from gdrives.resolve import DrivePathError
 
 
@@ -57,12 +61,34 @@ class TestDownload:
         rec = {}
         monkeypatch.setattr(
             "gdrives.download.run",
-            lambda source, output_dir, *, depth, yes: rec.update(
-                s=source, od=output_dir, depth=depth, yes=yes
+            lambda source, output_dir, *, depth, yes, skip_existing: rec.update(
+                s=source, od=output_dir, depth=depth, yes=yes, skip=skip_existing
             ),
         )
         cli.download("My Drive/refs", output_dir="out", depth=2, yes=True)
-        assert rec == {"s": "My Drive/refs", "od": "out", "depth": 2, "yes": True}
+        assert rec == {
+            "s": "My Drive/refs",
+            "od": "out",
+            "depth": 2,
+            "yes": True,
+            "skip": False,
+        }
+        cli.download("1AbC", skip_existing=True)
+        assert rec["s"] == "1AbC" and rec["skip"] is True
+
+    def test_partial_failure_exits_1_with_the_list(self, monkeypatch, capsys):
+        from gdrives.download import DownloadError
+
+        def boom(*a, **k):
+            raise DownloadError("1 item(s) failed to download:\n  Big: 403")
+
+        monkeypatch.setattr("gdrives.download.run", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.download("My Drive/refs")
+        assert exc.value.code == 1
+        assert capsys.readouterr().err == (
+            "Error: 1 item(s) failed to download:\n  Big: 403\n"
+        )
 
     def test_path_error_exits_1(self, monkeypatch, capsys):
         def boom(*a, **k):
@@ -76,6 +102,13 @@ class TestDownload:
 
 
 class TestLs:
+    @pytest.fixture(autouse=True)
+    def service(self, monkeypatch):
+        """The one Drive service ls builds, shared by resolution and listing."""
+        service = object()
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: service)
+        return service
+
     def test_shared_with_me_and_drive_id_mutually_exclusive(self, capsys):
         with pytest.raises(SystemExit) as exc:
             cli.ls(drive_id="abc", shared_with_me=True)
@@ -96,31 +129,47 @@ class TestLs:
         assert exc.value.code == 1
         assert "--depth is not supported" in capsys.readouterr().err
 
-    def test_shared_all_items(self, monkeypatch):
+    def test_shared_all_items(self, monkeypatch, service):
         rec = {}
         monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(a=a, k=k))
         cli.ls(shared_with_me=True, save_as=["map.md"])
         assert rec["k"]["shared_with_me"] is True
         assert rec["k"]["save_as"] == ["map.md"]
+        assert rec["k"]["service"] is service
 
-    def test_shared_with_path_resolves(self, monkeypatch):
+    def test_shared_with_path_resolves(self, monkeypatch, service):
         rec = {}
-        monkeypatch.setattr("gdrives.resolve.resolve_shared_path", lambda p: "SID")
+        monkeypatch.setattr(
+            "gdrives.resolve.resolve_shared_path",
+            lambda p, svc: rec.update(svc=svc) or "SID",
+        )
         monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(a=a, k=k))
         cli.ls(path="Shared/sub", shared_with_me=True, depth=3)
         assert rec["a"] == ("SID",)
         assert rec["k"]["depth"] == 3
+        assert rec["svc"] is service and rec["k"]["service"] is service
 
-    def test_path_resolution(self, monkeypatch):
+    def test_path_resolution_and_listing_share_one_service(self, monkeypatch, service):
         rec = {}
         monkeypatch.setattr(
             "gdrives.resolve.resolve_path",
-            lambda *a, **k: rec.update(path=a[0]) or "FID",
+            lambda path, svc: rec.update(path=path, resolve_svc=svc) or "FID",
         )
-        monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(fid=a[0]))
+        monkeypatch.setattr(
+            "gdrives.listing.ls",
+            lambda *a, **k: rec.update(fid=a[0], list_svc=k["service"]),
+        )
         cli.ls(path="My Drive/projects")
         assert rec["path"] == "My Drive/projects"
         assert rec["fid"] == "FID"
+        assert rec["resolve_svc"] is service and rec["list_svc"] is service
+
+    def test_save_as_extension_is_case_insensitive(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda *a: "FID")
+        monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(k=k))
+        cli.ls(path="My Drive", save_as=["MAP.MD", "Data.CSV"])
+        assert rec["k"]["save_as"] == ["MAP.MD", "Data.CSV"]
 
     def test_default_path_is_my_drive(self, monkeypatch):
         rec = {}
@@ -170,18 +219,44 @@ class TestShowDrives:
         assert "Team (sd)" in out.out
         assert "Saved to" in out.err
 
+    def test_drive_names_are_escaped(self, mock_service, monkeypatch, capsys):
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: mock_service)
+        drives = [{"id": "sd", "type": "shared", "name": "\x1b[2JTeam", "url": "u"}]
+        monkeypatch.setattr("gdrives.drives.fetch", lambda s: drives)
+        monkeypatch.setattr("gdrives.drives.save", lambda d: None)
+        cli.show_drives()
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "\\x1b[2JTeam (sd)" in out
+
 
 class TestSheetsGet:
     def test_delegates_aligned_by_default(self, monkeypatch):
         rec = {}
         monkeypatch.setattr(
             "gdrives.sheets.run_get",
-            lambda source, range_, *, output, delimiter, aligned: rec.update(
-                s=source, r=range_, o=output, d=delimiter, a=aligned
+            lambda source, range_, *, output, delimiter, aligned, escape_formulas: (
+                rec.update(
+                    s=source,
+                    r=range_,
+                    o=output,
+                    d=delimiter,
+                    a=aligned,
+                    e=escape_formulas,
+                )
             ),
         )
         cli.sheets_get("SID", "Sheet1!A1:B2")
-        assert rec == {"s": "SID", "r": "Sheet1!A1:B2", "o": None, "d": ",", "a": True}
+        assert rec == {
+            "s": "SID",
+            "r": "Sheet1!A1:B2",
+            "o": None,
+            "d": ",",
+            "a": True,
+            "e": False,
+        }
+        cli.sheets_get("SID", output="out.csv", escape_formulas=True)
+        assert rec["e"] is True
 
     def test_tsv_sets_delimiter_and_unaligns(self, monkeypatch):
         rec = {}
@@ -585,3 +660,49 @@ def test_ls_rejects_conflicting_targets_before_resolution(monkeypatch, capsys):
         cli.ls(path="My Drive", drive_id="OTHER")
     assert exc.value.code == 1
     assert "PATH and --drive-id are mutually exclusive" in capsys.readouterr().err
+
+
+class TestCliErrors:
+    """Every failure class a command can hit ends as 'Error: ...' and exit 1."""
+
+    @pytest.mark.parametrize(
+        "error, message",
+        [
+            (
+                RefreshError("invalid_grant"),
+                "Error: authentication failed: invalid_grant",
+            ),
+            (
+                TransportError("connection reset"),
+                "Error: authentication failed: connection reset",
+            ),
+            (
+                AccessDeniedError(description="The user denied access"),
+                "Error: authentication failed: (access_denied) The user denied access",
+            ),
+            (
+                ServerNotFoundError("Unable to find the server at x"),
+                "Error: could not reach Google: Unable to find the server at x",
+            ),
+            (
+                IncompleteSearchError("may be missing items"),
+                "Error: may be missing items",
+            ),
+            (OSError("disk full"), "Error: disk full"),
+        ],
+        ids=["refresh", "transport", "consent-denied", "offline", "incomplete", "os"],
+    )
+    def test_error_becomes_a_message(self, capsys, error, message):
+        with pytest.raises(SystemExit) as raised:
+            with cli._cli_errors():
+                raise error
+        assert raised.value.code == 1
+        assert capsys.readouterr().err == message + "\n"
+
+    def test_control_characters_are_escaped_but_lines_kept(self, capsys):
+        with pytest.raises(SystemExit):
+            with cli._cli_errors():
+                raise ValueError("multiple items named 'a':\n  file  \x1b]0;x\x07a")
+        assert capsys.readouterr().err == (
+            "Error: multiple items named 'a':\n  file  \\x1b]0;x\\x07a\n"
+        )
