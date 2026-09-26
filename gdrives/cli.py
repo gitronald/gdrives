@@ -247,8 +247,8 @@ def sheets_get(
         bool,
         typer.Option(
             "--escape-formulas",
-            help="Prefix ' to cells starting with =, +, -, or @ so a spreadsheet "
-            "app opening the output shows them as text",
+            help="Prefix ' to cells starting with =, +, -, @, a tab, or a carriage "
+            "return, so a spreadsheet app opening the output shows them as text",
         ),
     ] = False,
 ):
