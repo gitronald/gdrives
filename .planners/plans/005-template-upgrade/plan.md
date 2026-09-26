@@ -1,8 +1,8 @@
 ---
 id: 5
 slug: template-upgrade
-status: draft
-branch:
+status: active
+branch: feature/template-upgrade
 created: 2026-09-25T23:35:55-07:00
 concluded:
 pr:

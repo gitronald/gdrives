@@ -2,7 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
-| 005 | [Upgrade to the proj-template 0.10.0 standard](plans/005-template-upgrade/plan.md) | draft | — | — |
+| 005 | [Upgrade to the proj-template 0.10.0 standard](plans/005-template-upgrade/plan.md) | active | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 000 | [Add mv command for Drive rename and move](plans/000-mv-command/plan.md) | done | 2026-09-11 19:41 PT | [#28](https://github.com/gitronald/gdrives/pull/28) |
 | 003 | [Read and write conditional format rules on a Sheet](plans/003-sheets-conditional-formatting/plan.md) | done | 2026-09-11 13:59 PT | [#26](https://github.com/gitronald/gdrives/pull/26) |
