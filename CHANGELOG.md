@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-26
+
 ### Changed
 
 - Dependabot opens its version-update PRs against `dev` instead of `main`, for both GitHub Actions and Python dependencies. Dependabot reads its config from the default branch only, so this takes effect once the release reaches `main`.
