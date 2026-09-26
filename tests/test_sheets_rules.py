@@ -433,6 +433,12 @@ class TestReadRuleJson:
         rule = {"ranges": [], "gradientRule": {}}
         assert read_rule_json(self.write(tmp_path, rule)) == rule
 
+    def test_utf8_bom_is_ignored(self, tmp_path):
+        # Some Windows editors save JSON with a BOM, which json.load rejects.
+        path = tmp_path / "rule.json"
+        path.write_bytes(b"\xef\xbb\xbf" + json.dumps(RULE).encode())
+        assert read_rule_json(str(path)) == RULE
+
     @pytest.mark.parametrize("data", [[RULE], {"ranges": []}, {"rule": [RULE]}])
     def test_wrong_shape_raises(self, tmp_path, data):
         with pytest.raises(ValueError, match="expected one conditional format rule"):

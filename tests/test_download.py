@@ -19,7 +19,7 @@ from gdrives.download import (
     summarize,
     unique_path,
 )
-from gdrives.files import WalkItem
+from gdrives.files import WalkItem, walk_tree
 
 PDF_MIME = "application/pdf"
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"
@@ -774,6 +774,43 @@ class TestFailuresAndReruns:
             "f/x.pdf",
         ]
 
+    def test_failure_lines_escape_control_characters(
+        self, mock_service, tmp_path, monkeypatch, capsys
+    ):
+        name = "\x1b]0;pwned\x07evil.pdf"
+        items = [
+            _item(make_folder("\x1b[2Jsub", id="S"), descended=True),
+            _item(
+                make_file(name, id="E", mime=PDF_MIME),
+                ancestors=("\x1b[2Jsub",),
+                depth=1,
+            ),
+        ]
+        _fake_io(monkeypatch, [], fail={"E"})
+        failures = download_walk(mock_service, items, str(tmp_path))
+        (line,) = failures
+        assert line.startswith("\\x1b[2Jsub/\\x1b]0;pwned\\x07evil.pdf: ")
+        assert "\x1b" not in line and "\x07" not in line
+        assert "\x1b" not in capsys.readouterr().err
+
+    def test_rerun_mapping_survives_a_reordered_listing(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        # files.list promises no order, so the rerun may list the duplicates
+        # swapped; it must still fetch Y (the one that failed), not skip it.
+        x = make_file("dup.pdf", id="X", mime=PDF_MIME)
+        y = make_file("dup.pdf", id="Y", mime=PDF_MIME)
+        listings = iter([[x, y], [y, x]])
+        monkeypatch.setattr("gdrives.files.paginate_files", lambda *a: next(listings))
+        _fake_io(monkeypatch, [], fail={"Y"})
+        download_walk(mock_service, list(walk_tree(mock_service, "R")), str(tmp_path))
+        fetched = []
+        _fake_io(monkeypatch, fetched)
+        items = list(walk_tree(mock_service, "R"))
+        download_walk(mock_service, items, str(tmp_path), skip_existing=True)
+        assert fetched == ["Y"]
+        assert _local_files(tmp_path) == ["dup (1).pdf", "dup.pdf"]
+
     def test_folder_that_cannot_be_created_skips_its_contents(
         self, mock_service, tmp_path, monkeypatch
     ):
@@ -887,6 +924,18 @@ class TestRunSources:
         )
         file_id = self._run(monkeypatch, mock_service, tmp_path, "1AbC_xyz-9")
         assert file_id == "1AbC_xyz-9"
+
+    def test_ambiguous_drive_name_is_refused(self, mock_service, tmp_path, monkeypatch):
+        drives = [
+            {"id": "D1", "type": "shared", "name": "Team", "url": "u"},
+            {"id": "D2", "type": "shared", "name": "team", "url": "u"},
+        ]
+        with pytest.raises(ValueError, match="multiple drives named 'Team'"):
+            self._run(monkeypatch, mock_service, tmp_path, "Team", drives)
+        # nothing was fetched (the only get() call is the test's own setup)
+        assert all(
+            "fileId" not in c.kwargs for c in mock_service.files().get.call_args_list
+        )
 
     def test_bare_drive_name_downloads_that_drive(
         self, mock_service, tmp_path, monkeypatch
