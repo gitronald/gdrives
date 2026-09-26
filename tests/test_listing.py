@@ -208,6 +208,15 @@ class TestFormatMarkdown:
         assert "- file.txt" in result
         assert "[" not in result
 
+    def test_control_characters_in_names_are_escaped(self):
+        # A saved map is read back with cat or less as often as with a viewer,
+        # so an OSC 52 sequence in a name must not reach the file raw.
+        name = "\x1b]52;c;ZQ==\x07x.pdf"
+        rows = [DriveEntry("https://u", name, name, "pdf", "2026-01-15", "o")]
+        result = format_markdown(rows)
+        assert "\x1b" not in result and "\x07" not in result
+        assert result == "- [\\x1b\\]52;c;ZQ==\\x07x.pdf](https://u)\n"
+
 
 # -- format_csv --
 
@@ -248,6 +257,19 @@ class TestFormatCsv:
         assert parsed["type"] == "'+cmd"
         assert parsed["owner"] == "'@owner"
         assert parsed["url"] == "https://url"
+
+    def test_control_characters_in_cells_are_escaped(self):
+        # A saved CSV is read back with cat or less too, so an OSC 52 sequence
+        # in a name must not reach the file raw. The formula prefix still
+        # applies first, so a cell hiding one behind a tab keeps its quote.
+        name = "\x1b]52;c;ZQ==\x07x.pdf"
+        rows = [DriveEntry("https://u", name, name, "\t=cmd", "2026-01-15", "o")]
+        result = format_csv(rows)
+        assert "\x1b" not in result and "\x07" not in result and "\t" not in result
+        (parsed,) = list(csv.DictReader(io.StringIO(result)))
+        assert parsed["name"] == "\\x1b]52;c;ZQ==\\x07x.pdf"
+        assert parsed["path"] == "\\x1b]52;c;ZQ==\\x07x.pdf"
+        assert parsed["type"] == "'\\x09=cmd"
 
 
 # -- ls --

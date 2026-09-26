@@ -120,12 +120,17 @@ def format_table(rows: list[DriveEntry]) -> str:
 
 
 def format_markdown(rows: list[DriveEntry]) -> str:
-    """Format as nested markdown bullets with hyperlinks."""
+    """Format as nested markdown bullets with hyperlinks.
+
+    Names are escaped for markdown, and their control characters as in
+    :func:`format_table` (``\\xNN``), so a saved map viewed with ``cat`` or
+    ``less`` can't drive the terminal any more than the table can.
+    """
     lines = []
     for r in rows:
         indent = "  " * r.depth
         name = re.sub(r"([\\`*_\[\]#!])", r"\\\1", escape(r.name, quote=False))
-        name = name.replace("\r", " ").replace("\n", " ")
+        name = printable(name.replace("\r", " ").replace("\n", " "))
         if r.url:
             url = r.url.replace("(", "%28").replace(")", "%29").replace(" ", "%20")
             lines.append(f"{indent}- [{name}]({url})")
@@ -139,7 +144,9 @@ def format_csv(rows: list[DriveEntry]) -> str:
 
     Names come from whoever owns a file, so a shared item named
     ``=HYPERLINK(...)`` would otherwise run when the CSV is opened in Excel or
-    LibreOffice; :func:`escape_formula` prefixes such cells with ``'``.
+    LibreOffice; :func:`escape_formula` prefixes such cells with ``'``. Control
+    characters are then escaped as in :func:`format_table`, so a saved CSV
+    viewed with ``cat`` or ``less`` can't drive the terminal either.
     """
     buf = io.StringIO()
     fieldnames = [
@@ -163,7 +170,9 @@ def format_csv(rows: list[DriveEntry]) -> str:
             "shared_by": r.shared_by,
             "url": r.url,
         }
-        writer.writerow({key: escape_formula(value) for key, value in row.items()})
+        writer.writerow(
+            {key: printable(escape_formula(value)) for key, value in row.items()}
+        )
     return buf.getvalue()
 
 
