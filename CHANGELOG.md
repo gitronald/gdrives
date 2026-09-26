@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-26
+
 ### Added
 
 - `download --skip-existing` resumes a folder download. Each entry maps to the local path the first run gave it (a second `a.pdf` is `a (1).pdf` both times), and entries already there are skipped instead of being saved again as ` (1)` copies.
