@@ -36,7 +36,7 @@ gdrives/
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
-├── local.py     # Atomic local writes shared by download, export, and the token cache
+├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
 ├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
@@ -134,7 +134,8 @@ Full walkthrough: [docs/setup-adc.md](docs/setup-adc.md).
 
 ## Configuration
 
-Set via environment variables or a `.env` file (env vars take precedence):
+Set via environment variables or a `.env` file, found in the directory you run
+`gdrives` from or its nearest parent that has one (env vars take precedence):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -147,8 +148,8 @@ Default Credentials.
 ## CLI Commands
 
 Run `gdrives show-drives` once to populate the drive-name cache
-(`.gdrives/cache.json`); the `ls`, `download`, and `mv` commands resolve Drive
-paths against it.
+(`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
+and the `sheets-*` and `docs-*` commands) resolves it against the cache.
 
 ### List Drive contents
 
@@ -170,6 +171,12 @@ gdrives ls "My Drive/projects" --save-as data.csv       # CSV export
 gdrives ls "My Drive/projects" --depth 3 --save-as map.md
 gdrives ls "My Drive/projects" --save-as map.md --save-as data.csv  # both, one traversal
 ```
+
+File names come from whoever owns a file, so both outputs treat them as
+untrusted. In the terminal, `ls` shows a control character in a name (which
+could otherwise drive the terminal) as `\xNN`. In a CSV, a cell starting with
+`=`, `+`, `-`, or `@` gets a leading `'` so that Excel or LibreOffice shows it as
+text instead of running it as a formula.
 
 ### Export Google Docs, Sheets, and Slides
 
@@ -193,9 +200,10 @@ gdrives sheets-get <sheet-url> "Sheet1!A1:C10"          # Print a range (aligned
 gdrives sheets-get <sheet-url>                          # First tab, whole used range
 gdrives sheets-get <sheet-url> "A1:C10" --csv           # Comma-delimited to stdout
 gdrives sheets-get <sheet-url> "A1:C10" -o out.csv      # Write CSV (or --tsv for TSV)
+gdrives sheets-get <sheet-url> -o out.csv --escape-formulas  # Formula-like cells as text
 gdrives sheets-update <sheet-url> "A1:C2" --values-file data.csv   # Overwrite a range
 gdrives sheets-update <sheet-url> "A1" --values-file data.csv --raw  # Store literal strings
-gdrives sheets-append <sheet-url> "Sheet1!A1" --values-file rows.csv  # Append after the table
+gdrives sheets-append <sheet-url> "Sheet1!A1" --values-file rows.csv  # Insert rows after the table
 gdrives sheets-clear <sheet-url> "Sheet1!A1:C10"        # Clear values (prompts first; -y skips)
 ```
 
@@ -206,7 +214,11 @@ are plain strings on both sides: `--values-file` reads a local CSV, and by
 default `USER_ENTERED` parses formulas, dates, and numbers like the Sheets UI
 (`--raw` stores the literal text). Use `--raw` when writing data from an
 untrusted source, so a leading `=`, `+`, `-`, or `@` is stored verbatim rather
-than evaluated as a formula.
+than evaluated as a formula. `sheets-append` inserts its rows below the table,
+pushing anything further down the tab out of the way rather than writing over
+it. `sheets-get` prints values exactly as stored; add `--escape-formulas` when the
+output is headed for a spreadsheet app, which prefixes a `'` to every cell
+starting with `=`, `+`, `-`, or `@` (so `-5` becomes `'-5`).
 
 #### Update rows by lookup (`sheets-set`)
 
@@ -230,7 +242,10 @@ gdrives sheets-set <sheet-url> --tab Roster -m id=C300 -s status=paid  # non-def
 By default it requires **exactly one** matching row — it refuses (listing the
 rows) when the key is ambiguous, and errors when nothing matches, so a keyed
 update never silently rewrites the wrong row. Pass `--all` to update every match.
-`--raw` and the `USER_ENTERED` default apply as above.
+`--raw` and the `USER_ENTERED` default apply as above. The Sheets API has no
+revision check to tie a write to the read before it, so `sheets-set` reads the
+tab again just before writing and refuses if the header or the matching rows
+moved in between (a row inserted above the match, say).
 
 #### Conditional formatting
 
@@ -250,6 +265,8 @@ gdrives sheets-delete-rule <sheet-url> --tab Sheet1 --index 0  # Prompts first; 
 Rules on a tab form an ordered list and the first matching rule wins.
 `sheets-add-rule` inserts at `--index` (default `0`, the top), and deleting a rule
 shifts every later one up, so re-run `sheets-rules` before aiming another delete.
+After you confirm a delete, the rules are read again, and the delete is refused
+if a different rule now sits at that index.
 `--range` is repeatable (all ranges must be on one tab). The format options are
 `--bold`, `--italic`, `--strikethrough`, `--underline`, `--text-color`, and
 `--background`, with colors as hex. `--rule-json` takes one rule object, or one
@@ -267,8 +284,10 @@ uses the read-only scope; the other two use the `spreadsheets` write scope.
 
 Operate on the live document via the Docs API — distinct from `export`, which
 downloads a whole Doc to a local file. The target is a Doc URL, a bare file ID,
-or a Drive path. Commands act on the first tab unless `--tab` names another
-(by title or ID).
+or a Drive path. Commands act on the first tab unless `--tab` names another (by
+title or ID) or the URL points at one (a link copied while viewing a tab carries
+`?tab=`). `--tab` wins over the URL, and an empty `--tab ""` is an error rather
+than the first tab.
 
 ```bash
 gdrives docs-get <doc-url>                              # Print the text (lists as '- ', table rows tab-separated)
@@ -287,28 +306,45 @@ Reads use the read-only scope. The write commands (`docs-update`,
 `documents` scope the first time and cache it in a separate token. Content is
 plain text on both sides: `docs-get` flattens paragraphs, list items, and table
 rows, and the write commands insert plain paragraphs (formatting is out of
-scope — use `export -o file.docx` for a styled copy). `docs-replace` refuses
+scope — use `export -o file.docx` for a styled copy). `docs-update` and
+`docs-clear` leave plain `NORMAL_TEXT` paragraphs even when the body ended in a
+heading or a list, and their prompt names the document and tab they replace.
+`docs-replace` refuses
 when the phrase occurs more than once unless `--all` is given, and errors when
 it occurs nowhere, so a targeted edit never rewrites the wrong sentence
-(`--ignore-case` relaxes matching). `docs-update`, `docs-clear`, and
-`docs-replace` are tied to the document revision they read, so a write is
-refused if someone changed the document in between.
+(`--ignore-case` relaxes matching). A phrase split by an image, chip, or table
+cell is no match, and if the API replaces a different number of occurrences
+than were counted, the command fails and says how many it replaced.
+`docs-update`, `docs-clear`, `docs-append`, and `docs-replace` are tied to the
+document revision they read, so a write is refused if someone changed the
+document in between, including while a prompt waits.
 
 ### Download files and folders
 
 ```bash
 gdrives download <file-url> -o ./out          # Single file -> ./out/<drive-name>
+gdrives download <file-or-folder-id>          # By bare ID
 gdrives download "My Drive/refs/paper.pdf"    # Single file by path -> ./paper.pdf
 gdrives download "My Drive/refs"              # Whole folder (recurses by default)
 gdrives download "My Drive/refs" --depth 1    # Folder, flat (no recursion)
 gdrives download "My Drive/refs" -y           # Skip the confirmation prompt
+gdrives download "My Drive/refs" -y --skip-existing  # Resume: fetch only what is missing
 ```
 
 A source that resolves to a single file downloads immediately under its Drive
 name. A folder is scanned first, showing a summary, then prompts before
 downloading (`--depth` only affects folders). Google Docs, Sheets, and Slides
 auto-export to `.docx` / `.xlsx` / `.pptx`; other Google-native types (Forms,
-Drawings, etc.) are skipped.
+Drawings, etc.) are skipped. A name that is already taken locally gets a
+` (1)` suffix instead of being overwritten.
+
+One file that fails does not stop a folder download. That covers a Doc too
+large to export, a download-restricted file, or a name the local filesystem
+rejects. The rest still download, and the failures are listed at the end with
+exit status 1. Rerun with `--skip-existing` to pick up where it stopped. Each
+entry maps to the same local path it got the first time, and entries already
+there are skipped instead of saved again as ` (1)` copies. Control characters
+in Drive names are replaced with `_` in local file names.
 
 ### Rename and move files and folders
 
@@ -391,8 +427,9 @@ rather than fail when those aren't configured. A run that skips them ends with a
 
 The tests leave your files as they found them. Each Sheets test adds its own
 temporary `itest_<hex>` tab and deletes it afterward. Each Docs test appends a
-uniquely tagged paragraph and removes it. The whole-body Docs writes are never
-run live, because they would wipe the document.
+uniquely tagged paragraph and removes it. The whole-body Docs writes, which would
+wipe a tab, run only on a temporary `itest_<hex>` tab that the test adds to the
+document and then deletes.
 
 ## Related projects
 
@@ -409,3 +446,5 @@ There are a few options out there, but most haven't been touched in years, and n
 - Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope.
 - The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
+- Names of shared items are chosen by other people. `ls`, `download`, `mv`, and `show-drives` escape control characters in them before printing, so an embedded escape sequence can't rewrite the terminal, and `ls --save-as` CSVs prefix formula-like cells with `'` so a spreadsheet app won't run them.
+- Local files are written through a private temporary file and renamed into place, so an interrupted run never leaves a partial download, export, listing, or drive cache. Overwriting an existing file (`export -o`, `docs-get -o`) keeps that file's permissions.
