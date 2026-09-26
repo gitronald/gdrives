@@ -33,6 +33,13 @@ packages = ["gdrives"]
 # filenames don't glob at every depth — this keeps internal plan files
 # (.planners/), guides (docs/), the .claude/ holder, tests, and tooling out of
 # the published sdist.
+#
+# Not exhaustive: hatchling force-includes pyproject.toml, PKG-INFO, and
+# .gitignore in every sdist regardless of this list, and neither `exclude` nor
+# `ignore-vcs` drops them. Wheels are unaffected — they carry only the package
+# and .dist-info — so treat anything in this file as sdist-visible and keep
+# secrets out of it. Adding a path here does not make it importable; wheel
+# contents come from the package dir, not this list.
 only-include = [
     "/gdrives",
     "/README.md",
