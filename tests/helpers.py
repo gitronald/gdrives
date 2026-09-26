@@ -3,9 +3,29 @@
 Drive API response shapes based on docs/drive-api.md.
 """
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+def plant_scratch_symlink(
+    monkeypatch: pytest.MonkeyPatch, directory: Path, victim: Path
+) -> Path:
+    """Plant a symlink to ``victim`` at the scratch name atomic_output tries first.
+
+    ``atomic_output`` names its scratch file ``.gdrives-<random>``. Pinning
+    tempfile's candidate names makes the first try land on the planted link, so
+    a writer that followed symlinks would write into ``victim``; a safe one
+    (``O_EXCL``, as ``NamedTemporaryFile`` opens) skips to the second name.
+    """
+    monkeypatch.setattr(
+        tempfile, "_get_candidate_names", lambda: iter(["planted", "fresh"])
+    )
+    link = directory / ".gdrives-planted"
+    link.symlink_to(victim)
+    return link
 
 
 def make_file(

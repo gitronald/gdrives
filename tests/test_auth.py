@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import google.auth.exceptions
 import pytest
+from helpers import plant_scratch_symlink
 
 from gdrives import auth
 
@@ -468,17 +469,17 @@ class TestTokenCovers:
         assert auth._token_covers(tmp_path / "absent.json", auth.SCOPES) is True
 
 
-def test_token_write_does_not_follow_old_temporary_symlink(tmp_path):
+def test_token_write_does_not_follow_a_planted_scratch_symlink(tmp_path, monkeypatch):
     victim = tmp_path / "unrelated"
     victim.write_text("keep")
+    link = plant_scratch_symlink(monkeypatch, tmp_path, victim)
     token = tmp_path / "token.json"
-    scratch = tmp_path / "token.json.tmp"
-    scratch.symlink_to(victim)
     creds = MagicMock()
     creds.to_json.return_value = '{"token": "new"}'
     auth._write_token(token, creds)
     assert victim.read_text() == "keep"
-    assert scratch.is_symlink()
+    assert link.is_symlink()
+    assert token.read_text() == '{"token": "new"}'
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
 
 
