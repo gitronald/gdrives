@@ -4,6 +4,8 @@ import pytest
 from helpers import make_file, make_folder, make_gdoc, mock_list_response
 
 from gdrives.files import (
+    LIST_FIELDS,
+    IncompleteSearchError,
     extract_drive_id,
     file_type,
     file_url,
@@ -238,6 +240,33 @@ class TestPaginateFiles:
         assert "includeItemsFromAllDrives" not in call_kwargs
         assert "supportsAllDrives" not in call_kwargs
 
+    def test_requests_the_largest_page(self, mock_service):
+        mock_service.files().list().execute.return_value = mock_list_response([])
+        paginate_files(mock_service, "q", "fields", "allDrives")
+        assert mock_service.files().list.call_args[1]["pageSize"] == 1000
+
+    @pytest.mark.parametrize("page", [0, 1])
+    def test_incomplete_search_raises_instead_of_a_short_listing(
+        self, mock_service, page
+    ):
+        pages = [
+            mock_list_response([make_file("a.txt")], next_page_token="t2"),
+            mock_list_response([make_file("b.txt")]),
+        ]
+        pages[page]["incompleteSearch"] = True
+        mock_service.files().list().execute.side_effect = pages
+        with pytest.raises(IncompleteSearchError, match="incomplete search"):
+            paginate_files(mock_service, "q", LIST_FIELDS, "allDrives")
+
+    def test_complete_search_flag_false_is_fine(self, mock_service):
+        response = mock_list_response([make_file("a.txt")])
+        response["incompleteSearch"] = False
+        mock_service.files().list().execute.return_value = response
+        assert len(paginate_files(mock_service, "q", LIST_FIELDS, "allDrives")) == 1
+
+    def test_list_fields_request_the_flag(self):
+        assert "incompleteSearch" in LIST_FIELDS
+
 
 # -- get_file_metadata --
 
@@ -374,6 +403,40 @@ class TestWalkTree:
     def test_empty_folder_yields_nothing(self, mock_service, monkeypatch):
         monkeypatch.setattr("gdrives.files.list_children", lambda s, fid: [])
         assert list(walk_tree(mock_service, "root")) == []
+
+    def test_cycle_is_not_descended_into_again(self, mock_service, monkeypatch, caplog):
+        # A contains B and B contains A (possible with legacy multi-parent
+        # folders): an unlimited walk must end instead of recursing forever.
+        tree = {
+            "root": [make_folder("A", id="A")],
+            "A": [make_folder("B", id="B")],
+            "B": [make_folder("A", id="A"), make_file("f.pdf", id="F")],
+        }
+        monkeypatch.setattr("gdrives.files.list_children", lambda s, fid: tree[fid])
+
+        items = list(walk_tree(mock_service, "root"))
+        assert [(it.file["id"], it.depth, it.descended) for it in items] == [
+            ("A", 0, True),
+            ("B", 1, True),
+            ("A", 2, False),  # A is B's ancestor: listed, not walked again
+            ("F", 2, False),
+        ]
+        assert "folder 'A' (A) contains itself" in caplog.text
+
+    def test_same_folder_under_two_parents_is_walked_under_each(
+        self, mock_service, monkeypatch
+    ):
+        # Not a cycle: a legacy multi-parent folder appears under both parents.
+        def children(s, fid):
+            if fid == "root":
+                return [make_folder("P1", id="P1"), make_folder("P2", id="P2")]
+            if fid in ("P1", "P2"):
+                return [make_folder("shared", id="S")]
+            return [make_file("f.pdf", id="F")]
+
+        monkeypatch.setattr("gdrives.files.list_children", children)
+        ids = [it.file["id"] for it in walk_tree(mock_service, "root")]
+        assert ids == ["P1", "S", "F", "P2", "S", "F"]
 
 
 def test_regular_file_with_folder_extension_is_not_traversed(mock_service):
