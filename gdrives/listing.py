@@ -22,6 +22,7 @@ from gdrives.files import (
     shared_by,
     walk_tree,
 )
+from gdrives.local import escape_formula, printable, write_text
 
 logger = logging.getLogger(__name__)
 
@@ -94,18 +95,26 @@ def collect(
 
 
 def format_table(rows: list[DriveEntry]) -> str:
-    """Format as aligned URL + path + type + modified + owner + shared_by columns."""
+    """Format as aligned URL + path + type + modified + owner + shared_by columns.
+
+    Every cell goes through :func:`printable` before it is measured, so a shared
+    item whose name embeds an escape sequence is shown in the terminal rather
+    than obeyed, and the columns still line up.
+    """
     if not rows:
         return ""
-    max_url = max(len(r.url) for r in rows)
-    max_path = max(len(r.path) for r in rows)
-    max_type = max(len(r.file_type) for r in rows)
-    max_owner = max(len(r.owner) for r in rows)
-    lines = [
-        f"{r.url:<{max_url}}   {r.path:<{max_path}}"
-        f"   {r.file_type:<{max_type}}   {r.modified}"
-        f"   {r.owner:<{max_owner}}   {r.shared_by}"
+    table = [
+        [
+            printable(cell)
+            for cell in (r.url, r.path, r.file_type, r.modified, r.owner, r.shared_by)
+        ]
         for r in rows
+    ]
+    # Pad every column but the last to its widest cell.
+    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]) - 1)]
+    lines = [
+        "   ".join([cell.ljust(w) for cell, w in zip(row, widths)] + [row[-1]])
+        for row in table
     ]
     return "\n".join(lines) + "\n"
 
@@ -126,7 +135,12 @@ def format_markdown(rows: list[DriveEntry]) -> str:
 
 
 def format_csv(rows: list[DriveEntry]) -> str:
-    """Format as CSV."""
+    """Format as CSV, with each cell kept from running as a spreadsheet formula.
+
+    Names come from whoever owns a file, so a shared item named
+    ``=HYPERLINK(...)`` would otherwise run when the CSV is opened in Excel or
+    LibreOffice; :func:`escape_formula` prefixes such cells with ``'``.
+    """
     buf = io.StringIO()
     fieldnames = [
         "path",
@@ -140,30 +154,29 @@ def format_csv(rows: list[DriveEntry]) -> str:
     writer = csv.DictWriter(buf, fieldnames=fieldnames)
     writer.writeheader()
     for r in rows:
-        writer.writerow(
-            {
-                "path": r.path.removesuffix("/") if r.is_folder else r.path,
-                "name": r.name,
-                "type": r.file_type,
-                "modified": r.modified,
-                "owner": r.owner,
-                "shared_by": r.shared_by,
-                "url": r.url,
-            }
-        )
+        row = {
+            "path": r.path.removesuffix("/") if r.is_folder else r.path,
+            "name": r.name,
+            "type": r.file_type,
+            "modified": r.modified,
+            "owner": r.owner,
+            "shared_by": r.shared_by,
+            "url": r.url,
+        }
+        writer.writerow({key: escape_formula(value) for key, value in row.items()})
     return buf.getvalue()
 
 
 def _render(rows: list[DriveEntry], suffix: str) -> str:
     """Render rows for a ``--save-as`` path, choosing the format by extension.
 
-    ``.md`` renders nested markdown and ``.csv`` renders CSV; any other suffix is
-    rejected rather than silently written as CSV, so every caller (not just the
-    CLI, which pre-validates) gets the same guarantee.
+    ``.md`` renders nested markdown and ``.csv`` renders CSV, in any letter
+    case; any other suffix is rejected rather than silently written as CSV, so
+    every caller (not just the CLI, which pre-validates) gets the same guarantee.
     """
-    if suffix == ".md":
+    if suffix.lower() == ".md":
         return format_markdown(rows)
-    if suffix == ".csv":
+    if suffix.lower() == ".csv":
         return format_csv(rows)
     raise ValueError(f"unsupported --save-as extension {suffix!r}: use .md or .csv")
 
@@ -177,21 +190,23 @@ def ls(
     depth: int | None = None,
     save_as: list[str] | None = None,
     shared_with_me: bool = False,
+    service: Service | None = None,
 ):
     """List Drive folder contents.
 
     The folder is traversed once; each path in ``save_as`` is written from that
     same collection (so ``--save-as map.md --save-as data.csv`` makes one set of
-    API calls). Format is chosen per path by extension (.md vs .csv).
+    API calls). Format is chosen per path by extension (.md vs .csv). Pass the
+    ``service`` that resolved ``folder_id`` to reuse it rather than
+    authenticating again.
     """
     if shared_with_me and folder_id is None:
-        service = build_drive_service()
-        items = list_shared_with_me(service)
+        items = list_shared_with_me(service or build_drive_service())
         logger.info("Found %d entries", len(items))
         rows = [_entry_from_dict(f) for f in items]
     else:
         assert folder_id is not None
-        rows = collect(folder_id, depth=depth)
+        rows = collect(folder_id, depth=depth, _service=service)
 
     if not rows:
         print("No files found", file=sys.stderr)
@@ -200,9 +215,7 @@ def ls(
     if save_as:
         for path in save_as:
             out = Path(path)
-            text = _render(rows, out.suffix)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(text, encoding="utf-8")
+            write_text(out, _render(rows, out.suffix))
             print(f"Wrote {out}", file=sys.stderr)
     else:
         print(format_table(rows), end="")
