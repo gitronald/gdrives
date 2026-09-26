@@ -2,7 +2,9 @@
 
 import json
 
-from gdrives.drives import DriveInfo, fetch, load, resolve_name, save
+import pytest
+
+from gdrives.drives import DriveInfo, fetch, find_drive, load, save
 
 
 class TestDriveInfo:
@@ -98,36 +100,72 @@ class TestCacheRoundtrip:
         assert load(path=cache_path) == drives
 
 
-class TestResolveName:
+class TestFindDrive:
     def test_case_insensitive(self, tmp_path):
         cache_path = tmp_path / "cache.json"
         drives: list[DriveInfo] = [
             {"id": "x", "type": "personal", "name": "My Drive", "url": "u"}
         ]
         save(drives, path=cache_path)
-        result = resolve_name("my drive", path=cache_path)
+        result = find_drive(load(cache_path), "my drive")
         assert result is not None
         assert result["id"] == "x"
 
     def test_not_found(self, tmp_path):
         cache_path = tmp_path / "cache.json"
         save([], path=cache_path)
-        assert resolve_name("Missing", path=cache_path) is None
+        assert find_drive(load(cache_path), "Missing") is None
 
-    def test_empty_cache(self, tmp_path):
+    def test_duplicate_drive_names_refuse_to_guess(self, tmp_path):
+        drives: list[DriveInfo] = [
+            {"id": "a", "type": "shared", "name": "Team", "url": "u"},
+            {"id": "b", "type": "shared", "name": "TEAM", "url": "u"},
+        ]
+        path = tmp_path / "nested" / "cache" / "cache.json"
+        save(drives, path)
+        with pytest.raises(ValueError, match="multiple drives.*a, b"):
+            find_drive(load(path), "team")
+
+
+class TestCacheValidation:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "{}",
+            '"drives"',
+            '[["x"]]',
+            '[{"id": "x", "type": "personal", "url": "u"}]',
+            '[{"id": "x", "type": "personal", "name": 5, "url": "u"}]',
+        ],
+        ids=["object", "string", "non-dict-entry", "missing-name", "non-str-name"],
+    )
+    def test_malformed_cache_names_the_fix(self, tmp_path, payload):
         cache_path = tmp_path / "cache.json"
-        save([], path=cache_path)
-        assert resolve_name("anything", path=cache_path) is None
+        cache_path.write_text(payload)
+        with pytest.raises(
+            ValueError, match="is malformed; rerun 'gdrives show-drives'"
+        ):
+            load(cache_path)
+
+    def test_invalid_json_names_the_fix(self, tmp_path):
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text('[{"id": "x",')
+        with pytest.raises(ValueError, match="not valid JSON .*show-drives"):
+            load(cache_path)
 
 
-def test_duplicate_drive_names_refuse_to_guess(tmp_path):
-    import pytest
-
-    drives: list[DriveInfo] = [
-        {"id": "a", "type": "shared", "name": "Team", "url": "u"},
-        {"id": "b", "type": "shared", "name": "TEAM", "url": "u"},
+def test_interrupted_save_keeps_the_previous_cache(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    old: list[DriveInfo] = [
+        {"id": "x", "type": "personal", "name": "My Drive", "url": "u"}
     ]
-    path = tmp_path / "nested" / "cache" / "cache.json"
-    save(drives, path)
-    with pytest.raises(ValueError, match="multiple drives.*a, b"):
-        resolve_name("team", path)
+    save(old, path=cache_path)
+
+    def interrupted(self, destination):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("pathlib.Path.replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        save([], path=cache_path)
+    assert load(cache_path) == old
+    assert [p.name for p in tmp_path.iterdir()] == ["cache.json"]

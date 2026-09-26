@@ -21,14 +21,25 @@ collision, `unique_path` adds a ' (N)' suffix to mirror Drive's display
 convention. A '(N)' you see in an *API-returned* name was baked into the
 filename by the uploader (or by Google Forms), not added by Drive's UI or
 by us.
+
+Failures and reruns
+-------------------
+One entry that fails (a Doc too large to export, a download-restricted file,
+a name the local filesystem rejects) does not stop a folder download: the rest
+still download, and the failures are listed at the end with a non-zero exit.
+Rerunning with ``skip_existing`` (CLI: --skip-existing) maps every entry to
+the path the first run gave it and skips the ones already there, so only what
+is missing is fetched again instead of being saved a second time as ' (1)'.
 """
 
 import re
 import sys
+from collections.abc import Callable
 from os.path import lexists
 from pathlib import Path
 
 import typer
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from gdrives.export import NATIVE_EXPORTS, export_file
@@ -36,31 +47,35 @@ from gdrives.files import (
     DriveFile,
     Service,
     WalkItem,
-    extract_drive_id,
     file_type,
     get_file_metadata,
     is_folder,
     is_native,
     walk_tree,
 )
-from gdrives.local import atomic_output
+from gdrives.local import CONTROL_CHARACTERS, atomic_output, printable
 
 # Map Google-native type label -> local extension, derived from the canonical
 # export table (export.NATIVE_EXPORTS) so download and `gdrives export` never drift.
 NATIVE_EXPORT_EXT = {label: ext for label, (ext, _mime) in NATIVE_EXPORTS.items()}
 
 
+class DownloadError(Exception):
+    """Raised after a folder download in which some entries failed."""
+
+
 def safe_filename(name: str) -> str:
     """Sanitize a Drive file name for use on the local filesystem.
 
-    Replaces both path separators (``/`` and ``\\``) and NUL, then neutralizes
-    the ``.``/``..`` dot segments so a Drive entry named ``..`` can't escape the
-    target directory (``out / ".."`` would otherwise resolve to its parent).
-    Backslash is replaced too so a name like ``..\\..\\evil`` can't traverse on
-    Windows, where ``\\`` is a separator. Legitimate dotfiles like ``.env`` are
-    preserved.
+    Replaces both path separators (``/`` and ``\\``) and control characters
+    (NUL, newlines, and the ESC that starts a terminal escape sequence), then
+    neutralizes the ``.``/``..`` dot segments so a Drive entry named ``..`` can't
+    escape the target directory (``out / ".."`` would otherwise resolve to its
+    parent). Backslash is replaced too so a name like ``..\\..\\evil`` can't
+    traverse on Windows, where ``\\`` is a separator. Legitimate dotfiles like
+    ``.env`` are preserved.
     """
-    cleaned = re.sub(r"[/\\\x00]", "_", name).strip()
+    cleaned = re.sub(r"[/\\]", "_", CONTROL_CHARACTERS.sub("_", name)).strip()
     if cleaned in {".", ".."}:
         cleaned = cleaned.replace(".", "_")  # "." -> "_", ".." -> "__"
     return cleaned or "file"
@@ -111,12 +126,15 @@ def summarize(items: list[WalkItem]) -> dict[str, int]:
         "skipped_natives": 0,
         "subfolders": 0,
         "skipped_subfolders": 0,
+        "cyclic_subfolders": 0,
     }
     for item in items:
         f = item.file
         if is_folder(f):
             if item.descended:
                 summary["subfolders"] += 1
+            elif item.cycle:
+                summary["cyclic_subfolders"] += 1
             else:
                 summary["skipped_subfolders"] += 1
             continue
@@ -164,23 +182,54 @@ def print_summary(summary: dict[str, int], output_dir: str) -> None:
             f"  {summary['skipped_subfolders']:>4} subfolder(s) skipped (depth limit)",
             file=sys.stderr,
         )
+    if summary["cyclic_subfolders"]:
+        print(
+            f"  {summary['cyclic_subfolders']:>4} subfolder(s) skipped "
+            "(contains itself)",
+            file=sys.stderr,
+        )
 
 
-def unique_path(target: Path) -> Path:
-    """If target exists, append ' (1)', ' (2)', ... before the extension until unique.
+def unique_path(target: Path, taken: Callable[[Path], bool] = lexists) -> Path:
+    """If target is taken, append ' (1)', ' (2)', ... before the extension until not.
 
     Mirrors Google Drive Web UI's display-time dedup convention so that locally
-    disambiguated names look the way Drive would have rendered them.
+    disambiguated names look the way Drive would have rendered them. ``taken``
+    defaults to "exists on disk" (a dangling symlink counts).
     """
-    if not lexists(target):
+    if not taken(target):
         return target
     stem, suffix, parent = target.stem, target.suffix, target.parent
     n = 1
     while True:
         candidate = parent / f"{stem} ({n}){suffix}"
-        if not lexists(candidate):
+        if not taken(candidate):
             return candidate
         n += 1
+
+
+class LocalNames:
+    """Choose the local path for each Drive entry in one download run.
+
+    By default a name already on disk gets a ' (N)' suffix, so nothing local is
+    overwritten. With ``skip_existing`` the suffix is chosen against the paths
+    this run has already handed out instead: a rerun then maps every entry to
+    the path the first run gave it (a second ``a.pdf`` is ``a (1).pdf`` both
+    times, since ``list_children`` orders duplicates the same way on every
+    call), and an entry whose path is already there is skipped rather than
+    saved again as a copy.
+    """
+
+    def __init__(self, *, skip_existing: bool = False) -> None:
+        self.skip_existing = skip_existing
+        self._used: set[Path] = set()
+
+    def claim(self, target: Path) -> Path:
+        """Return the path for the entry that would land at ``target``."""
+        taken = self._used.__contains__ if self.skip_existing else lexists
+        path = unique_path(target, taken)
+        self._used.add(path)
+        return path
 
 
 def download_file(service: Service, file_id: str, output_path: str) -> int:
@@ -200,13 +249,18 @@ def download_file(service: Service, file_id: str, output_path: str) -> int:
     return target.stat().st_size
 
 
-def download_entry(service: Service, f: DriveFile, out: Path) -> None:
+def download_entry(
+    service: Service, f: DriveFile, out: Path, names: LocalNames | None = None
+) -> None:
     """Download one non-folder Drive entry into the existing directory `out`.
 
     Google-native Docs/Sheets/Slides auto-export to .docx/.xlsx/.pptx; other
     native types (Forms, Drawings, etc.) are skipped with a warning. Binary
-    files download via get_media. Names that collide locally get a ' (N)' suffix.
+    files download via get_media. ``names`` picks the local path (see
+    :class:`LocalNames`): by default a name that collides locally gets a ' (N)'
+    suffix.
     """
+    names = names or LocalNames()
     name = safe_filename(f["name"])
     disposition = classify_entry(f)
 
@@ -214,18 +268,27 @@ def download_entry(service: Service, f: DriveFile, out: Path) -> None:
         print(f"  skip {file_type(f)} (no export format): {name}", file=sys.stderr)
         return
 
+    ext = NATIVE_EXPORT_EXT[file_type(f)] if disposition == "export" else ""
+    target = names.claim(out / f"{name}{ext}")
+    if names.skip_existing and lexists(target):
+        print(f"  skip (already there): {target}", file=sys.stderr)
+        return
+
     if disposition == "export":
-        ext = NATIVE_EXPORT_EXT[file_type(f)]
-        target = unique_path(out / f"{name}{ext}")
         export_file(service, f["id"], str(target))
         return
 
-    target = unique_path(out / name)
     size = download_file(service, f["id"], str(target))
     print(f"  {target} ({size} bytes)")
 
 
-def download_walk(service: Service, items: list[WalkItem], output_dir: str) -> None:
+def download_walk(
+    service: Service,
+    items: list[WalkItem],
+    output_dir: str,
+    *,
+    skip_existing: bool = False,
+) -> list[str]:
     """Download a materialized ``walk_tree`` into output_dir, depth-first.
 
     Consumes the same list ``summarize`` counted, so the download can't diverge
@@ -234,39 +297,69 @@ def download_walk(service: Service, items: list[WalkItem], output_dir: str) -> N
     subdirectory (even when empty) and prints ``-> subdir/``, while a
     depth-limited folder prints a skip notice. Messages fire here, at download
     time, in the walk's depth-first order.
+
+    An entry that fails with an API or filesystem error is reported and the
+    walk moves on; a folder that can't be created takes its contents with it.
+    Returns one line per failure, empty when everything downloaded.
+    ``skip_existing`` is :class:`LocalNames`' rerun mode.
     """
     out = Path(output_dir)
     _ensure_dir(out)
-    parents = [out]
+    names = LocalNames(skip_existing=skip_existing)
+    # None marks a folder that could not be created: its contents are skipped.
+    parents: list[Path | None] = [out]
+    failures: list[str] = []
+
+    def fail(item: WalkItem, error: Exception, note: str = "") -> None:
+        label = printable("/".join((*item.ancestors, item.file["name"])))
+        failures.append(f"{label}: {error}{note}")
+        print(f"  failed: {label}: {error}", file=sys.stderr)
 
     for item in items:
         del parents[item.depth + 1 :]
         parent = parents[item.depth]
         f = item.file
+        if parent is None:
+            if is_folder(f) and item.descended:
+                parents.append(None)
+            continue
         if is_folder(f):
             name = safe_filename(f["name"])
-            if item.descended:
-                subdir = unique_path(parent / name)
-                print(f"  -> {subdir}/", file=sys.stderr)
+            if not item.descended:
+                reason = "contains itself" if item.cycle else "depth limit"
+                print(f"  skip subfolder ({reason}): {name}/", file=sys.stderr)
+                continue
+            subdir = names.claim(parent / name)
+            print(f"  -> {subdir}/", file=sys.stderr)
+            try:
                 _ensure_dir(subdir)
-                parents.append(subdir)
+            except OSError as e:
+                fail(item, e, " (its contents were not downloaded)")
+                parents.append(None)
             else:
-                print(f"  skip subfolder (depth limit): {name}/", file=sys.stderr)
+                parents.append(subdir)
             continue
 
-        download_entry(service, f, parent)
+        try:
+            download_entry(service, f, parent, names)
+        except (HttpError, OSError) as e:
+            fail(item, e)
+    return failures
 
 
-def download_single(service: Service, meta: DriveFile, output_dir: str) -> None:
+def download_single(
+    service: Service, meta: DriveFile, output_dir: str, *, skip_existing: bool = False
+) -> None:
     """Download a single resolved Drive file into output_dir.
 
     Creates output_dir if needed, then writes the file using its Drive name.
     Google-native Docs/Sheets auto-export; other native types are skipped.
+    With ``skip_existing``, a file already at that path is left alone.
     """
     print(f"File ID: {meta['id']}", file=sys.stderr)
     out = Path(output_dir)
     _ensure_dir(out)
-    download_entry(service, meta, out)
+    download_entry(service, meta, out, LocalNames(skip_existing=skip_existing))
 
 
 def run(
@@ -274,27 +367,31 @@ def run(
     output_dir: str = ".",
     depth: int | None = None,
     yes: bool = False,
+    skip_existing: bool = False,
 ) -> None:
     """Download a Drive file or folder to output_dir.
 
-    A single file downloads immediately. A folder is scanned first, with a
-    summary and a confirmation prompt before its contents download. `depth`
-    only affects folders.
+    ``source`` is a Drive URL, a bare file or folder ID, a Drive path, or the
+    name of a cached drive. A single file downloads immediately. A folder is
+    scanned first, with a summary and a confirmation prompt before its contents
+    download; `depth` only affects folders. Entries that fail are listed in a
+    DownloadError raised once the rest have downloaded.
     """
     from gdrives.auth import build_drive_service
-    from gdrives.resolve import resolve_path
+    from gdrives.drives import find_drive, load
+    from gdrives.resolve import resolve_file_id
 
     service = build_drive_service()
 
-    if source.startswith(("http://", "https://")):
-        entry_id = extract_drive_id(source)
-    else:
-        entry_id = resolve_path(source, service, allow_files=True)
+    # A bare name can be a whole drive ("Team Drive"); resolve_file_id takes
+    # anything without a slash for a file ID, which is right otherwise.
+    drive = None if "/" in source else find_drive(load(), source)
+    entry_id = drive["id"] if drive else resolve_file_id(source, service)
 
     meta = get_file_metadata(service, entry_id)
 
     if not is_folder(meta):
-        download_single(service, meta, output_dir)
+        download_single(service, meta, output_dir, skip_existing=skip_existing)
         return
 
     folder_id = meta["id"]
@@ -315,4 +412,10 @@ def run(
         print("Aborted.", file=sys.stderr)
         return
 
-    download_walk(service, items, output_dir)
+    failures = download_walk(service, items, output_dir, skip_existing=skip_existing)
+    if failures:
+        raise DownloadError(
+            f"{len(failures)} item(s) failed to download:\n"
+            + "\n".join(f"  {line}" for line in failures)
+            + "\nRerun with --skip-existing to fetch only what is missing."
+        )

@@ -21,6 +21,7 @@ than A1 strings.
 """
 
 import csv
+import io
 import json
 import re
 import string
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from gdrives.files import Service
+from gdrives.local import escape_formula, write_text
 
 # The two valueInputOption modes. USER_ENTERED parses "=SUM(...)", dates, and
 # numbers like the Sheets UI; RAW stores the literal string in each cell.
@@ -81,7 +83,13 @@ def append_values(
     *,
     input_option: str = USER_ENTERED,
 ) -> dict[str, Any]:
-    """Append rows after the table in ``range_``; return the API append summary."""
+    """Append rows after the table in ``range_``; return the API append summary.
+
+    The rows are inserted (``INSERT_ROWS``), shifting anything below the table
+    down. The API's default, ``OVERWRITE``, writes into whatever follows the
+    table, so a second block of data one blank row below would lose its first
+    rows.
+    """
     return (
         service.spreadsheets()
         .values()
@@ -89,6 +97,7 @@ def append_values(
             spreadsheetId=spreadsheet_id,
             range=range_,
             valueInputOption=input_option,
+            insertDataOption="INSERT_ROWS",
             body={"values": values},
         )
         .execute()
@@ -154,22 +163,6 @@ def first_tab(service: Service, spreadsheet_id: str) -> str:
     if not tabs:
         raise ValueError("spreadsheet has no tabs")
     return tabs[0]
-
-
-# -- source resolution --
-
-
-def resolve_spreadsheet_id(source: str, service: Service | None = None) -> str:
-    """Resolve a spreadsheet URL, bare file ID, or Drive path to a spreadsheet ID.
-
-    The Sheets-facing name for :func:`gdrives.resolve.resolve_file_id`: a URL or
-    bare ID goes through ``extract_drive_id``; a Drive path (contains ``/``) is
-    walked via ``resolve_path`` using the Drive API. ``service`` is the *Drive*
-    service used for path resolution; when omitted, a read-only one is built.
-    """
-    from gdrives.resolve import resolve_file_id
-
-    return resolve_file_id(source, service)
 
 
 # -- conditional (find-and-set) updates --
@@ -249,6 +242,12 @@ def set_by_match(
     Refuses when nothing matches, or when more than one row matches unless
     ``allow_multiple`` is set — so a keyed update never silently rewrites the
     wrong row or a whole column. Returns ``{"rows": [...], "updated_cells": N}``.
+
+    The write addresses rows by number, and Sheets has no revision precondition
+    to tie it to the read. So the tab is read again just before writing, and
+    the update is refused if the header or the matching rows moved: a row
+    inserted or a sort above the match would otherwise redirect the write to a
+    different record.
     """
     if not updates:
         raise ValueError("no columns to set")
@@ -265,6 +264,13 @@ def set_by_match(
     if len(rows) > 1 and not allow_multiple:
         raise ValueError(
             f"{condition} matches rows {rows}; pass --all to update every match"
+        )
+
+    fresh = pull_values(service, spreadsheet_id, quoted)
+    if not fresh or fresh[0] != grid[0] or find_rows(fresh, match) != rows:
+        raise ValueError(
+            f"tab {tab!r} changed while it was being read; nothing was written, "
+            "rerun to update the current rows"
         )
 
     letters = {col: column_letter(index) for col, index in targets.items()}
@@ -613,9 +619,10 @@ def read_rule_json(path: str) -> dict[str, Any]:
 
     Accepts a bare ``ConditionalFormatRule`` or one entry of ``sheets-rules
     --json`` output (unwrapping its ``rule``). Its ranges keep their ``sheetId``,
-    so they must name a tab that exists on the target spreadsheet.
+    so they must name a tab that exists on the target spreadsheet. A UTF-8
+    byte-order mark, which some Windows editors write, is ignored.
     """
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         data = json.load(f)
     if isinstance(data, dict) and "rule" in data:
         data = data["rule"]
@@ -686,19 +693,31 @@ def format_rules(rules: list[dict[str, Any]]) -> str:
 
 
 def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:
-    """Read a local delimited file into rows of string cells."""
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.reader(f, delimiter=delimiter))
+    """Read a local delimited file into rows of string cells.
+
+    A UTF-8 byte-order mark (Excel's "CSV UTF-8" format starts with one) is
+    dropped instead of becoming part of the first cell, where it would break a
+    later header lookup. A file the csv module rejects (an oversized field, a
+    stray NUL) raises ValueError naming the line.
+    """
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f, delimiter=delimiter)
+        try:
+            return list(reader)
+        except csv.Error as e:
+            raise ValueError(f"{path}, line {reader.line_num}: {e}")
 
 
 def write_values_csv(
     path: str, values: list[list[str]], *, delimiter: str = ","
 ) -> None:
-    """Write rows of cells to a local delimited file, creating parent dirs."""
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="", encoding="utf-8") as f:
-        csv.writer(f, delimiter=delimiter).writerows(values)
+    """Write rows of cells to a local delimited file, creating parent dirs.
+
+    Written atomically, so a failed run never leaves a partial file behind.
+    """
+    buf = io.StringIO()
+    csv.writer(buf, delimiter=delimiter).writerows(values)
+    write_text(Path(path), buf.getvalue())
 
 
 # -- display --
@@ -739,12 +758,16 @@ def run_get(
     output: str | None = None,
     delimiter: str = ",",
     aligned: bool = True,
+    escape_formulas: bool = False,
 ) -> None:
     """Read a range and print it, or write it to a delimited file with ``output``.
 
     With no ``range_``, defaults to the first tab. To stdout: aligned columns by
     default, or delimited rows when ``aligned`` is False. With ``output``: writes
     a delimited file (``delimiter``) and reports the row count to stderr.
+    ``escape_formulas`` passes every cell through :func:`escape_formula`, for
+    output a spreadsheet app will open; it is off by default because it changes
+    values such as ``-5``.
     """
     from gdrives.auth import build_sheets_service
 
@@ -757,6 +780,8 @@ def run_get(
         range_ = a1_quote(first_tab(service, spreadsheet_id))
 
     values = pull_values(service, spreadsheet_id, range_)
+    if escape_formulas:
+        values = [[escape_formula(cell) for cell in row] for row in values]
 
     if output:
         write_values_csv(output, values, delimiter=delimiter)
@@ -962,6 +987,9 @@ def run_delete_rule(
 
     Reads the rule list fresh, so the prompt shows the rule actually at that
     position and an out-of-range index is refused before anything is sent.
+    Sheets has no revision precondition and a prompt can sit open for a while,
+    so after a confirmation the list is read again and the delete is refused
+    unless the same rule is still at that index.
     """
     import typer
 
@@ -979,10 +1007,21 @@ def run_delete_rule(
             f"tab {tab!r} has {len(on_tab)} rule(s); no rule at index {index}"
         )
     summary = describe_rule(on_tab[index]["rule"])
-    if not yes and not typer.confirm(
-        f"Delete rule [{index}] on {tab}: {summary}?", default=False
-    ):
-        print("Aborted.", file=sys.stderr)
-        return
+    if not yes:
+        if not typer.confirm(
+            f"Delete rule [{index}] on {tab}: {summary}?", default=False
+        ):
+            print("Aborted.", file=sys.stderr)
+            return
+        now = [
+            r
+            for r in _flatten_rules(_rule_tabs(service, spreadsheet_id))
+            if r["tab"] == tab
+        ]
+        if index >= len(now) or now[index] != on_tab[index]:
+            raise ValueError(
+                f"the rules on {tab!r} changed while waiting for confirmation; "
+                "nothing was deleted, run sheets-rules and try again"
+            )
     delete_conditional_rule(service, spreadsheet_id, ids[tab], index)
     print(f"Deleted rule [{index}] on {tab}: {summary}")

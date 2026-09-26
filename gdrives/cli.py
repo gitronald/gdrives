@@ -1,9 +1,10 @@
 """CLI for Google Drive operations."""
 
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -15,25 +16,55 @@ YesFlag = Annotated[
 ]
 
 
+def _fail(message: str) -> NoReturn:
+    """Print ``Error: message`` to stderr and exit 1.
+
+    Control characters are escaped line by line: messages quote Drive names,
+    which someone else may have chosen, and a multi-line message keeps its
+    line breaks.
+    """
+    from gdrives.local import printable
+
+    text = "\n".join(printable(line) for line in message.split("\n"))
+    print(f"Error: {text}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 @contextmanager
-def _cli_errors() -> Iterator[None]:
-    """Translate domain, filesystem, and Drive API errors into clean CLI output.
+def _cli_errors() -> Generator[None, None, None]:
+    """Translate domain, filesystem, network, auth, and API errors into clean output.
 
     One seam so every command surfaces 'Error: ...' + exit 1 instead of a raw
     traceback, and a new command can't forget to handle HttpError or OSError.
     """
+    from google.auth.exceptions import GoogleAuthError
     from googleapiclient.errors import HttpError
+    from httplib2 import HttpLib2Error
+    from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
+    from gdrives.download import DownloadError
+    from gdrives.files import IncompleteSearchError
     from gdrives.resolve import DrivePathError
 
     try:
         yield
-    except (DrivePathError, ValueError, OSError) as e:
-        print(f"Error: {e}", file=sys.stderr)
-        raise SystemExit(1)
+    except (
+        DrivePathError,
+        DownloadError,
+        IncompleteSearchError,
+        ValueError,
+        OSError,
+    ) as e:
+        _fail(str(e))
     except HttpError as e:
-        print(f"Error: Drive API request failed: {e}", file=sys.stderr)
-        raise SystemExit(1)
+        _fail(f"Drive API request failed: {e}")
+    except (GoogleAuthError, OAuth2Error) as e:
+        # A token fetch that failed or was refused (a service account or ADC
+        # refresh, a denied OAuth consent, the network dropping mid-refresh).
+        _fail(f"authentication failed: {e}")
+    except HttpLib2Error as e:
+        # Raised below the API client, e.g. no network or DNS for the host.
+        _fail(f"could not reach Google: {e}")
 
 
 @app.command()
@@ -59,7 +90,9 @@ def export(
 def download(
     source: Annotated[
         str,
-        typer.Argument(help="Drive file or folder URL or path (e.g. 'My Drive/refs')"),
+        typer.Argument(
+            help="Drive file or folder URL, ID, or path (e.g. 'My Drive/refs')"
+        ),
     ],
     output_dir: Annotated[
         str,
@@ -75,6 +108,13 @@ def download(
         ),
     ] = None,
     yes: YesFlag = False,
+    skip_existing: Annotated[
+        bool,
+        typer.Option(
+            "--skip-existing",
+            help="Skip files already downloaded (to resume) instead of adding copies",
+        ),
+    ] = False,
 ):
     """Download a Drive file or folder to a local directory.
 
@@ -84,12 +124,14 @@ def download(
 
     Google Docs/Sheets/Slides auto-export to .docx/.xlsx/.pptx; other
     Google-native types are skipped. Filename collisions get a ' (N)' suffix
-    matching Drive's UI convention.
+    matching Drive's UI convention. A file that fails doesn't stop the rest;
+    failures are listed at the end (exit 1), and a rerun with --skip-existing
+    fetches only what is missing.
     """
     from gdrives.download import run
 
     with _cli_errors():
-        run(source, output_dir, depth=depth, yes=yes)
+        run(source, output_dir, depth=depth, yes=yes, skip_existing=skip_existing)
 
 
 @app.command()
@@ -122,43 +164,35 @@ def ls(
 ):
     """List contents of a Drive folder by path or ID."""
     if path is not None and drive_id is not None:
-        print("Error: PATH and --drive-id are mutually exclusive", file=sys.stderr)
-        raise SystemExit(1)
+        _fail("PATH and --drive-id are mutually exclusive")
     if shared_with_me and drive_id:
-        print(
-            "Error: --shared-with-me and --drive-id are mutually exclusive",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail("--shared-with-me and --drive-id are mutually exclusive")
 
-    bad_save_as = [p for p in (save_as or []) if not p.endswith((".md", ".csv"))]
+    bad_save_as = [
+        p for p in (save_as or []) if Path(p).suffix.lower() not in {".md", ".csv"}
+    ]
     if bad_save_as:
-        print(
-            f"Error: --save-as must end in .md or .csv: {', '.join(bad_save_as)}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail(f"--save-as must end in .md or .csv: {', '.join(bad_save_as)}")
 
     if shared_with_me and path is None and depth != 1:
-        print(
-            "Error: --depth is not supported when listing all shared items",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        _fail("--depth is not supported when listing all shared items")
 
+    from gdrives.auth import build_drive_service
     from gdrives.listing import ls as remote_ls
     from gdrives.resolve import resolve_path, resolve_shared_path
 
     with _cli_errors():
+        # One service resolves the path and lists it: one authentication.
+        service = build_drive_service()
         if shared_with_me and path is None:
-            remote_ls(shared_with_me=True, save_as=save_as)
+            remote_ls(shared_with_me=True, save_as=save_as, service=service)
         else:
             if shared_with_me:
                 assert path is not None  # the path-less shared case returned above
-                folder_id = resolve_shared_path(path)
+                folder_id = resolve_shared_path(path, service)
             else:
-                folder_id = drive_id or resolve_path(path or "My Drive")
-            remote_ls(folder_id, depth=depth, save_as=save_as)
+                folder_id = drive_id or resolve_path(path or "My Drive", service)
+            remote_ls(folder_id, depth=depth, save_as=save_as, service=service)
 
 
 @app.command(name="show-drives")
@@ -166,6 +200,7 @@ def show_drives():
     """Fetch and cache available drives."""
     from gdrives.auth import build_drive_service
     from gdrives.drives import CACHE_PATH, fetch, save
+    from gdrives.local import printable
 
     with _cli_errors():
         service = build_drive_service()
@@ -175,9 +210,10 @@ def show_drives():
         max_url = max(len(d["url"]) for d in drives)
         max_kind = max(len(d["type"]) for d in drives)
         for d in drives:
+            # Shared drive names are chosen by whoever created the drive.
             print(
                 f"{d['url']:<{max_url}}   {d['type']:<{max_kind}}   "
-                f"{d['name']} ({d['id']})"
+                f"{printable(d['name'])} ({d['id']})"
             )
         print(f"\nSaved to {CACHE_PATH}", file=sys.stderr)
 
@@ -207,15 +243,24 @@ def sheets_get(
         bool,
         typer.Option("--tsv", help="Tab-delimited (for --csv-style stdout or -o)"),
     ] = False,
+    escape_formulas: Annotated[
+        bool,
+        typer.Option(
+            "--escape-formulas",
+            help="Prefix ' to cells starting with =, +, -, @, a tab, or a carriage "
+            "return, so a spreadsheet app opening the output shows them as text",
+        ),
+    ] = False,
 ):
     """Read a range of cells from a Google Sheet.
 
     Prints aligned columns to stdout by default; --csv/--tsv print delimited
-    rows, and -o writes a delimited file (CSV, or TSV with --tsv).
+    rows, and -o writes a delimited file (CSV, or TSV with --tsv). Values are
+    exact unless --escape-formulas is given, which is safer for a file someone
+    will open in Excel or LibreOffice.
     """
     if csv_out and tsv_out:
-        print("Error: --csv and --tsv are mutually exclusive", file=sys.stderr)
-        raise SystemExit(1)
+        _fail("--csv and --tsv are mutually exclusive")
 
     from gdrives.sheets import run_get
 
@@ -227,6 +272,7 @@ def sheets_get(
             output=output,
             delimiter=delimiter,
             aligned=not (csv_out or tsv_out),
+            escape_formulas=escape_formulas,
         )
 
 

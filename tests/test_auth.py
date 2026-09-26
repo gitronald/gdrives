@@ -1,12 +1,15 @@
 """Tests for gdrives.auth — credential discovery and the fallback chain."""
 
 import json
+import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import google.auth.exceptions
 import pytest
+from helpers import plant_scratch_symlink
 
 from gdrives import auth
 
@@ -243,6 +246,28 @@ class TestAuthenticateOauthFlow:
         )
         assert auth.authenticate_oauth() is new_creds
 
+    def test_network_failure_on_refresh_is_not_a_reconsent(self, monkeypatch, tmp_path):
+        # Offline with a valid refresh token: report the network error rather
+        # than opening a browser consent that can't help.
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        (tmp_path / "gdrives_token.json").write_text("{}")
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        stale = MagicMock(expired=True)
+        stale.refresh_token = "rt"
+        stale.refresh.side_effect = google.auth.exceptions.TransportError("offline")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: stale,
+        )
+        monkeypatch.setattr("google.auth.transport.requests.Request", lambda: None)
+        monkeypatch.setattr(
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+            lambda path, scopes=None: pytest.fail("must not start a consent flow"),
+        )
+        with pytest.raises(google.auth.exceptions.TransportError, match="offline"):
+            auth.authenticate_oauth()
+
     def test_headless_no_token_returns_none(self, monkeypatch, tmp_path):
         # Credentials file present but no interactive terminal: fall through
         # (return None) instead of blocking on a browser flow that can't complete.
@@ -376,6 +401,25 @@ class TestBuildDocsService:
 
 
 class TestBuildService:
+    def test_same_scopes_authenticate_once(self, monkeypatch):
+        # A path-based sheets-get resolves the path with a Drive client and
+        # reads with a Sheets client: one authentication serves both.
+        calls = []
+        monkeypatch.setattr(
+            auth, "authenticate", lambda scopes=None: calls.append(scopes) or object()
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda api, version, credentials: credentials,
+        )
+        drive = auth.build_drive_service()
+        sheets = auth.build_sheets_service()
+        assert drive is sheets  # the same credentials object
+        assert calls == [auth.SCOPES]
+        write = auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES)
+        assert write is not drive
+        assert calls == [auth.SCOPES, auth.SHEETS_WRITE_SCOPES]
+
     def test_all_builders_share_one_path(self, monkeypatch):
         rec = []
         monkeypatch.setattr(auth, "authenticate", lambda scopes=None: "creds")
@@ -468,17 +512,17 @@ class TestTokenCovers:
         assert auth._token_covers(tmp_path / "absent.json", auth.SCOPES) is True
 
 
-def test_token_write_does_not_follow_old_temporary_symlink(tmp_path):
+def test_token_write_does_not_follow_a_planted_scratch_symlink(tmp_path, monkeypatch):
     victim = tmp_path / "unrelated"
     victim.write_text("keep")
+    link = plant_scratch_symlink(monkeypatch, tmp_path, victim)
     token = tmp_path / "token.json"
-    scratch = tmp_path / "token.json.tmp"
-    scratch.symlink_to(victim)
     creds = MagicMock()
     creds.to_json.return_value = '{"token": "new"}'
     auth._write_token(token, creds)
     assert victim.read_text() == "keep"
-    assert scratch.is_symlink()
+    assert link.is_symlink()
+    assert token.read_text() == '{"token": "new"}'
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
 
 
@@ -503,3 +547,26 @@ def test_unhashable_cached_scope_does_not_crash_scope_check(tmp_path):
     token = tmp_path / "token.json"
     token.write_text(json.dumps({"scopes": [{}]}))
     assert auth._token_covers(token, auth.SCOPES)
+
+
+def test_env_file_is_found_from_the_working_directory(tmp_path, monkeypatch):
+    # An installed tool's module lives in site-packages; the project's .env is
+    # where the command runs. Pretend no tracer is active, since python-dotenv
+    # falls back to the working directory under one (coverage, a debugger).
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    (project / ".env").write_text("GDRIVES_DOTENV_PROBE=from-project\n")
+    monkeypatch.chdir(project / "sub")
+    monkeypatch.setattr(sys, "gettrace", lambda: None)
+    monkeypatch.setenv("GDRIVES_DOTENV_PROBE", "")  # restored (unset) afterwards
+    monkeypatch.delenv("GDRIVES_DOTENV_PROBE")
+    auth._load_env()
+    assert os.environ["GDRIVES_DOTENV_PROBE"] == "from-project"
+
+
+def test_environment_wins_over_the_env_file(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("GDRIVES_DOTENV_PROBE=from-file\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GDRIVES_DOTENV_PROBE", "from-environment")
+    auth._load_env()
+    assert os.environ["GDRIVES_DOTENV_PROBE"] == "from-environment"
