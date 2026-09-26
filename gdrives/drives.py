@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from gdrives.files import Service
+from gdrives.local import write_text
 
 
 class DriveInfo(TypedDict):
@@ -57,16 +58,37 @@ def fetch(service: Service) -> list[DriveInfo]:
 
 
 def save(drives: list[DriveInfo], path: Path = CACHE_PATH) -> None:
-    """Save drives list to JSON cache."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(drives, indent=2) + "\n", encoding="utf-8")
+    """Save drives list to JSON cache.
+
+    Written atomically: an interrupted ``show-drives`` leaves the previous cache
+    in place rather than a truncated file every Drive-path command then chokes on.
+    """
+    write_text(path, json.dumps(drives, indent=2) + "\n")
+
+
+def _is_drive(entry: object) -> bool:
+    """True for a cache entry carrying every DriveInfo field as a string."""
+    return isinstance(entry, dict) and all(
+        isinstance(entry.get(key), str) for key in DriveInfo.__annotations__
+    )
 
 
 def load(path: Path = CACHE_PATH) -> list[DriveInfo]:
-    """Load drives from JSON cache."""
+    """Load drives from JSON cache, refusing one that is not a list of drives.
+
+    A hand-edited or otherwise damaged cache raises ValueError naming the file
+    and the fix, instead of a KeyError or TypeError deep inside a lookup.
+    """
     if not path.exists():
         return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    rerun = "rerun 'gdrives show-drives' to rebuild it"
+    try:
+        drives = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise ValueError(f"drive cache {path} is not valid JSON ({e}); {rerun}")
+    if not isinstance(drives, list) or not all(_is_drive(d) for d in drives):
+        raise ValueError(f"drive cache {path} is malformed; {rerun}")
+    return drives
 
 
 def find_drive(drives: list[DriveInfo], name: str) -> DriveInfo | None:
@@ -80,11 +102,3 @@ def find_drive(drives: list[DriveInfo], name: str) -> DriveInfo | None:
         ids = ", ".join(d["id"] for d in matches)
         raise ValueError(f"multiple drives named {name!r}; use a drive ID: {ids}")
     return matches[0] if matches else None
-
-
-def resolve_name(name: str, path: Path = CACHE_PATH) -> DriveInfo | None:
-    """Look up a drive by name from the cache. Case-insensitive.
-
-    Returns the full drive dict (id, type, name, url) or None.
-    """
-    return find_drive(load(path), name)
