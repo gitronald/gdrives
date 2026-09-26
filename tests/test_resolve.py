@@ -230,14 +230,14 @@ class TestResolveAndReport:
         assert rec == {"s": "My Drive/x", "svc": mock_service}
 
 
-@pytest.mark.parametrize("path", ["", "/", "///", "   "])
+@pytest.mark.parametrize("path", ["", "/", "///", "   ", " / ", "/ /", " // "])
 def test_empty_shared_path_never_matches_an_arbitrary_shared_item(mock_service, path):
     with pytest.raises(DrivePathError, match="path must not be empty"):
         resolve_shared_path(path, mock_service)
     mock_service.files.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["", "/", "///", "   "])
+@pytest.mark.parametrize("path", ["", "/", "///", "   ", " / ", "/ /", " // "])
 def test_empty_drive_path_is_named_as_such(monkeypatch, mock_service, path):
     # Not "No drive matching '' in cache. Run 'gdrives show-drives' first."
     monkeypatch.setattr(
@@ -254,10 +254,11 @@ def test_blank_source_is_refused(source):
         resolve_file_id(source)
 
 
-def test_slash_source_is_an_empty_path(monkeypatch):
+@pytest.mark.parametrize("source", ["/", " / "])
+def test_slash_source_is_an_empty_path(monkeypatch, source):
     monkeypatch.setattr(
         "gdrives.resolve.build_drive_service",
         lambda: pytest.fail("must not authenticate for an empty path"),
     )
     with pytest.raises(DrivePathError, match="Drive path must not be empty"):
-        resolve_file_id("/")
+        resolve_file_id(source)
