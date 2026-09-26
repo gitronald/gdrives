@@ -22,7 +22,6 @@ from gdrives.sheets import (
     parse_pairs,
     pull_values,
     read_values_csv,
-    resolve_spreadsheet_id,
     run_append,
     run_clear,
     run_get,
@@ -91,6 +90,7 @@ class TestAppendValues:
                     "spreadsheetId": "sid",
                     "range": "Sheet1!A1",
                     "valueInputOption": "USER_ENTERED",
+                    "insertDataOption": "INSERT_ROWS",
                     "body": {"values": [["x", "y"]]},
                 },
             )
@@ -139,29 +139,6 @@ class TestListTabs:
         assert list_tabs(svc, "sid") == []
 
 
-# -- resolve_spreadsheet_id --
-
-
-class TestResolveSpreadsheetId:
-    def test_url_extracts_id(self):
-        url = "https://docs.google.com/spreadsheets/d/SHEET123/edit#gid=0"
-        assert resolve_spreadsheet_id(url) == "SHEET123"
-
-    def test_bare_id_returned_as_is(self):
-        assert resolve_spreadsheet_id("SHEET123") == "SHEET123"
-
-    def test_path_uses_resolve_path(self, monkeypatch):
-        rec = {}
-        monkeypatch.setattr(
-            "gdrives.resolve.resolve_path",
-            lambda path, service=None, *, allow_files=False: (
-                rec.update(path=path, allow_files=allow_files) or "RESOLVED"
-            ),
-        )
-        assert resolve_spreadsheet_id("My Drive/budget") == "RESOLVED"
-        assert rec == {"path": "My Drive/budget", "allow_files": True}
-
-
 # -- CSV interchange --
 
 
@@ -183,6 +160,32 @@ class TestCsvInterchange:
         path = tmp_path / "new" / "sub" / "out.csv"
         write_values_csv(str(path), [["x"]])
         assert read_values_csv(str(path)) == [["x"]]
+
+    def test_utf8_bom_is_not_part_of_the_first_cell(self, tmp_path):
+        # Excel's "CSV UTF-8" starts the file with a BOM; kept, it would turn
+        # the header "id" into "\ufeffid" and break a later --match id=...
+        path = tmp_path / "excel.csv"
+        path.write_bytes(b"\xef\xbb\xbfid,status\r\nC300,paid\r\n")
+        assert read_values_csv(str(path)) == [["id", "status"], ["C300", "paid"]]
+
+    def test_csv_error_names_the_file_and_line(self, tmp_path):
+        path = tmp_path / "big.csv"
+        path.write_text("id\n" + "x" * 200_000 + "\n")
+        with pytest.raises(ValueError, match=r"big\.csv, line 2: field larger"):
+            read_values_csv(str(path))
+
+    def test_failed_write_keeps_the_previous_file(self, tmp_path, monkeypatch):
+        path = tmp_path / "out.csv"
+        path.write_text("old\n")
+
+        def fail(self, destination):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("pathlib.Path.replace", fail)
+        with pytest.raises(OSError, match="disk full"):
+            write_values_csv(str(path), [["new"]])
+        assert path.read_text() == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["out.csv"]
 
 
 # -- format_values --
@@ -269,6 +272,34 @@ class TestRunGet:
         )
         run_get("SHEET_ID", "A1:B1", aligned=False)
         assert "a,b" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("aligned", [True, False])
+    def test_escape_formulas_prefixes_formula_cells(self, monkeypatch, capsys, aligned):
+        svc = FakeSheetsService(get={"values": [['=HYPERLINK("x")', "-5", "ok"]]})
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service", lambda scopes=None: svc
+        )
+        run_get("SHEET_ID", "A1:C1", aligned=aligned, escape_formulas=True)
+        out = capsys.readouterr().out
+        assert "'=HYPERLINK" in out and "'-5" in out and "'ok" not in out
+
+    def test_escape_formulas_applies_to_output_file(self, monkeypatch, tmp_path):
+        svc = FakeSheetsService(get={"values": [["@SUM(A1)", "x"]]})
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service", lambda scopes=None: svc
+        )
+        out = tmp_path / "out.csv"
+        run_get("SHEET_ID", "A1:B1", output=str(out), escape_formulas=True)
+        assert read_values_csv(str(out)) == [["'@SUM(A1)", "x"]]
+
+    def test_values_are_exact_by_default(self, monkeypatch, tmp_path):
+        svc = FakeSheetsService(get={"values": [["=1+2", "-5"]]})
+        monkeypatch.setattr(
+            "gdrives.auth.build_sheets_service", lambda scopes=None: svc
+        )
+        out = tmp_path / "out.csv"
+        run_get("SHEET_ID", "A1:B1", output=str(out))
+        assert read_values_csv(str(out)) == [["=1+2", "-5"]]
 
     def test_delimited_stdout_uses_plain_newlines(self, monkeypatch, capsys):
         # csv.writer's default "\r\n" terminator against a text stdout leaves a
@@ -489,9 +520,15 @@ class TestSetByMatch:
             svc, "sid", "Sheet1", {"id": "C300"}, {"status": "paid", "amount": "250"}
         )
         assert result == {"rows": [4], "updated_cells": 2}
-        assert svc.calls[0][0] == "values.get"
+        # read, re-read just before writing, then one batch write
+        assert [c[0] for c in svc.calls] == [
+            "values.get",
+            "values.get",
+            "values.batchUpdate",
+        ]
         assert svc.calls[0][1]["range"] == "'Sheet1'"  # reads via quoted tab name
-        body = svc.calls[1][1]["body"]
+        assert svc.calls[1][1]["range"] == "'Sheet1'"
+        body = svc.calls[2][1]["body"]
         assert body["data"] == [
             {"range": "'Sheet1'!C4", "values": [["paid"]]},
             {"range": "'Sheet1'!D4", "values": [["250"]]},
@@ -510,7 +547,7 @@ class TestSetByMatch:
             svc, "sid", "S", {"year": "2026", "id": "C300"}, {"status": "paid"}
         )
         assert result["rows"] == [3]
-        assert svc.calls[1][1]["body"]["data"] == [
+        assert svc.calls[-1][1]["body"]["data"] == [
             {"range": "'S'!C3", "values": [["paid"]]}
         ]
 
@@ -536,7 +573,7 @@ class TestSetByMatch:
             svc, "sid", "S", {"id": "X"}, {"v": "9"}, allow_multiple=True
         )
         assert result["rows"] == [2, 3]
-        assert svc.calls[1][1]["body"]["data"] == [
+        assert svc.calls[-1][1]["body"]["data"] == [
             {"range": "'S'!B2", "values": [["9"]]},
             {"range": "'S'!B3", "values": [["9"]]},
         ]
@@ -561,7 +598,40 @@ class TestSetByMatch:
         set_by_match(
             svc, "sid", "S", {"id": "C300"}, {"status": "=A1"}, input_option="RAW"
         )
-        assert svc.calls[1][1]["body"]["valueInputOption"] == "RAW"
+        assert svc.calls[-1][1]["body"]["valueInputOption"] == "RAW"
+
+    @pytest.mark.parametrize(
+        "after",
+        [
+            # a row inserted above the match moves it from row 4 to row 5
+            GRID[:1] + [["Z999", "new", "0"]] + GRID[1:],
+            # a column inserted before the target shifts its letter
+            [["id", "note", "name", "status", "amount"]]
+            + [[r[0], ""] + r[1:] for r in GRID[1:]],
+            # the matched record was edited away
+            [r if r[0] != "C300" else ["C301"] + r[1:] for r in GRID],
+            # the tab was emptied
+            [],
+        ],
+        ids=["row-inserted-above", "column-inserted", "key-edited", "emptied"],
+    )
+    def test_changed_between_reads_refuses_without_writing(self, after):
+        svc = FakeSheetsService(get=[{"values": GRID}, {"values": after}])
+        with pytest.raises(ValueError, match="changed while it was being read"):
+            set_by_match(svc, "sid", "S", {"id": "C300"}, {"status": "paid"})
+        assert [c[0] for c in svc.calls] == ["values.get", "values.get"]
+
+    def test_row_added_below_the_match_still_writes(self):
+        after = GRID + [["Z999", "new", "0"]]
+        svc = FakeSheetsService(
+            get=[{"values": GRID}, {"values": after}],
+            batchUpdate={"totalUpdatedCells": 1},
+        )
+        result = set_by_match(svc, "sid", "S", {"id": "C300"}, {"status": "paid"})
+        assert result["rows"] == [4]
+        assert svc.calls[-1][1]["body"]["data"] == [
+            {"range": "'S'!C4", "values": [["paid"]]}
+        ]
 
 
 # -- parse_pairs --
@@ -608,9 +678,10 @@ class TestRunSet:
         )
         run_set("SHEET_ID", {"id": "C300"}, {"status": "paid"})
         assert rec["scopes"] == SHEETS_WRITE_SCOPES
-        # list_tabs (default tab) -> read grid -> batch write
+        # list_tabs (default tab) -> read grid -> re-read -> batch write
         assert [c[0] for c in svc.calls] == [
             "spreadsheets.get",
+            "values.get",
             "values.get",
             "values.batchUpdate",
         ]
@@ -626,7 +697,11 @@ class TestRunSet:
             "gdrives.auth.build_sheets_service", lambda scopes=None: svc
         )
         run_set("SHEET_ID", {"id": "C300"}, {"status": "paid"}, tab="Data")
-        assert [c[0] for c in svc.calls] == ["values.get", "values.batchUpdate"]
+        assert [c[0] for c in svc.calls] == [
+            "values.get",
+            "values.get",
+            "values.batchUpdate",
+        ]
         assert svc.calls[0][1]["range"] == "'Data'"
 
     def test_no_tabs_raises(self, monkeypatch):

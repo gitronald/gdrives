@@ -177,18 +177,23 @@ class FakeSheetsService:
     ``clear``/``batchUpdate`` (values ops), ``meta`` (``spreadsheets.get``, used
     by ``list_tabs``, ``tab_sheet_ids``, and ``list_conditional_rules``), and
     ``spreadsheetBatchUpdate`` (``spreadsheets.batchUpdate``, the structural
-    one). Any unregistered key returns ``{}``.
+    one). Any unregistered key returns ``{}``. A list registers successive
+    responses, one per call, with the last repeating: ``get=[before, after]``
+    models a sheet that a collaborator edits between two reads.
     """
 
-    def __init__(self, **responses: dict[str, Any]) -> None:
-        self.responses: dict[str, dict[str, Any]] = responses
+    def __init__(self, **responses: dict[str, Any] | list[dict[str, Any]]) -> None:
+        self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def _record(
         self, method: str, kwargs: dict[str, Any], response_key: str
     ) -> _Executable:
         self.calls.append((method, kwargs))
-        return _Executable(self.responses.get(response_key, {}))
+        response = self.responses.get(response_key, {})
+        if isinstance(response, list):
+            response = response.pop(0) if len(response) > 1 else response[0]
+        return _Executable(response)
 
     def spreadsheets(self) -> _FakeSpreadsheets:
         return _FakeSpreadsheets(self)

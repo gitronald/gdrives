@@ -785,9 +785,33 @@ class TestRunDeleteRule:
         patch_sheets_service(monkeypatch, svc)
         monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
         run_delete_rule("SHEET_ID", 0)
+        # read, prompt, re-read to confirm the rule is still there, then delete
+        assert [c[0] for c in svc.calls] == [
+            "spreadsheets.get",
+            "spreadsheets.get",
+            "spreadsheets.batchUpdate",
+        ]
         assert svc.calls[-1][1]["body"]["requests"] == [
             {"deleteConditionalFormatRule": {"sheetId": 0, "index": 0}}
         ]
+
+    @pytest.mark.parametrize(
+        "after",
+        [
+            # a collaborator inserted a rule ahead of it: index 0 is now another
+            meta(("Sheet1", 0, [{"ranges": [], "gradientRule": {}}, RULE])),
+            # the rule was deleted: index 0 no longer exists
+            meta(("Sheet1", 0, [])),
+        ],
+        ids=["shifted", "removed"],
+    )
+    def test_rules_changed_during_prompt_refuses(self, monkeypatch, after):
+        svc = FakeSheetsService(meta=[meta(("Sheet1", 0, [RULE])), after])
+        patch_sheets_service(monkeypatch, svc)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        with pytest.raises(ValueError, match="changed while waiting"):
+            run_delete_rule("SHEET_ID", 0)
+        assert "spreadsheets.batchUpdate" not in [c[0] for c in svc.calls]
 
     @pytest.mark.parametrize("index", [1, -1])
     def test_index_out_of_range_refuses(self, monkeypatch, index):
