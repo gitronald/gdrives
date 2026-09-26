@@ -1,11 +1,11 @@
 ---
 id: 5
 slug: template-upgrade
-status: active
+status: done
 branch: feature/template-upgrade
 created: 2026-09-25T23:35:55-07:00
-concluded:
-pr:
+concluded: 2026-09-25T23:40:40-07:00
+pr: https://github.com/gitronald/gdrives/pull/32
 ---
 
 # Upgrade to the proj-template 0.10.0 standard
@@ -108,3 +108,40 @@ is involved.
   with them included. Later runs of only `-m integration` errored in the `tab`
   fixture's live `addSheet` setup call, before any tab was created; the error
   message was not captured.
+
+### 2026-09-25 — PR #32 and review follow-up
+
+- Opened PR #32 into `dev`. CI passed on all four matrix cells, and the job logs
+  show distinct interpreters (e.g. CPython 3.11.16 and 3.12.14), so the moved
+  `env` block still keeps the matrix honest.
+- Review (level low: one correctness finder plus a gap sweep) found no confirmed
+  defects. Checked clean: every action SHA pin resolves to the tag in its
+  comment, and the SHA-pinned `gh-action-pypi-publish` resolves to an existing
+  `ghcr.io` image tagged with that SHA. That matters here because the repo's
+  `PUBLISH_ENABLED` variable is `true`, so the next release tag runs
+  `publish.yml`.
+- One plausible finding, taken as a conscious no-op: the pre-commit ruff hook
+  (`v0.16.6`) no longer matches the locked ruff (0.16.4) that CI and the Stop hook
+  run, so a formatter fix between the two could make the commit hook and CI's
+  `ruff format --check` disagree. Not reproduced (both pass every file). Bumping
+  the lock here would be superseded by Dependabot's open python-group PR (ruff
+  0.16.8), which only reverses the skew. The lasting fix is at the template level:
+  run ruff through `uv run` as a local hook, the way pyrefly already runs.
+
+## Retrospective
+
+- Every managed file but one was an older template revision with nothing
+  repo-specific to lose, so the divergence triage came down to a single
+  question (the CLAUDE.md check list). A repo that has had one upgrade before
+  mostly needs its pins and comments refreshed.
+- The riskiest content was the SHA pins in `publish.yml`: no PR CI run exercises
+  them, and publishing is enabled here. Resolving each tag, and checking that the
+  pypa action's SHA-tagged image exists, is what made them safe to merge.
+- Worktree trap worth carrying forward: `load_dotenv()` at import walks up to the
+  main checkout's `.env`, so a worktree's test run is not isolated from the live
+  integration targets. Worth making explicit in the tests (e.g. a conftest guard)
+  or in the upgrade skill's verification notes.
+- Running `pre-commit run --all-files` without `pre-commit install` in the
+  worktree sidestepped the shared-hook `INSTALL_PYTHON` trap entirely. The skill
+  runs install inside the worktree and then repairs the hook, but skipping the
+  in-worktree install avoids needing the repair at all.
