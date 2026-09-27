@@ -1,8 +1,8 @@
 ---
 id: 7
 slug: sheets-sync-adoption-gaps
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-gaps
 created: 2026-09-27T10:24:14-07:00
 concluded:
 pr:
