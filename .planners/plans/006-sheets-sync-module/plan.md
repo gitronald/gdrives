@@ -158,3 +158,20 @@ folder, one subplan per implementation step. Sections moved to `subplans/` verba
 headings raised to the top level and cross-references repointed. The bare `### Design`
 heading, which only grouped the sections that moved, was removed. Nothing else was dropped
 or condensed.
+
+### 2026-09-27 — implementation started, branch layout
+
+The plan calls for one branch and PR per step, and the plan file records a single
+`branch`. The two are reconciled with an umbrella branch and a stack:
+
+- `feature/sheets-sync-module` is the umbrella branch and the plan's `branch`. Its draft
+  PR into `dev` is the plan's `pr`, and it carries the entries in this Log.
+- Each step has its own branch, `feature/sheets-sync-<letter>-<slug>`, cut from the
+  previous step's branch, with a draft PR onto that branch. Step a is cut from the
+  umbrella branch. Reviewing and merging the stack bottom-up lands each step in order.
+
+Each step is built by one implementing agent, reviewed by three independent reviewers
+(conformance to the subplan, correctness, and test quality), and each reviewer's findings
+are checked by a separate verifier before a fix pass. The three project checks and the
+test suite with its coverage floor are run again outside the agents before a step is
+pushed.
