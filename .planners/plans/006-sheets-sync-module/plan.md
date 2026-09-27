@@ -5,7 +5,7 @@ status: active
 branch: feature/sheets-sync-module
 created: 2026-09-27T00:16:35-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/36
 ---
 
 # Add a sheets package with keyed two-way sync between Sheets and local files
