@@ -32,7 +32,7 @@ other columns of the new rows are left alone.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from gdrives.files import Service
@@ -73,12 +73,21 @@ class ApplyResult:
     ``pushed_rows`` and ``appended_rows`` are the spreadsheet rows they sit in
     after the apply (a pushed row below an ``insert_above`` point has moved
     down by the rows inserted).
+
+    ``pushed_cells`` is each pushed cell as ``(row, column)``, in the plan's
+    order, the row as it is after the apply. ``appended_columns`` is the
+    columns written in each new row, in header order, so the cells of the
+    new rows are every ``appended_rows`` row by every such column. Together
+    they are the cells the run wrote, for a pass over them that need not read
+    the tab again.
     """
 
     pushed: int
     appended: int
     pushed_rows: list[int]
     appended_rows: list[int]
+    pushed_cells: list[tuple[int, str]] = field(default_factory=list)
+    appended_columns: list[str] = field(default_factory=list)
 
 
 def _insert_target(
@@ -383,12 +392,22 @@ def apply_plan(
     verify(service, spreadsheet_id, table, plan)
 
     shift = count if inserted else 0
+
+    def after(row: int) -> int:
+        """Where a row of the fresh read sits once the new rows are in."""
+        return row + shift if row > at else row
+
     pushed_rows = sorted({fresh.row_numbers[cell.key] for cell in plan.pushes})
+    written = sorted(table.columns, key=fresh.header.index) if count else []
     return ApplyResult(
         pushed=len(plan.pushes),
         appended=count,
-        pushed_rows=[row + shift if row > at else row for row in pushed_rows],
+        pushed_rows=[after(row) for row in pushed_rows],
         appended_rows=list(range(at + 1, at + 1 + count)),
+        pushed_cells=[
+            (after(fresh.row_numbers[cell.key]), cell.column) for cell in plan.pushes
+        ],
+        appended_columns=written,
     )
 
 

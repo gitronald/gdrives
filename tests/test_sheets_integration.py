@@ -537,7 +537,9 @@ def test_apply_pushes_and_appends_past_the_grid_end(seeded, shared_tab):
     )
     # apply_plan reads the tab back itself: literal strings must survive.
     result = sheets.apply_plan(service, sid, table, plan)
-    assert result == sheets.ApplyResult(1, 2, [3], [4, 5])
+    assert result == sheets.ApplyResult(
+        1, 2, [3], [4, 5], [(3, "code")], ["id", "name", "code"]
+    )
     assert _row_count(service, sid, name) == 5
     assert sheets.pull_values(service, sid, f"'{name}'") == [
         ["id", "note", "name", "code"],
@@ -658,7 +660,9 @@ def test_sync_of_a_tab_whose_keys_have_a_blank_component(seeded, tmp_path):
     report = sheets.run_target(service, sid, target, "sync", apply=True)
     assert report.exit_code == 0, sheets.format_report(report)
     (done,) = report.tabs
-    assert done.applied == sheets.ApplyResult(1, 1, [2], [4])
+    assert done.applied == sheets.ApplyResult(
+        1, 1, [2], [4], [(2, "v")], ["year", "id", "v"]
+    )
     assert sheets.pull_values(service, sid, f"'{name}'") == [
         header,
         ["2026", "", "A"],

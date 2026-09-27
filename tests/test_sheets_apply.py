@@ -259,7 +259,8 @@ class TestPushes:
             ["a", "n1", "Al", "", "1"],
             ["b", "", "Bo", "", "01"],  # the literal string, not the number 1
         ]
-        assert result == ApplyResult(2, 0, [2, 3], [])
+        # The cells are in the plan's order, not the sheet's.
+        assert result == ApplyResult(2, 0, [2, 3], [], [(3, "amt"), (2, "name")], [])
         assert grid.methods == [READ, PUSH, READ]
 
     def test_columns_past_z(self):
@@ -299,7 +300,8 @@ class TestNewRows:
             ["c", "", "Cy"],
             ["d", "", "", "", "4"],
         ]
-        assert result == ApplyResult(0, 2, [], [5, 6])
+        # The columns written in each new row, in header order.
+        assert result == ApplyResult(0, 2, [], [5, 6], [], ["id", "name", "amt"])
         assert grid.methods == [READ, GRID, STRUCTURE, READ]
 
     def test_only_projection_columns_are_written(self):
@@ -459,7 +461,7 @@ class TestInsertAbove:
             ["c", "open"],
             ["d", "closed"],
         ]
-        assert result == ApplyResult(1, 1, [4], [3])
+        assert result == ApplyResult(1, 1, [4], [3], [(4, "status")], ["id", "status"])
 
     def test_a_push_away_from_a_match_moves_the_insert_point_down(self):
         header = ["id", "status"]
@@ -526,7 +528,15 @@ class TestInsertAbove:
         # Addressed by the rows before the insert ...
         assert [d["range"] for d in kwargs["body"]["data"]] == ["'T'!C2", "'T'!C4"]
         # ... and reported where they sit after it.
-        assert result == ApplyResult(2, 2, [2, 6], [3, 4])
+        assert result == ApplyResult(
+            2,
+            2,
+            [2, 6],
+            [3, 4],
+            # Row c was read in row 4, and sits in row 6 after the insert.
+            [(2, "name"), (6, "name")],
+            ["id", "name", "amt"],
+        )
         assert grid.values("T") == [
             HEADER,
             ["a", "", "Al"],
@@ -535,6 +545,32 @@ class TestInsertAbove:
             ["b", "old", "Bo"],
             ["c", "", "Cyd"],
         ]
+
+
+class TestWrittenCells:
+    def test_the_columns_of_new_rows_follow_the_header_not_the_projection(self):
+        grid, table = sheet(*ROWS, project=["amt", "id", "name"])
+        added = NewRow(("c",), {"amt": "3", "id": "c", "name": "Cy"})
+        result = apply_plan(grid, "S", table, plan(appends=[added]))
+        assert result.appended_columns == ["id", "name", "amt"]
+        assert result.appended_rows == [4] and result.pushed_cells == []
+
+    def test_a_cell_pushed_twice_over_is_listed_once_per_push(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan([push("b", "name", "Bea"), push("b", "amt", "9")]),
+        )
+        assert result.pushed_cells == [(3, "name"), (3, "amt")]
+        assert result.pushed_rows == [3] and result.appended_columns == []
+
+    def test_nothing_written_names_no_cell(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(grid, "S", table, plan())
+        assert result == ApplyResult(0, 0, [], [])
+        assert (result.pushed_cells, result.appended_columns) == ([], [])
 
 
 class TestPartialKeys:
@@ -560,7 +596,7 @@ class TestPartialKeys:
             [NewRow(("2027", ""), {"y": "2027", "id": "", "v": "c"})],
         )
         result = apply_plan(grid, "S", table, the_plan)
-        assert result == ApplyResult(1, 1, [2], [4])
+        assert result == ApplyResult(1, 1, [2], [4], [(2, "v")], ["y", "id", "v"])
         assert grid.values("T") == [
             self.HEADER,
             ["2026", "", "A"],
@@ -595,7 +631,9 @@ class TestTypedDates:
                 [NewRow(("c",), {"id": "c", "on": "2026-09-29", "name": "Cy"})],
             ),
         )
-        assert result == ApplyResult(2, 1, [2, 3], [4])
+        assert result == ApplyResult(
+            2, 1, [2, 3], [4], [(2, "name"), (3, "on")], ["id", "on", "name"]
+        )
         assert grid.values("T") == [
             self.HEADER,
             ["a", date(2026, 9, 27), "Al"],
