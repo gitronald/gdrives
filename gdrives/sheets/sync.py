@@ -134,7 +134,8 @@ class TabReport:
     the next run; ``adopted`` marks an ``adopt`` run. For pull and push,
     ``replacement`` says what the write replaces. ``applied`` is what
     :func:`~gdrives.sheets.apply.apply_plan` wrote, and the ``wrote_*`` flags
-    record the writes made, so a failed run shows how far it got. A sheet
+    record the writes made, so a failed run shows how far it got: a structure
+    step that landed is flagged even when a later one fails. A single sheet
     write that fails with an API error part way is not flagged; the error
     says what failed.
     """
@@ -611,15 +612,19 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
     """
     report, tab = planned.report, planned.tab
     state, added, dropped = report.tab_state, report.add_columns, report.drop_columns
+    # Flagged step by step, so a failure shows the steps that landed before it.
     if state == "missing":
         ensure_tabs(service, spreadsheet_id, [tab.title])
+        report.wrote_sheet = True
     if state != "present":
         add_columns(service, spreadsheet_id, tab.title, planned.columns)
+        report.wrote_sheet = True
     if added:
         add_columns(service, spreadsheet_id, tab.title, added)
+        report.wrote_sheet = True
     if dropped:
         delete_columns(service, spreadsheet_id, tab.title, list(dropped))
-    report.wrote_sheet = True
+        report.wrote_sheet = True
 
     options: dict[str, Any] = {
         "adopt": planned.adopt,

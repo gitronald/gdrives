@@ -576,6 +576,30 @@ class TestMissingAndEmptyTabs:
             run(grid, target, apply=True)
         assert snapshot(target)[1] is None
 
+    def test_a_created_tab_is_flagged_when_its_header_write_fails(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"Other": []})
+        planned = plan_tab(grid, "S", target, target.tabs[0])
+        # The first batchUpdate creates the tab; the second writes its header.
+        grid.fail("spreadsheets.batchUpdate", http_error(500, "boom"), occurrence=2)
+        with pytest.raises(HttpError):
+            apply_tab(grid, "S", planned)
+        assert "T" in [tab.title for tab in grid.tabs]
+        assert planned.report.wrote_sheet
+        assert snapshot(target)[1] is None
+
+    def test_a_failed_tab_creation_is_not_flagged(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"Other": []})
+        planned = plan_tab(grid, "S", target, target.tabs[0])
+        grid.fail("spreadsheets.batchUpdate", http_error(400, "boom"))
+        with pytest.raises(HttpError):
+            apply_tab(grid, "S", planned)
+        assert "T" not in [tab.title for tab in grid.tabs]
+        assert not planned.report.wrote_sheet
+
 
 class TestColumns:
     def test_a_missing_column_needs_add_missing(self, synced):
