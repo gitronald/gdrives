@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A read layer in `gdrives.sheets` for keyed records: `read_tab` reads a whole tab in one request as header-named records of canonical cell strings, with row numbers by key; `read_records` and `write_records` move records to and from `.csv`, `.tsv`, and `.json` files (JSON with typed values, written byte-stably); `to_cell`, `from_cell`, and `problems` convert and check declared column types; `row_key` and `index_rows` compare row keys with whitespace normalized and refuse blank or duplicate keys.
+- `pull_values` takes `render=` and `date_time_render=` (for example `UNFORMATTED_VALUE`), and `pull_many` reads several ranges in one `values.batchGet` request.
+- `with_retry` retries a Sheets API call with exponential backoff and jitter.
+
 ### Changed
+
+- The `gdrives.sheets` value wrappers retry transient failures. Reads, `update_values`, `clear_values`, and `batch_update_values` retry on 429, 500, 502, 503, and 504; `append_values` and `batch_update_spreadsheet`, which add rows, columns, or rules, retry on 429 only, since a 5xx may mean the change already landed.
 
 - `gdrives.sheets` is now a package, split into `values`, `a1`, `match`, `rules`, `files`, and `commands` submodules. Every name importable from `gdrives.sheets` before is still importable from it; code that patches a helper internally must now patch it on the submodule that looks it up.
 

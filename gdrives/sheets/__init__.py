@@ -9,12 +9,15 @@ file.
 The package re-exports its public surface here, so ``from gdrives.sheets import
 pull_values`` works regardless of which submodule defines a name:
 
-- ``values``: ``spreadsheets.values.*`` wrappers, tab lookups, and the
-  structural ``spreadsheets.batchUpdate``
+- ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
+  lookups, and the structural ``spreadsheets.batchUpdate``
+- ``retry``: ``with_retry`` and the retryable status sets
+- ``cells``: canonical cell strings, column types, row keys, and schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
-- ``files``: local CSV/TSV interchange
+- ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
+- ``table``: ``read_tab``, a whole tab as header-named, keyed records
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -25,6 +28,17 @@ from gdrives.sheets.a1 import (
     column_letter,
     grid_range_to_a1,
     split_a1,
+)
+from gdrives.sheets.cells import (
+    COLUMN_TYPES,
+    ColumnSchema,
+    Problem,
+    from_cell,
+    index_rows,
+    normalize_key,
+    problems,
+    row_key,
+    to_cell,
 )
 from gdrives.sheets.commands import (
     format_values,
@@ -37,8 +51,15 @@ from gdrives.sheets.commands import (
     run_set,
     run_update,
 )
-from gdrives.sheets.files import read_values_csv, write_values_csv
+from gdrives.sheets.files import (
+    Records,
+    read_records,
+    read_values_csv,
+    write_records,
+    write_values_csv,
+)
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
+from gdrives.sheets.retry import IDEMPOTENT_STATUSES, RATE_LIMIT_STATUSES, with_retry
 from gdrives.sheets.rules import (
     add_conditional_rule,
     build_formula_rule,
@@ -50,8 +71,14 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.values import (
+    FORMATTED_STRING,
+    FORMATTED_VALUE,
+    FORMULA,
     RAW,
+    SERIAL_NUMBER,
+    UNFORMATTED_VALUE,
     USER_ENTERED,
     append_values,
     batch_update_spreadsheet,
@@ -59,13 +86,26 @@ from gdrives.sheets.values import (
     clear_values,
     first_tab,
     list_tabs,
+    pull_many,
     pull_values,
     tab_sheet_ids,
     update_values,
 )
 
 __all__ = [
+    "COLUMN_TYPES",
+    "ColumnSchema",
+    "FORMATTED_STRING",
+    "FORMATTED_VALUE",
+    "FORMULA",
+    "IDEMPOTENT_STATUSES",
+    "Problem",
+    "RATE_LIMIT_STATUSES",
     "RAW",
+    "Records",
+    "SERIAL_NUMBER",
+    "Table",
+    "UNFORMATTED_VALUE",
     "USER_ENTERED",
     "a1_quote",
     "a1_to_grid_range",
@@ -84,14 +124,22 @@ __all__ = [
     "first_tab",
     "format_rules",
     "format_values",
+    "from_cell",
     "grid_range_to_a1",
     "hex_to_color",
+    "index_rows",
     "list_conditional_rules",
     "list_tabs",
+    "normalize_key",
     "parse_pairs",
+    "problems",
+    "pull_many",
     "pull_values",
+    "read_records",
     "read_rule_json",
+    "read_tab",
     "read_values_csv",
+    "row_key",
     "run_add_rule",
     "run_append",
     "run_clear",
@@ -103,6 +151,9 @@ __all__ = [
     "set_by_match",
     "split_a1",
     "tab_sheet_ids",
+    "to_cell",
     "update_values",
+    "with_retry",
+    "write_records",
     "write_values_csv",
 ]
