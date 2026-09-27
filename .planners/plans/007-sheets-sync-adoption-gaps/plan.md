@@ -342,3 +342,48 @@ What this plan does about it:
 - This plan reaches `dev` through one umbrella PR at its end. If 008 ships as a release
   of its own before then, its changelog lines are already promoted, and this plan's
   lines are the only ones under `[Unreleased]`.
+
+### 2026-09-27 — plan 008 and the 0.12.0 release merged into the stack
+
+Written at 2026-09-27T14:33:37-07:00. Plan 008 merged into `dev` while step g was
+being built, so step g went ahead without it and this plan resolved the overlap, as
+the entry above allows. The owner then released plan 008 by itself as 0.12.0, so
+that this plan ships as a version of its own after it.
+
+`dev` was merged into the umbrella branch and carried up the stack with merge
+commits, each branch into the one above it. Nothing was rebased or force-pushed, and
+every PR of the stack stayed open as a draft.
+
+| Branch | Merge | Conflicts |
+|---|---|---|
+| Umbrella | `21cb283`, `dev` with plan 008 merged, then `6a4716a`, `dev` at `0.12.1a0` | None |
+| a | `fae2b2d` | `CHANGELOG.md` |
+| b | `b9db74c` | None |
+| c | `8b19014` | None |
+| d | `47cd221` | None |
+| e | `875367b` | None |
+| f | `4193a30` | None |
+| g | `acc7289` | None |
+
+- **The umbrella has two merges of `dev`.** The first was made and pushed before the
+  owner said a release was coming. The stack was then left alone until the release
+  had finished, and carried up once, from the second.
+- **The one conflict was the changelog, at step a.** `dev` had promoted plan 008's
+  lines to `[0.12.0]` where step a had added its own under `[Unreleased]`. Step a's
+  lines stay under `[Unreleased]`, and the `[0.12.0]` section follows as `dev` has
+  it. Each later branch merged by itself, and after every merge the section was
+  compared with the branch's own before it, and the released sections with `dev`'s.
+- **The code did not conflict.** `gdrives/cli.py` and `gdrives/sheets/commands.py`
+  merged by themselves at step g, against what the entry above expected. Step g's
+  Log has what was checked there, and the two tests it gained.
+- **The plan index** came out of the first merge with plans 007 and 008 each listed
+  twice, which is what its `merge=union` attribute does when both sides rewrote a
+  row. It was regenerated before the merge was committed.
+- **Checks after each merge**: ruff, the format check, pyrefly, and the unit tests
+  at 100% coverage, all clean on every branch. CI passed on the PR of every branch,
+  #48 to #51 included, which had not been checked before.
+- **The live suite** was run in step h, on the merged stack.
+
+What the release changes for the close: `[Unreleased]` on `dev` is empty, so this
+plan's lines are the only ones the next release promotes, and the version on `dev`
+is `0.12.1a0`.
