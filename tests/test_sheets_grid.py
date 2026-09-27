@@ -397,6 +397,255 @@ class TestUpdateCells:
         assert (grid.values("T"), grid.tab("T").row_count) == ([["a"]], 2)
 
 
+LINK = "userEnteredFormat.textFormat.link"
+BOLD = "userEnteredFormat.textFormat.bold"
+LINK_MASK = (
+    "sheets(data(rowData(values(hyperlink,textFormatRuns(startIndex,format(link))))))"
+)
+VALUES = ["https://example.com/a", "example.com", "see https://x.io", "a@x.io", "text"]
+
+
+def repeat(fields, cell=None, sheet_id=0, **span):
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, **span},
+            "cell": cell or {},
+            "fields": fields,
+        }
+    }
+
+
+def grid_read(grid, range_, fields=LINK_MASK):
+    response = (
+        grid.spreadsheets()
+        .get(spreadsheetId="S", ranges=[range_], includeGridData=True, fields=fields)
+        .execute()
+    )
+    ((data,),) = [sheet["data"] for sheet in response["sheets"]]
+    return data
+
+
+def run_link(uri, start=0):
+    return {"startIndex": start, "format": {"link": {"uri": uri}}}
+
+
+class TestLinks:
+    """What a live probe found the API to do with links, as the fake models it."""
+
+    LINKED = {(1, 1): "https://example.com/a", (1, 2): "http://example.com"}
+
+    def test_a_whole_cell_url_or_domain_is_linked_by_every_write(self):
+        def update(grid):
+            grid.spreadsheets().values().update(
+                spreadsheetId="S",
+                range="'T'!A1:E1",
+                valueInputOption="RAW",
+                body={"values": [VALUES]},
+            ).execute()
+
+        def batch_update(grid):
+            grid.spreadsheets().values().batchUpdate(
+                spreadsheetId="S",
+                body={"data": [{"range": "'T'!A1:E1", "values": [VALUES]}]},
+            ).execute()
+
+        def update_cells(grid):
+            cells = [{"userEnteredValue": {"stringValue": v}} for v in VALUES]
+            batch(
+                grid,
+                {
+                    "updateCells": {
+                        "start": {"sheetId": 0},
+                        "rows": [{"values": cells}],
+                        "fields": "userEnteredValue",
+                    }
+                },
+            )
+
+        for write in (update, batch_update, update_cells):
+            grid = FakeSheetGrid({"T": []})
+            write(grid)
+            assert grid.links("T") == self.LINKED
+        assert FakeSheetGrid({"T": [VALUES]}).links("T") == self.LINKED
+
+    def test_a_number_a_boolean_and_a_date_are_not_linked(self):
+        grid = FakeSheetGrid({"T": [[3, True, date(2026, 9, 27), 2.5]]})
+        assert grid.links("T") == {}
+
+    def test_clearing_the_link_leaves_the_rest_of_the_format(self):
+        grid = FakeSheetGrid({"T": [VALUES]})
+        batch(grid, repeat(BOLD, {"userEnteredFormat": {"textFormat": {"bold": True}}}))
+        batch(grid, repeat(LINK, startColumnIndex=0, endColumnIndex=1))
+        assert grid.links("T") == {(1, 2): "http://example.com"}
+        assert grid.format("T", 1, 1) == {"bold": True}
+        batch(grid, repeat(LINK))
+        assert grid.links("T") == {}
+        assert grid.format("T", 1, 2) == {"bold": True}
+
+    def test_writing_the_value_again_puts_the_link_back(self):
+        grid = FakeSheetGrid({"T": [VALUES]})
+        batch(grid, repeat(LINK))
+        grid.write("T", [VALUES])
+        assert grid.links("T") == self.LINKED
+
+    def test_a_value_that_is_no_url_takes_the_link_away(self):
+        grid = FakeSheetGrid({"T": [VALUES]})
+        grid.write("T", [["plain", 3]])
+        assert grid.links("T") == {}
+
+    def test_update_cells_with_the_link_in_its_mask_writes_no_link(self):
+        grid = FakeSheetGrid({"T": [["old"]]})
+        batch(grid, repeat(BOLD, {"userEnteredFormat": {"textFormat": {"bold": True}}}))
+        cells = [{"userEnteredValue": {"stringValue": v}} for v in VALUES]
+        request = {
+            "updateCells": {
+                "start": {"sheetId": 0},
+                "rows": [{"values": cells}],
+                "fields": f"userEnteredValue,{LINK}",
+            }
+        }
+        batch(grid, request)
+        assert grid.values("T") == [VALUES]
+        assert grid.links("T") == {}
+        assert grid.format("T", 1, 1) == {"bold": True}
+
+    def test_a_link_on_part_of_the_text_is_in_the_runs_only(self):
+        grid = FakeSheetGrid({"T": [["see the docs", "https://example.com"]]})
+        runs = [run_link("https://docs.example", 4)]
+        one = {"endRowIndex": 1, "endColumnIndex": 1}
+        batch(grid, repeat("textFormatRuns", {"textFormatRuns": runs}, **one))
+        assert grid.links("T") == {(1, 2): "https://example.com"}
+        assert grid_read(grid, "'T'!A:B") == {
+            "rowData": [
+                {
+                    "values": [
+                        {"textFormatRuns": runs},
+                        {"hyperlink": "https://example.com"},
+                    ]
+                }
+            ]
+        }
+        # Clearing the cell link leaves the run.
+        batch(grid, repeat(LINK))
+        assert grid_read(grid, "'T'!A:B") == {
+            "rowData": [{"values": [{"textFormatRuns": runs}]}]
+        }
+
+    def test_runs_are_cleared_in_the_request_that_keeps_a_format(self):
+        grid = FakeSheetGrid({"T": [["see the docs"]]})
+        bold = {"userEnteredFormat": {"textFormat": {"bold": True}}}
+        batch(
+            grid,
+            repeat(
+                f"textFormatRuns,{BOLD}",
+                bold | {"textFormatRuns": [run_link("https://docs.example", 4)]},
+            ),
+        )
+        batch(grid, repeat(f"textFormatRuns,{BOLD}", bold))
+        assert grid.format("T", 1, 1) == {"bold": True}
+        batch(grid, repeat(f"textFormatRuns,{LINK}"))
+        assert grid.format("T", 1, 1) == {"bold": True}
+
+    def test_a_grid_read_is_cut_at_the_last_cell_that_holds_a_field(self):
+        grid = FakeSheetGrid({"T": [["a", "b"], ["x.io", "c"], ["d"], ["e", "y.io"]]})
+        assert grid_read(grid, "'T'!A:C") == {
+            "rowData": [
+                {},
+                {"values": [{"hyperlink": "http://x.io"}]},
+                {},
+                {"values": [{}, {"hyperlink": "http://y.io"}]},
+            ]
+        }
+        assert grid_read(grid, "'T'!A1:B1") == {}
+        assert grid_read(grid, "'T'!B2:B4") == {
+            "rowData": [{}, {}, {"values": [{"hyperlink": "http://y.io"}]}]
+        }
+
+    def test_a_grid_read_returns_the_fields_its_mask_names(self):
+        grid = FakeSheetGrid({"T": [["x.io", 3]]})
+        batch(grid, repeat(BOLD, {"userEnteredFormat": {"textFormat": {"bold": True}}}))
+        mask = "sheets(data(rowData(values(formattedValue,userEnteredFormat))))"
+        entered = {"textFormat": {"link": {"uri": "http://x.io"}, "bold": True}}
+        assert grid_read(grid, "'T'!A1:B1", mask) == {
+            "rowData": [
+                {
+                    "values": [
+                        {"formattedValue": "x.io", "userEnteredFormat": entered},
+                        {
+                            "formattedValue": "3",
+                            "userEnteredFormat": {"textFormat": {"bold": True}},
+                        },
+                    ]
+                }
+            ]
+        }
+        widths = grid_read(grid, "'T'!A:B", "sheets(data(columnMetadata(pixelSize)))")
+        assert widths == {"columnMetadata": [{"pixelSize": 100}, {"pixelSize": 100}]}
+
+    def test_a_grid_read_with_no_mask_is_not_modelled(self):
+        grid = FakeSheetGrid({"T": [["a"]]})
+        with pytest.raises(HttpError):
+            grid.spreadsheets().get(
+                spreadsheetId="S", ranges=["'T'"], includeGridData=True
+            ).execute()
+
+    def test_formats_move_with_their_rows_and_columns(self):
+        grid = FakeSheetGrid({"T": [["a", "x.io"], ["y.io", "b"], ["c", "z.io"]]})
+        batch(grid, {"insertDimension": {"range": rows_dim(1, 3)}})
+        batch(grid, {"insertDimension": {"range": cols_dim(0, 1)}})
+        assert grid.links("T") == {
+            (1, 3): "http://x.io",
+            (4, 2): "http://y.io",
+            (5, 3): "http://z.io",
+        }
+        batch(grid, {"deleteDimension": {"range": rows_dim(0, 4)}})
+        batch(grid, {"deleteDimension": {"range": cols_dim(0, 2)}})
+        assert grid.links("T") == {(1, 1): "http://z.io"}
+        assert grid.values("T") == [["z.io"]]
+        grid.resize("T", 2, 2)
+        grid.write("T", [["z.io", "v.io"], ["w.io"]])
+        grid.resize("T", 1, 1)
+        assert grid.links("T") == {(1, 1): "http://z.io"}
+
+    def test_inserted_rows_and_columns_take_bold_from_the_side_they_inherit(self):
+        grid = FakeSheetGrid({"T": [["h", "h2"], ["a", "b"], ["c", "d"]]})
+        bold = {"userEnteredFormat": {"textFormat": {"bold": True}}}
+        batch(grid, repeat(BOLD, bold, startRowIndex=2, endRowIndex=3))
+        above = {"range": rows_dim(2, 3), "inheritFromBefore": True}
+        batch(grid, {"insertDimension": above})
+        assert grid.format("T", 3, 1) == {} and grid.format("T", 4, 1) == {"bold": True}
+        batch(grid, {"insertDimension": {"range": rows_dim(3, 4)}})
+        assert grid.format("T", 4, 1) == {"bold": True}
+        batch(grid, repeat(BOLD, bold, startColumnIndex=1, endColumnIndex=2))
+        left = {"range": cols_dim(1, 2), "inheritFromBefore": True}
+        batch(grid, {"insertDimension": left})
+        assert grid.format("T", 1, 2) == {} and grid.format("T", 1, 3) == {"bold": True}
+        batch(grid, {"insertDimension": {"range": cols_dim(2, 3)}})
+        assert grid.format("T", 1, 3) == {"bold": True}
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            repeat("note"),
+            repeat(LINK, startRowIndex=5, endRowIndex=5),
+            repeat(LINK, startColumnIndex=0, endColumnIndex=99),
+            repeat(LINK, sheet_id=9),
+            {
+                "updateCells": {
+                    "start": {"sheetId": 0},
+                    "rows": [{"values": [{}]}],
+                    "fields": LINK,
+                }
+            },
+        ],
+    )
+    def test_unmodelled_requests_are_a_400(self, request_):
+        grid = FakeSheetGrid({"T": [["a"]]}, rows=5, columns=5)
+        with pytest.raises(HttpError) as raised:
+            batch(grid, request_)
+        assert status(raised) == 400
+
+
 class TestSheets:
     def test_add_sheet_gets_the_default_grid_and_a_new_id(self):
         grid = FakeSheetGrid({"T": []}, rows=5, columns=2)

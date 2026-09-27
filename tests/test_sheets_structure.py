@@ -9,11 +9,15 @@ from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
+    LinkedCell,
     add_columns,
+    clear_link_format,
     delete_columns,
     ensure_tabs,
+    linked_cells,
     place_columns,
     set_column_widths,
+    strip_links,
 )
 
 READ = "values.get"
@@ -320,6 +324,270 @@ class TestPlaceColumns:
         with pytest.raises(HttpError):
             place_columns(grid, "S", "T", ["a", "id", "b", "name"])
         assert grid.values("T") == [["id", "name"]]
+
+
+LINK = "userEnteredFormat.textFormat.link"
+BOLD = "userEnteredFormat.textFormat.bold"
+
+
+def run_link(uri, start=0):
+    return {"startIndex": start, "format": {"link": {"uri": uri}}}
+
+
+def linked_grid():
+    """A tab with a link of each kind, and cells that only look like one.
+
+    Column ``site`` holds a URL, a bare domain, and a URL inside a sentence;
+    ``note`` holds a link on part of its text in row 2, a bold run in row 3,
+    and a link on part of a URL's own text in row 4.
+    """
+    grid = FakeSheetGrid(
+        {
+            "T": [
+                ["id", "site", "", "note", "mail"],
+                ["a", "https://example.com/a", "gap.io", "see the docs", "a@x.io"],
+                ["b", "example.com", "", "bold words", ""],
+                ["c", "see https://x.io", "", "https://both.io", "plain"],
+            ]
+        }
+    )
+    formats = grid.tab("T").formats
+    formats[(1, 3)] = {"runs": [run_link("https://docs.example", 4)]}
+    formats[(2, 3)] = {"runs": [{"startIndex": 0, "format": {"bold": True}}]}
+    formats[(3, 3)]["runs"] = [run_link("https://part.io", 8)]
+    formats[(3, 1)] = {"bold": True}
+    return grid
+
+
+class TestLinkedCells:
+    def test_every_cell_holding_a_link_with_its_targets(self):
+        grid = linked_grid()
+        assert linked_cells(grid, "S", "T") == [
+            LinkedCell(2, "site", ("https://example.com/a",), in_runs=False),
+            LinkedCell(2, "note", ("https://docs.example",), in_runs=True),
+            # A bare domain's target is not its text.
+            LinkedCell(3, "site", ("http://example.com",), in_runs=False),
+            LinkedCell(4, "note", ("https://both.io", "https://part.io"), in_runs=True),
+        ]
+        assert grid.methods == [READ, GRID]
+        (_, kwargs) = grid.calls[-1]
+        assert kwargs == {
+            "spreadsheetId": "S",
+            "ranges": ["'T'!A:E"],
+            "includeGridData": True,
+            "fields": (
+                "sheets(data(rowData(values(hyperlink,textFormatRuns(format(link))))))"
+            ),
+        }
+
+    def test_the_columns_named_bound_the_read(self):
+        grid = linked_grid()
+        found = linked_cells(grid, "S", "T", columns=["note", "site"])
+        assert [(cell.row, cell.column) for cell in found] == [
+            (2, "site"),
+            (2, "note"),
+            (3, "site"),
+            (4, "note"),
+        ]
+        assert grid.calls[-1][1]["ranges"] == ["'T'!B:D"]
+        assert linked_cells(grid, "S", "T", columns=["mail"]) == []
+        assert grid.calls[-1][1]["ranges"] == ["'T'!E:E"]
+
+    def test_a_header_given_saves_its_read(self):
+        grid = linked_grid()
+        header = ["id", "site", "", "note", "mail"]
+        found = linked_cells(grid, "S", "T", columns=["site"], header=header)
+        assert [cell.row for cell in found] == [2, 3]
+        assert grid.methods == [GRID]
+
+    def test_a_link_in_the_header_row_is_a_link(self):
+        grid = FakeSheetGrid({"T": [["example.com", "b"], ["x", "y"]]})
+        assert linked_cells(grid, "S", "T") == [
+            LinkedCell(1, "example.com", ("http://example.com",), in_runs=False)
+        ]
+
+    def test_no_columns_asks_nothing(self):
+        grid = FakeSheetGrid({"T": []})
+        assert linked_cells(grid, "S", "T") == []
+        assert linked_cells(grid, "S", "T", columns=[], header=["id"]) == []
+        assert grid.methods == [READ]
+
+    @pytest.mark.parametrize(
+        ("columns", "message"),
+        [
+            (["nope"], r"has no column\(s\) \['nope'\]"),
+            (["site", "site"], r"column\(s\) \['site'\] named twice"),
+            ([""], "blank column name"),
+        ],
+    )
+    def test_refusals_read_no_grid(self, columns, message):
+        grid = linked_grid()
+        with pytest.raises(ValueError, match=message):
+            linked_cells(grid, "S", "T", columns=columns)
+        assert GRID not in grid.methods
+
+
+class TestClearLinkFormat:
+    def test_every_named_column_in_one_request_per_run_of_columns(self):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", runs=False)
+        assert grid.methods == [READ, GRID, STRUCTURE]
+        assert requests_of(grid) == [
+            (
+                "repeatCell",
+                {
+                    "range": {
+                        "sheetId": 0,
+                        "startColumnIndex": start,
+                        "endColumnIndex": end,
+                    },
+                    "cell": {},
+                    "fields": LINK,
+                },
+            )
+            for start, end in [(0, 2), (3, 5)]
+        ]
+        # The unnamed column between them keeps its link, and the run links stay.
+        assert grid.links("T") == {(2, 3): "http://gap.io"}
+        assert grid.format("T", 4, 2) == {"bold": True}
+        assert [cell.targets for cell in linked_cells(grid, "S", "T")] == [
+            ("https://docs.example",),
+            ("https://part.io",),
+        ]
+
+    def test_runs_that_hold_a_link_are_cleared_whole_and_others_kept(self):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T")
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert linked_cells(grid, "S", "T") == []
+        assert grid.format("T", 2, 4) == {}
+        assert grid.format("T", 3, 4) == {
+            "runs": [{"startIndex": 0, "format": {"bold": True}}]
+        }
+        cleared = [
+            (body["range"], body["fields"])
+            for kind, body in requests_of(grid)
+            if body["fields"] == "textFormatRuns"
+        ]
+        assert cleared == [
+            (
+                {
+                    "sheetId": 0,
+                    "startRowIndex": row - 1,
+                    "endRowIndex": row,
+                    "startColumnIndex": 3,
+                    "endColumnIndex": 4,
+                },
+                "textFormatRuns",
+            )
+            for row in (2, 4)
+        ]
+
+    def test_given_columns_and_rows(self):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", columns=["site", "note"], rows=[4, 2, 3, 7])
+        spans = [body["range"] for _, body in requests_of(grid)]
+        assert spans[:4] == [
+            {
+                "sheetId": 0,
+                "startRowIndex": first,
+                "endRowIndex": last,
+                "startColumnIndex": column,
+                "endColumnIndex": column + 1,
+            }
+            for column in (1, 3)
+            for first, last in [(1, 4), (6, 7)]
+        ]
+        assert linked_cells(grid, "S", "T") == []
+
+    def test_rows_bound_the_runs_that_are_cleared(self):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", columns=["note"], rows=[2])
+        assert [(cell.row, cell.targets) for cell in linked_cells(grid, "S", "T")][
+            -1
+        ] == (4, ("https://both.io", "https://part.io"))
+        assert grid.format("T", 2, 4) == {}
+
+    def test_a_header_and_a_sheet_id_given_save_their_reads(self):
+        grid = linked_grid()
+        header = ["id", "site", "", "note", "mail"]
+        clear_link_format(grid, "S", "T", header=header, sheet_id=0, runs=False)
+        assert grid.methods == [STRUCTURE]
+        clear_link_format(grid, "S", "T", header=header, sheet_id=0)
+        assert grid.methods == [STRUCTURE, GRID, STRUCTURE]
+
+    @pytest.mark.parametrize("options", [{"columns": []}, {"rows": []}])
+    def test_nothing_to_clear_sends_nothing(self, options):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", header=["id", "site"], **options)
+        assert grid.calls == []
+
+    def test_a_tab_with_no_header_sends_no_write(self):
+        grid = FakeSheetGrid({"T": []})
+        clear_link_format(grid, "S", "T")
+        assert grid.methods == [READ]
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"columns": ["nope"]}, r"has no column\(s\) \['nope'\]"),
+            ({"rows": [0]}, r"rows are spreadsheet rows, from 1: \[0\]"),
+        ],
+    )
+    def test_refusals_write_nothing(self, options, message):
+        grid = linked_grid()
+        with pytest.raises(ValueError, match=message):
+            clear_link_format(grid, "S", "T", **options)
+        assert STRUCTURE not in grid.methods
+
+
+class TestStripLinks:
+    HEADER = ["id", "site", "", "note", "mail"]
+
+    def strip(self, grid, columns, **options):
+        return strip_links(
+            grid, "S", "T", columns, header=self.HEADER, sheet_id=0, **options
+        )
+
+    def test_the_links_found_are_cleared_and_none_remains(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["site", "note"]) == []
+        assert grid.methods == [GRID, STRUCTURE, GRID]
+        assert grid.links("T") == {(2, 3): "http://gap.io"}
+        assert grid.format("T", 4, 2) == {"bold": True}
+        assert grid.format("T", 3, 4) == {
+            "runs": [{"startIndex": 0, "format": {"bold": True}}]
+        }
+
+    def test_columns_with_no_link_cost_one_read_and_no_write(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["id", "mail"]) == []
+        assert grid.methods == [GRID]
+
+    def test_rows_bound_what_is_cleared_and_what_is_reported(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["site", "note"], rows=[3, 4]) == []
+        assert [(cell.row, cell.column) for cell in linked_cells(grid, "S", "T")] == [
+            (2, "site"),
+            (2, "note"),
+        ]
+        assert self.strip(grid, ["site", "note"], rows=[7]) == []
+
+    def test_a_link_that_comes_back_is_returned(self):
+        grid = linked_grid()
+        grid.edit_externally(
+            lambda g: g.write("T", [["a", "example.org"]], row=2),
+            before=GRID,
+            occurrence=2,
+        )
+        assert self.strip(grid, ["site"]) == [
+            LinkedCell(2, "site", ("http://example.org",), in_runs=False)
+        ]
+
+    def test_no_columns_asks_nothing(self):
+        grid = linked_grid()
+        assert self.strip(grid, []) == []
+        assert grid.calls == []
 
 
 class TestDeleteColumns:

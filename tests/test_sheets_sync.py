@@ -627,6 +627,37 @@ class TestOnInvalid:
         ]
 
 
+class TestClearLinks:
+    HEADER = ["id", "site"]
+
+    def scene(self, tmp_path, **fields):
+        target = make_target(tmp_path, **fields)
+        write_local(
+            target, ["a", "example.com"], ["c", "c.example"], header=self.HEADER
+        )
+        write_base(target, ["a", "plain"], header=self.HEADER)
+        return FakeSheetGrid({"T": [self.HEADER, ["a", "plain"]]}), target
+
+    def test_the_cells_a_sync_writes_hold_no_link(self, tmp_path):
+        grid, target = self.scene(tmp_path, clear_links=True)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", "example.com"],
+            ["c", "c.example"],
+        ]
+        assert grid.links("T") == {}
+
+    def test_by_default_they_are_linked_as_the_api_links_them(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        run(grid, target, apply=True)
+        assert grid.links("T") == {
+            (2, 2): "http://example.com",
+            (3, 2): "http://c.example",
+        }
+
+
 class TestCarriedColumns:
     def test_every_row_of_the_new_local_side_holds_every_local_column(self, tmp_path):
         target = make_target(tmp_path, columns=HEADER)

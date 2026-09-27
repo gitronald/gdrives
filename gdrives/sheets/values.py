@@ -9,7 +9,8 @@ cell, so display padding lives in ``format_values``; writes send rows as-is
 
 Tab titles and ``sheetId`` values come from ``spreadsheets.get``, and structural
 edits go through ``spreadsheets.batchUpdate``; both wrappers live here beside
-the value operations.
+the value operations. Grid data (formats, links, column sizes) is read by
+:func:`pull_grid`, always under a ``fields`` mask.
 
 Every call goes through :func:`~gdrives.sheets.retry.with_retry`. Reads and
 range overwrites (``update``, ``clear``, ``batchUpdate`` of values) retry on a
@@ -17,6 +18,7 @@ rate limit or a 5xx; ``append`` and the structural ``batchUpdate`` add rows,
 columns, or rules, so they retry on a rate limit only.
 """
 
+import importlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -316,6 +318,81 @@ def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:
     if tab not in tab_ids:
         raise ValueError(f"no tab named {tab!r}; tabs: {list(tab_ids)}")
     return tab
+
+
+# -- grid data --
+
+
+class GridTooLargeError(ValueError):
+    """A grid read came back too large for the HTTP client to decode.
+
+    A ValueError, so a run reports it for its tab and goes on to the next.
+    """
+
+
+def decode_errors(module: str = "httplib2.decode") -> tuple[type[Exception], ...]:
+    """The errors ``httplib2`` raises for a response too large to decode.
+
+    ``DecodeRatioError`` and ``DecodeLimitError`` exist only in recent
+    releases. An older one that lacks them has nothing to catch, and the
+    result is empty.
+    """
+    try:
+        found = importlib.import_module(module)
+    except ImportError:
+        return ()
+    names = ("DecodeRatioError", "DecodeLimitError")
+    return tuple(getattr(found, name) for name in names if hasattr(found, name))
+
+
+# Looked up once, at import. They are plain Exceptions, not HttpErrors.
+_DECODE_ERRORS = decode_errors()
+
+
+def pull_grid(
+    service: Service, spreadsheet_id: str, range_: str, fields: str
+) -> dict[str, Any]:
+    """Read the grid data of one range, under a ``fields`` mask.
+
+    One ``spreadsheets.get`` with ``includeGridData``. ``range_`` is an A1
+    range of one tab, and ``fields`` the mask of what to return, such as
+    ``sheets(data(rowData(values(hyperlink))))``. Returns the range's
+    ``GridData`` as the API gives it (``rowData``, ``columnMetadata``, and so
+    on, as the mask names them), and an empty dict for a range that holds
+    none of it.
+
+    The mask is required. An unmasked read returns every property of every
+    cell the tab has formatted, which for a tab of 26,000 formatted cells was
+    18.6 MB, where the read of its links was 382 bytes. A response too large
+    for ``httplib2`` to decode raises :class:`GridTooLargeError`.
+    """
+    if not fields.strip():
+        raise ValueError(
+            "pull_grid: a fields mask is required; an unmasked grid read "
+            "returns every property of every cell"
+        )
+    try:
+        result = with_retry(
+            lambda: (
+                service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    ranges=[range_],
+                    includeGridData=True,
+                    fields=fields,
+                )
+                .execute()
+            )
+        )
+    except _DECODE_ERRORS as e:
+        raise GridTooLargeError(
+            f"the grid read of {range_!r} came back too large to decode ({e}); "
+            "narrow the range or the fields mask"
+        ) from e
+    blocks = [
+        block for sheet in result.get("sheets", []) for block in sheet.get("data", [])
+    ]
+    return blocks[0] if blocks else {}
 
 
 def batch_update_spreadsheet(

@@ -77,6 +77,7 @@ _TAB_FIELDS = frozenset(
         "newline",
         "blank_keys",
         "on_invalid",
+        "clear_links",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -123,6 +124,8 @@ class TabConfig:
     is ``"refuse"`` or ``"partial"``, as for
     :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
     or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
+    ``clear_links`` leaves the cells a sync or a push writes with no link,
+    where the Sheets API links a URL when it is written.
     """
 
     title: str
@@ -141,6 +144,7 @@ class TabConfig:
     newline: str = "lf"
     blank_keys: str = "refuse"
     on_invalid: str = "refuse"
+    clear_links: bool = False
     store: Store | None = None
 
     def __post_init__(self) -> None:
@@ -434,6 +438,8 @@ class _Checker:
                 problems.append(f"{where}: {given} apply only to a sync tab")
             if mode == "pull" and "widths" in raw:
                 problems.append(f"{where}: 'widths' do not apply to a pull tab")
+            if mode == "pull" and "clear_links" in raw:
+                problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
 
         local = self._local(where, raw)
         bom = raw.get("bom", False)
@@ -472,6 +478,9 @@ class _Checker:
                 f"{where}: 'bootstrap' must be one of {sorted(BOOTSTRAPS)}, not "
                 f"{bootstrap!r} (--adopt is a flag, not a config value)"
             )
+        clear_links = raw.get("clear_links", False)
+        if not isinstance(clear_links, bool):
+            problems.append(f"{where}: 'clear_links' must be true or false")
         on_invalid = raw.get("on_invalid", "refuse")
         if not isinstance(on_invalid, str) or on_invalid not in ON_INVALID:
             problems.append(
@@ -501,6 +510,7 @@ class _Checker:
             newline=str(newline),
             blank_keys=str(blank_keys),
             on_invalid=str(on_invalid),
+            clear_links=bool(clear_links),
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:

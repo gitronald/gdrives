@@ -537,7 +537,9 @@ def test_apply_pushes_and_appends_past_the_grid_end(seeded, shared_tab):
     )
     # apply_plan reads the tab back itself: literal strings must survive.
     result = sheets.apply_plan(service, sid, table, plan)
-    assert result == sheets.ApplyResult(1, 2, [3], [4, 5])
+    assert result == sheets.ApplyResult(
+        1, 2, [3], [4, 5], [(3, "code")], ["id", "name", "code"]
+    )
     assert _row_count(service, sid, name) == 5
     assert sheets.pull_values(service, sid, f"'{name}'") == [
         ["id", "note", "name", "code"],
@@ -658,7 +660,9 @@ def test_sync_of_a_tab_whose_keys_have_a_blank_component(seeded, tmp_path):
     report = sheets.run_target(service, sid, target, "sync", apply=True)
     assert report.exit_code == 0, sheets.format_report(report)
     (done,) = report.tabs
-    assert done.applied == sheets.ApplyResult(1, 1, [2], [4])
+    assert done.applied == sheets.ApplyResult(
+        1, 1, [2], [4], [(2, "v")], ["year", "id", "v"]
+    )
     assert sheets.pull_values(service, sid, f"'{name}'") == [
         header,
         ["2026", "", "A"],
@@ -776,6 +780,51 @@ def test_sync_places_a_new_row_and_a_new_column(seeded, shared_tab, tmp_path):
     # Only c and d were grey: the new row n did not take it from the row it
     # sits above, nor did b, which was closed by a push.
     assert fills == [None, None, None, None, GREY, GREY]
+
+
+def test_push_with_clear_links_leaves_no_link(tab, shared_tab):
+    # What the fake's link rule rests on: a whole-cell URL or domain is linked
+    # when it is written, under RAW input; a link on part of a cell's text is
+    # in its runs; and writing a value again puts its link back.
+    service, sid, name = tab
+    header = ["id", "site", "note"]
+    rows = [
+        ["a", "https://example.com/a", "see the docs"],
+        ["b", "example.com", "see https://example.com"],
+        ["c", "a@example.com", "plain"],
+    ]
+    sheets.update_values(
+        service, sid, f"'{name}'!A1:C4", [header, *rows], input_option=sheets.RAW
+    )
+    part = {"startIndex": 4, "format": {"link": {"uri": "https://docs.example.com"}}}
+    seeded_runs = {
+        "updateCells": {
+            "start": {"sheetId": shared_tab.sheet_id, "rowIndex": 1, "columnIndex": 2},
+            "rows": [{"values": [{"textFormatRuns": [{"format": {}}, part]}]}],
+            "fields": "textFormatRuns",
+        }
+    }
+    _patiently(service, sid, {"requests": [seeded_runs]})
+    assert sheets.linked_cells(service, sid, name, header=header) == [
+        sheets.LinkedCell(2, "site", ("https://example.com/a",), in_runs=False),
+        sheets.LinkedCell(2, "note", ("https://docs.example.com",), in_runs=True),
+        sheets.LinkedCell(3, "site", ("http://example.com",), in_runs=False),
+    ]
+
+    records = [dict(zip(header, row, strict=True)) for row in rows]
+    records.append({"id": "d", "site": "example.org", "note": ""})
+    report = sheets.push_rows(
+        service, sid, name, header, records, key=["id"], apply=True, clear_links=True
+    )
+    assert report.error is None and report.wrote_sheet
+
+    # The push left no link, and a value written again is linked again.
+    sheets.update_values(
+        service, sid, f"'{name}'!B3", [["example.com"]], input_option=sheets.RAW
+    )
+    assert sheets.linked_cells(service, sid, name, header=header) == [
+        sheets.LinkedCell(3, "site", ("http://example.com",), in_runs=False)
+    ]
 
 
 def test_push_that_shrinks_the_tab_clears_the_old_cells(seeded, tmp_path):

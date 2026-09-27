@@ -1,4 +1,4 @@
-"""Edit a spreadsheet's structure: columns by header name, missing tabs, widths.
+"""Edit a spreadsheet's structure: columns by header name, tabs, widths, links.
 
 Each helper sends at most one ``spreadsheets.batchUpdate`` and none when there
 is nothing to do, and refuses a bad request before sending anything. Columns
@@ -9,13 +9,19 @@ right column after someone moves it. Header cells are read the way
 :func:`add_columns` adds one group of columns at one place, and
 :func:`place_columns` puts each column a header lacks at its place in a wanted
 order.
+
+The Sheets API formats text that is a URL or a bare domain as a link when it
+is written, under ``RAW`` input too. :func:`linked_cells` finds the cells
+that hold a link, and :func:`clear_link_format` takes the link format off
+cells meant to hold plain text, leaving every other format alone.
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from gdrives.files import Service
-from gdrives.sheets.a1 import a1_quote
+from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import to_cell
 from gdrives.sheets.values import (
     FORMATTED_STRING,
@@ -23,9 +29,21 @@ from gdrives.sheets.values import (
     TabGrid,
     batch_update_spreadsheet,
     list_tabs,
+    pull_grid,
     pull_values,
     tab_grid,
 )
+
+#: The ``fields`` mask of a grid read for links. No one field reports every
+#: link: ``hyperlink`` has a link on the whole cell, however it was set, and
+#: ``textFormatRuns`` a link on part of the cell's text.
+LINK_FIELDS = "sheets(data(rowData(values(hyperlink,textFormatRuns(format(link))))))"
+
+#: The format field of a link on the whole cell, which a write gives a URL.
+CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
+
+#: The field of a cell's text format runs, where a link on part of its text is.
+RUNS_FIELD = "textFormatRuns"
 
 
 def _check_names(names: Sequence[str], what: str) -> None:
@@ -207,6 +225,233 @@ def place_columns(
         requests.extend(_open_columns(grid, start, groups[start], start > 0))
     batch_update_spreadsheet(service, spreadsheet_id, requests)
     return [name for name in columns if name not in header]
+
+
+# -- links --
+
+
+@dataclass(frozen=True)
+class LinkedCell:
+    """A cell that holds a link: where it is, and where its links point.
+
+    ``row`` is the 1-based spreadsheet row and ``column`` the header name.
+    ``targets`` is the target of each link, the link on the whole cell first.
+    ``in_runs`` says whether any of them is a link on part of the cell's
+    text, which lives in the cell's text format runs.
+
+    A caller that wants plain text looks for any linked cell. A caller that
+    wants links looks for a target that differs from the cell's text, as a
+    bare domain's does: ``example.com`` is given the target
+    ``http://example.com``.
+    """
+
+    row: int
+    column: str
+    targets: tuple[str, ...]
+    in_runs: bool
+
+
+def _wanted(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    columns: Sequence[str] | None,
+    header: Sequence[str] | None,
+) -> tuple[dict[str, int], list[str]]:
+    """Each wanted column's header index, and the header, read unless it is given."""
+    if columns is not None:
+        _check_names(columns, "column")
+    found = (
+        list(header) if header is not None else _header(service, spreadsheet_id, tab)
+    )
+    names = list(columns) if columns is not None else [name for name in found if name]
+    return _positions(found, names, tab), found
+
+
+def _adjacent(numbers: Sequence[int]) -> list[tuple[int, int]]:
+    """Group numbers into runs of adjacent ones, each as ``(first, past the last)``."""
+    runs: list[tuple[int, int]] = []
+    for number in sorted(set(numbers)):
+        if runs and runs[-1][1] == number:
+            runs[-1] = (runs[-1][0], number + 1)
+        else:
+            runs.append((number, number + 1))
+    return runs
+
+
+def linked_cells(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    columns: Sequence[str] | None = None,
+    header: Sequence[str] | None = None,
+) -> list[LinkedCell]:
+    """Every cell of ``columns`` that holds a link, in row then column order.
+
+    ``columns`` defaults to every named column of the header, and the header
+    row is a row like any other. One grid read of the tab
+    (:func:`~gdrives.sheets.values.pull_grid`) under :data:`LINK_FIELDS`,
+    over the columns from the first wanted to the last. ``header`` is the
+    tab's header row when the caller has it, which saves the read of row 1.
+
+    Raises ValueError, before the grid read, for a blank or repeated name, or
+    a name the header lacks or repeats.
+    """
+    positions, _ = _wanted(service, spreadsheet_id, tab, columns, header)
+    if not positions:
+        return []
+    first, last = min(positions.values()), max(positions.values())
+    names = {index: name for name, index in positions.items()}
+    span = f"{a1_quote(tab)}!{column_letter(first)}:{column_letter(last)}"
+    data = pull_grid(service, spreadsheet_id, span, LINK_FIELDS)
+    found: list[LinkedCell] = []
+    for row, held in enumerate(data.get("rowData", []), start=1):
+        for index, cell in enumerate(held.get("values", []), start=first):
+            if index not in names:
+                continue
+            whole: list[str] = [cell["hyperlink"]] if "hyperlink" in cell else []
+            parts: list[str] = [
+                run["format"]["link"]["uri"]
+                for run in cell.get(RUNS_FIELD, [])
+                if "uri" in run.get("format", {}).get("link", {})
+            ]
+            if whole or parts:
+                found.append(
+                    LinkedCell(row, names[index], (*whole, *parts), in_runs=bool(parts))
+                )
+    return found
+
+
+def clear_link_format(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    columns: Sequence[str] | None = None,
+    rows: Sequence[int] | None = None,
+    runs: bool = True,
+    header: Sequence[str] | None = None,
+    sheet_id: int | None = None,
+) -> None:
+    """Take the link format off the cells of ``columns``, and nothing else.
+
+    ``columns`` defaults to every named column of the header, and ``rows``
+    (1-based spreadsheet rows) to every row. The link on the whole cell is
+    cleared by one ``repeatCell`` per run of adjacent columns and rows, under
+    the mask :data:`CELL_LINK_FIELD`, so a cell keeps its bold, its fill, and
+    the rest of its format.
+
+    With ``runs``, a cell that holds a link on part of its text has its text
+    format runs cleared whole, in the same request. The API cannot take a
+    link out of a run without rewriting the run, and a rewritten run keeps
+    the link's colour and underline. A cell whose runs hold no link keeps
+    them. Finding those cells costs a grid read (:func:`linked_cells`), which
+    ``runs=False`` skips.
+
+    Writing a value puts the link back, so a clear follows every write of a
+    URL. ``header`` and ``sheet_id`` save their reads when the caller has
+    them. With nothing to clear no request is sent.
+
+    Raises ValueError, with nothing written, for a blank or repeated column
+    name, a name the header lacks or repeats, or a row below 1.
+    """
+    below = [row for row in rows or () if row < 1]
+    if below:
+        raise ValueError(f"rows are spreadsheet rows, from 1: {below}")
+    positions, known = _wanted(service, spreadsheet_id, tab, columns, header)
+    if not positions or (rows is not None and not rows):
+        return
+    partial: list[LinkedCell] = []
+    if runs:
+        partial = linked_cells(
+            service, spreadsheet_id, tab, columns=list(positions), header=known
+        )
+    if sheet_id is None:
+        sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
+    requests = _link_clears(sheet_id, positions, rows, partial)
+    batch_update_spreadsheet(service, spreadsheet_id, requests)
+
+
+def link_clear(
+    sheet_id: int,
+    field: str,
+    across: tuple[int, int],
+    down: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """The ``repeatCell`` that clears ``field`` over a block of cells.
+
+    ``across`` and ``down`` are 0-based, end-exclusive column and row bounds;
+    with no ``down`` the block is every row. The cell sent is empty, so each
+    field the mask names is cleared, and no other.
+    """
+    span: dict[str, Any] = {"sheetId": sheet_id}
+    if down is not None:
+        span |= {"startRowIndex": down[0], "endRowIndex": down[1]}
+    span |= {"startColumnIndex": across[0], "endColumnIndex": across[1]}
+    return {"repeatCell": {"range": span, "cell": {}, "fields": field}}
+
+
+def _link_clears(
+    sheet_id: int,
+    positions: Mapping[str, int],
+    rows: Sequence[int] | None,
+    partial: Sequence[LinkedCell],
+) -> list[dict[str, Any]]:
+    """The requests that clear the cell link of a block, and the runs of ``partial``."""
+    spans = [None] if rows is None else _adjacent([row - 1 for row in rows])
+    requests = [
+        link_clear(sheet_id, CELL_LINK_FIELD, across, down)
+        for across in _adjacent(list(positions.values()))
+        for down in spans
+    ]
+    requests.extend(
+        link_clear(
+            sheet_id,
+            RUNS_FIELD,
+            (positions[cell.column], positions[cell.column] + 1),
+            (cell.row - 1, cell.row),
+        )
+        for cell in partial
+        if cell.in_runs and (rows is None or cell.row in rows)
+    )
+    return requests
+
+
+def strip_links(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    columns: Sequence[str],
+    *,
+    header: Sequence[str],
+    sheet_id: int,
+    rows: Sequence[int] | None = None,
+) -> list[LinkedCell]:
+    """Clear the links the cells of ``columns`` hold, and return the ones left.
+
+    For a run that has just written those cells and knows the tab's
+    ``header`` and ``sheet_id``. One grid read finds the links. With none
+    there is nothing to write, and the result is empty. Otherwise the links
+    found are cleared as :func:`clear_link_format` clears them, and a second
+    grid read returns the cells that still hold one, which the caller reports
+    as a failed read-back. ``rows`` bounds both what is cleared and what is
+    returned.
+    """
+
+    def found() -> list[LinkedCell]:
+        cells = linked_cells(
+            service, spreadsheet_id, tab, columns=columns, header=header
+        )
+        return [cell for cell in cells if rows is None or cell.row in rows]
+
+    linked = found()
+    if not linked:
+        return []
+    positions = _positions(list(header), list(columns), tab)
+    requests = _link_clears(sheet_id, positions, rows, linked)
+    batch_update_spreadsheet(service, spreadsheet_id, requests)
+    return found()
 
 
 def delete_columns(

@@ -259,7 +259,8 @@ class TestPushes:
             ["a", "n1", "Al", "", "1"],
             ["b", "", "Bo", "", "01"],  # the literal string, not the number 1
         ]
-        assert result == ApplyResult(2, 0, [2, 3], [])
+        # The cells are in the plan's order, not the sheet's.
+        assert result == ApplyResult(2, 0, [2, 3], [], [(3, "amt"), (2, "name")], [])
         assert grid.methods == [READ, PUSH, READ]
 
     def test_columns_past_z(self):
@@ -299,7 +300,8 @@ class TestNewRows:
             ["c", "", "Cy"],
             ["d", "", "", "", "4"],
         ]
-        assert result == ApplyResult(0, 2, [], [5, 6])
+        # The columns written in each new row, in header order.
+        assert result == ApplyResult(0, 2, [], [5, 6], [], ["id", "name", "amt"])
         assert grid.methods == [READ, GRID, STRUCTURE, READ]
 
     def test_only_projection_columns_are_written(self):
@@ -459,7 +461,7 @@ class TestInsertAbove:
             ["c", "open"],
             ["d", "closed"],
         ]
-        assert result == ApplyResult(1, 1, [4], [3])
+        assert result == ApplyResult(1, 1, [4], [3], [(4, "status")], ["id", "status"])
 
     def test_a_push_away_from_a_match_moves_the_insert_point_down(self):
         header = ["id", "status"]
@@ -526,7 +528,15 @@ class TestInsertAbove:
         # Addressed by the rows before the insert ...
         assert [d["range"] for d in kwargs["body"]["data"]] == ["'T'!C2", "'T'!C4"]
         # ... and reported where they sit after it.
-        assert result == ApplyResult(2, 2, [2, 6], [3, 4])
+        assert result == ApplyResult(
+            2,
+            2,
+            [2, 6],
+            [3, 4],
+            # Row c was read in row 4, and sits in row 6 after the insert.
+            [(2, "name"), (6, "name")],
+            ["id", "name", "amt"],
+        )
         assert grid.values("T") == [
             HEADER,
             ["a", "", "Al"],
@@ -535,6 +545,148 @@ class TestInsertAbove:
             ["b", "old", "Bo"],
             ["c", "", "Cyd"],
         ]
+
+
+class TestWrittenCells:
+    def test_the_columns_of_new_rows_follow_the_header_not_the_projection(self):
+        grid, table = sheet(*ROWS, project=["amt", "id", "name"])
+        added = NewRow(("c",), {"amt": "3", "id": "c", "name": "Cy"})
+        result = apply_plan(grid, "S", table, plan(appends=[added]))
+        assert result.appended_columns == ["id", "name", "amt"]
+        assert result.appended_rows == [4] and result.pushed_cells == []
+
+    def test_a_cell_pushed_twice_over_is_listed_once_per_push(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan([push("b", "name", "Bea"), push("b", "amt", "9")]),
+        )
+        assert result.pushed_cells == [(3, "name"), (3, "amt")]
+        assert result.pushed_rows == [3] and result.appended_columns == []
+
+    def test_nothing_written_names_no_cell(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(grid, "S", table, plan())
+        assert result == ApplyResult(0, 0, [], [])
+        assert (result.pushed_cells, result.appended_columns) == ([], [])
+
+
+class TestClearLinks:
+    HEADER = ["id", "note", "site", "", "name"]
+    ROWS = [["a", "n1", "plain", "", "Ada"], ["b", "old", "example.org", "", "Bo"]]
+    PROJECT = ["id", "site", "name"]
+    LINK = "userEnteredFormat.textFormat.link"
+
+    def sheet(self):
+        return sheet(*self.ROWS, header=self.HEADER, project=self.PROJECT)
+
+    def new_row(self, key, site):
+        return NewRow((key,), {"id": key, "site": site, "name": "New"})
+
+    def test_new_rows_are_written_with_no_link_in_the_requests_of_today(self):
+        grid, table = self.sheet()
+        the_plan = plan(appends=[self.new_row("c", "https://example.com/c")])
+        apply_plan(grid, "S", table, the_plan, clear_links=True)
+        # The one read more is the read-back of the links.
+        assert grid.methods == [READ, GRID, STRUCTURE, READ, GRID]
+        kinds = requests_of(grid)
+        assert [kind for kind, _ in kinds] == ["updateCells"] * 3
+        assert {body["fields"] for _, body in kinds} == {
+            f"userEnteredValue,{self.LINK}"
+        }
+        assert grid.values("T")[3] == ["c", "", "https://example.com/c", "", "New"]
+        # The link row b held before the run is not the run's to clear.
+        assert grid.links("T") == {(3, 3): "http://example.org"}
+
+    def test_without_clear_links_a_new_row_is_linked_as_the_api_links_it(self):
+        grid, table = self.sheet()
+        the_plan = plan(appends=[self.new_row("c", "https://example.com/c")])
+        apply_plan(grid, "S", table, the_plan)
+        assert grid.methods == [READ, GRID, STRUCTURE, READ]
+        assert grid.links("T")[(4, 3)] == "https://example.com/c"
+
+    def test_pushed_cells_cost_one_request_more(self):
+        grid, table = self.sheet()
+        the_plan = plan(
+            [push("a", "site", "example.com"), push("b", "name", "Bea")],
+        )
+        apply_plan(grid, "S", table, the_plan, clear_links=True)
+        assert grid.methods == [READ, GRID, PUSH, STRUCTURE, READ, GRID]
+        assert requests_of(grid) == [
+            (
+                "repeatCell",
+                {
+                    "range": {
+                        "sheetId": 0,
+                        "startRowIndex": row,
+                        "endRowIndex": row + 1,
+                        "startColumnIndex": column,
+                        "endColumnIndex": column + 1,
+                    },
+                    "cell": {},
+                    "fields": f"{self.LINK},textFormatRuns",
+                },
+            )
+            for row, column in [(1, 2), (2, 4)]
+        ]
+        assert grid.values("T")[1][2] == "example.com"
+        assert grid.links("T") == {(3, 3): "http://example.org"}
+
+    def test_the_clears_use_the_rows_as_they_are_after_the_insert(self):
+        grid, table = self.sheet()
+        grid.tab("T").formats[(2, 2)]["runs"] = [
+            {"startIndex": 0, "format": {"link": {"uri": "https://old.example"}}}
+        ]
+        the_plan = plan(
+            [push("b", "site", "https://example.com/b")],
+            [self.new_row("c", "example.com"), self.new_row("d", "plain")],
+        )
+        result = apply_plan(
+            grid, "S", table, the_plan, insert_above={"note": "old"}, clear_links=True
+        )
+        assert result.pushed_cells == [(5, "site")]
+        assert grid.values("T") == [
+            self.HEADER,
+            self.ROWS[0],
+            ["c", "", "example.com", "", "New"],
+            ["d", "", "plain", "", "New"],
+            ["b", "old", "https://example.com/b", "", "Bo"],
+        ]
+        assert grid.links("T") == {}
+        assert grid.format("T", 5, 3) == {}
+        kinds = [kind for kind, _ in requests_of(grid)]
+        assert kinds == ["insertDimension", "updateCells", "updateCells", "repeatCell"]
+        assert requests_of(grid)[-1][1]["range"]["startRowIndex"] == 4
+
+    def test_a_link_that_remains_fails_the_read_back(self):
+        grid, table = self.sheet()
+        # The link comes back between the write and the read-back.
+        grid.edit_externally(
+            lambda g: (
+                g.write("T", [["example.com"]], row=2)
+                or g.tab("T").formats.update({(1, 2): {"link": "http://example.com"}})
+            ),
+            before=GRID,
+            occurrence=2,
+        )
+        with pytest.raises(ReadBackError) as raised:
+            apply_plan(
+                grid,
+                "S",
+                table,
+                plan([push("a", "site", "example.com")]),
+                clear_links=True,
+            )
+        assert "row 2, column 'site' still holds a link to ['http://example.com']" in (
+            str(raised.value)
+        )
+
+    def test_nothing_to_write_asks_nothing(self):
+        grid, table = self.sheet()
+        apply_plan(grid, "S", table, plan(), clear_links=True)
+        assert grid.calls == []
 
 
 class TestPartialKeys:
@@ -560,7 +712,7 @@ class TestPartialKeys:
             [NewRow(("2027", ""), {"y": "2027", "id": "", "v": "c"})],
         )
         result = apply_plan(grid, "S", table, the_plan)
-        assert result == ApplyResult(1, 1, [2], [4])
+        assert result == ApplyResult(1, 1, [2], [4], [(2, "v")], ["y", "id", "v"])
         assert grid.values("T") == [
             self.HEADER,
             ["2026", "", "A"],
@@ -595,7 +747,9 @@ class TestTypedDates:
                 [NewRow(("c",), {"id": "c", "on": "2026-09-29", "name": "Cy"})],
             ),
         )
-        assert result == ApplyResult(2, 1, [2, 3], [4])
+        assert result == ApplyResult(
+            2, 1, [2, 3], [4], [(2, "name"), (3, "on")], ["id", "on", "name"]
+        )
         assert grid.values("T") == [
             self.HEADER,
             ["a", date(2026, 9, 27), "Al"],
