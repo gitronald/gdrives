@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-27
+
 ### Added
 
 - `gdrives login` grants OAuth access with or without a terminal attached, for a run started by a tool that captures stdin while a person still watches its output. It prints the consent URL, waits for the browser to come back, caches the token, and prints the credential line. `--scope read|sheets|docs|drive` picks the access (`read` by default), and `--timeout SECONDS` (300 by default) exits 1, with every token file untouched, when nobody consents in time. It also exits 1 when the token of a consent could not be saved, since the next command would ask again. A cached token that already serves the scope is kept, and nothing is asked. It is also the way to grant again after a token's refresh has failed.
