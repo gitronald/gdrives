@@ -244,3 +244,34 @@ Still open:
 - The manual check of the Testing section, one real `gdrives login` by the owner.
 - The project `CLAUDE.md` is not tracked, so its update exists only in the worktree's
   copy and has to be carried to the main checkout when the branch merges.
+
+### 2026-09-27 — manual check of `gdrives login`
+
+Written at 2026-09-27T12:51:51-07:00. The owner approved the consent in a browser. The
+command ran with stdin at `/dev/null`, against a scratch config directory that held
+only a copy of the client secrets, so the owner's own token files were not involved.
+The scratch directory was removed afterwards.
+
+| Run | Result |
+|---|---|
+| `gdrives login --timeout 600`, no terminal | The credential line, then the URL, both printed while the command was still waiting. After the approval: `Credential: OAuth token .../gdrives_token.json`, exit 0 |
+| The token it wrote | Mode `0600`, recording the `drive.readonly` scope and a refresh token |
+| `gdrives login` again | Nothing asked: the token line only, exit 0, the file byte for byte as it was |
+| `gdrives login --scope docs --timeout 5`, not approved | `Error: no consent within 5 seconds; no token was written`, exit 1, no token file written |
+
+Not run:
+
+- The check of a `drive` token under `gdrives_token_rw.json` with a real token. It
+  needs a second consent, for the full `drive` scope. The tests and the run with a
+  placeholder token cover it.
+- A request to the Drive API with the new token. The check ends at the token file.
+
+Seen on the way: the first attempt ended at Google's error page, `Missing required
+parameter: scope`. The URL is 396 characters, and it was cut when it was copied from a
+wrapped line. Google answered the full URL with the sign-in page, and the same URL cut
+before `&scope=` with that error. This is a limit of printing a long URL, which this
+plan did not change. The same run finished once the full URL was used, so a failed
+attempt in the browser costs nothing while the command is still waiting.
+
+This closes the first item under "Still open" in the entry above. The second, the
+untracked project `CLAUDE.md`, stays open until the branch merges.
