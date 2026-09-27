@@ -44,7 +44,7 @@ SHEETS_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Write scope for the Docs API (documents.batchUpdate/create). Same opt-in split
 # as Sheets: only the docs-* write commands request it, and it is cached in its
-# own token file (see _token_path) so neither the read-only token nor the Sheets
+# own token file (see _token_paths) so neither the read-only token nor the Sheets
 # write token is touched.
 DOCS_WRITE_SCOPES = ["https://www.googleapis.com/auth/documents"]
 
@@ -143,26 +143,15 @@ def _token_name(scopes: list[str]) -> str:
     return _derived_token_name(sorted(key))
 
 
-def _token_path(scopes: list[str] | None = None) -> Path | None:
-    """Return the OAuth token path for the given scopes, or None if unconfigured.
-
-    Every scope set gets its own token file, so requesting one kind of write
-    access never clobbers — or forces a re-consent of — the shared read-only
-    token or another write token. The read-only default keeps
-    ``gdrives_token.json`` and the Sheets write scope ``gdrives_token_rw.json``.
-    """
-    config_dir = _config_dir()
-    if config_dir is None:
-        return None
-    return config_dir / _token_name(scopes or SCOPES)
-
-
 def _token_paths(scopes: list[str]) -> list[Path]:
     """Return every place a token for ``scopes`` can be, in lookup order.
 
-    The historical name first, then the name derived from the scopes, which is
-    where a consent writes when the historical file holds a grant it must not
-    replace (see _consent_path). For most scope sets the two are one file.
+    Every scope set gets its own token file, so requesting one kind of write
+    access never clobbers — or forces a re-consent of — the shared read-only
+    token or another write token. The historical name first, then the name
+    derived from the scopes, which is where a consent writes when the
+    historical file holds a grant it must not replace (see _consent_path). For
+    most scope sets the two are one file.
     Empty when GOOGLE_CONFIG_DIR is unset.
     """
     config_dir = _config_dir()
@@ -200,18 +189,6 @@ def _covers(granted: list[str], scopes: list[str]) -> bool:
     for scope in granted:
         served |= _IMPLIES.get(scope, frozenset())
     return set(scopes) <= served
-
-
-def _token_covers(token_path: Path, scopes: list[str]) -> bool:
-    """True unless the cached token records granted scopes that miss ``scopes``.
-
-    A token whose grant does not cover the request would load fine and then
-    403 on the first call, so the caller passes it over instead. A token
-    without a ``scopes`` entry, or one that cannot be parsed, is left to the
-    normal loader.
-    """
-    granted = _recorded_scopes(token_path)
-    return granted is None or _covers(granted, scopes)
 
 
 def _credentials_path() -> Path | None:
@@ -296,9 +273,10 @@ def _load_token(token_path: Path, scopes: list[str], *, warn: bool = True):
     """The cached OAuth credentials at ``token_path``, or None when none can be used.
 
     None when there is no token file, when its grant does not cover ``scopes``
-    (it would 403 on the first call), or when it cannot be loaded. Loading reads
-    the file only; nothing is refreshed. ``warn`` logs why a token present on
-    disk was passed over.
+    (it would 403 on the first call), or when it cannot be loaded. A token
+    without a usable ``scopes`` entry is left to the loader. Loading reads the
+    file only; nothing is refreshed. ``warn`` logs why a token present on disk
+    was passed over.
 
     A grant that covers ``scopes`` only by implication (see _IMPLIES) is loaded
     with the scopes it records: a refresh that asks for a scope outside the
@@ -370,6 +348,29 @@ def _can_consent(credentials_path: Path, *, force: bool = False) -> bool:
     return credentials_path.exists() and (force or _is_interactive())
 
 
+def _no_consent(credentials_path: Path | None) -> ConsentError:
+    """Why a consent asked for with ``force`` cannot run: OAuth is not configured."""
+    if credentials_path is None:
+        return ConsentError(
+            "GOOGLE_CONFIG_DIR is not set, so there are no OAuth client "
+            "secrets to consent with (docs/setup-oauth.md)"
+        )
+    return ConsentError(
+        f"no OAuth client secrets at {credentials_path} (docs/setup-oauth.md)"
+    )
+
+
+def _timeout_error() -> type[Exception]:
+    """The exception the consent flow raises when nobody answers in time.
+
+    WSGITimeoutError, where google-auth-oauthlib has it. Releases up to 1.2.1
+    raise the bare AttributeError it was later made from.
+    """
+    import google_auth_oauthlib.flow
+
+    return getattr(google_auth_oauthlib.flow, "WSGITimeoutError", AttributeError)
+
+
 def authenticate_oauth(
     scopes: list[str] | None = None,
     *,
@@ -394,10 +395,7 @@ def authenticate_oauth(
     credentials_path = _credentials_path()
     if credentials_path is None:
         if force:
-            raise ConsentError(
-                "GOOGLE_CONFIG_DIR is not set, so there are no OAuth client "
-                "secrets to consent with (docs/setup-oauth.md)"
-            )
+            raise _no_consent(credentials_path)
         return None
 
     from google.auth.transport.requests import Request
@@ -421,9 +419,7 @@ def authenticate_oauth(
     # flow when there's no client secrets file or no interactive terminal.
     if not _can_consent(credentials_path, force=force):
         if force:
-            raise ConsentError(
-                f"no OAuth client secrets at {credentials_path} (docs/setup-oauth.md)"
-            )
+            raise _no_consent(credentials_path)
         return None
     flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
     try:
@@ -431,9 +427,7 @@ def authenticate_oauth(
             creds = flow.run_local_server(
                 port=0, open_browser=False, timeout_seconds=timeout
             )
-    except AttributeError as e:
-        # How the flow reports a timeout: WSGITimeoutError, an AttributeError,
-        # and in releases up to 1.2.1 the bare AttributeError it was made from.
+    except _timeout_error() as e:
         if timeout is None:
             raise
         raise ConsentError(
@@ -539,7 +533,8 @@ def describe_credentials(
     service account key that exists, else Application Default Credentials.
     Reads local files only: no network call is made and no consent is
     started. Whether ADC is configured is left to google-auth at the first
-    call, since finding out can take a network probe.
+    call, since finding out can take a network probe. With ``force`` nothing
+    falls through either: ConsentError is raised where authenticate() raises it.
     """
     scopes = scopes or SCOPES
     credentials_path = _credentials_path()
@@ -551,6 +546,8 @@ def describe_credentials(
                 return CredentialInfo(kind="oauth", source=token_path)
         if _can_consent(credentials_path, force=force):
             return CredentialInfo(kind="oauth", consent=True, source=credentials_path)
+    if force:
+        raise _no_consent(credentials_path)
     sa_path = _service_account_path()
     if sa_path is not None and sa_path.exists():
         return CredentialInfo(
