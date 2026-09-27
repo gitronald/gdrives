@@ -22,7 +22,7 @@ from typing import Any
 
 from gdrives.files import Service
 from gdrives.sheets.a1 import a1_quote, column_letter
-from gdrives.sheets.cells import to_cell
+from gdrives.sheets.cells import _header_row
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     UNFORMATTED_VALUE,
@@ -45,8 +45,8 @@ CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
 #: The field of a cell's text format runs, where a link on part of its text is.
 RUNS_FIELD = "textFormatRuns"
 
-#: The ``fields`` mask of a grid read of a header row with its column widths.
-WIDTH_FIELDS = "sheets(data(columnMetadata(pixelSize),rowData(values(effectiveValue))))"
+#: The ``fields`` mask of a grid read of column widths.
+WIDTH_FIELDS = "sheets(data(columnMetadata(pixelSize)))"
 
 
 def _check_names(names: Sequence[str], what: str) -> None:
@@ -67,7 +67,7 @@ def _header(service: Service, spreadsheet_id: str, tab: str) -> list[str]:
         render=UNFORMATTED_VALUE,
         date_time_render=FORMATTED_STRING,
     )
-    return [to_cell(cell).strip() for cell in (grid[0] if grid else [])]
+    return _header_row(grid)
 
 
 def _positions(header: list[str], names: Sequence[str], tab: str) -> dict[str, int]:
@@ -516,19 +516,18 @@ def get_column_widths(
 
     In header order, and ready to give :func:`set_column_widths` or to paste
     under a tab's ``widths`` in the config. A column whose header cell is
-    blank is left out. One grid read of row 1
-    (:func:`~gdrives.sheets.values.pull_grid`), for the header cells and the
-    widths together. Raises ValueError for a header that repeats a name.
+    blank is left out. The header is read as every helper here reads it, so
+    a name is the one :func:`set_column_widths` and a config look for, and
+    the widths come from one grid read of row 1
+    (:func:`~gdrives.sheets.values.pull_grid`): two reads, and one for a tab
+    with no header. Raises ValueError for a header that repeats a name.
     """
-    data = pull_grid(service, spreadsheet_id, f"{a1_quote(tab)}!1:1", WIDTH_FIELDS)
-    rows = data.get("rowData", [])
-    cells: list[dict[str, Any]] = rows[0].get("values", []) if rows else []
-    header = [
-        to_cell(next(iter(cell.get("effectiveValue", {}).values()), None)).strip()
-        for cell in cells
-    ]
+    header = _header(service, spreadsheet_id, tab)
     names = [name for name in header if name]
     positions = _positions(header, names, tab)
+    if not positions:
+        return {}
+    data = pull_grid(service, spreadsheet_id, f"{a1_quote(tab)}!1:1", WIDTH_FIELDS)
     sizes = data.get("columnMetadata", [])
     return {name: sizes[index]["pixelSize"] for name, index in positions.items()}
 

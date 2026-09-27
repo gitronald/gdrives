@@ -679,6 +679,13 @@ class TestNormalizedComparison:
         with pytest.raises(ValueError, match="merge: column 'name': unknown column"):
             run([], [], [], types={"name": "number"})
 
+    def test_every_unknown_type_is_listed_whatever_the_projection(self):
+        with pytest.raises(ValueError) as refused:
+            run([], [], [], types={"name": "number", "gone": "money"})
+        first, second = str(refused.value).split("; expected one of")[:2]
+        assert first == "merge: column 'name': unknown column type 'number'"
+        assert "merge: column 'gone': unknown column type 'money'" in second
+
 
 SCHEMA = {
     "id": ColumnSchema(required=True),

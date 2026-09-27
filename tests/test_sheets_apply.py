@@ -679,8 +679,9 @@ class TestClearLinks:
                 plan([push("a", "site", "example.com")]),
                 clear_links=True,
             )
-        assert "row 2, column 'site' still holds a link to ['http://example.com']" in (
-            str(raised.value)
+        assert str(raised.value) == (
+            "tab 'T': the read-back found links the run did not clear: row 2, "
+            "column 'site' still holds a link to ['http://example.com']"
         )
 
     def test_nothing_to_write_asks_nothing(self):

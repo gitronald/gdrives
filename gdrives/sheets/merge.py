@@ -35,9 +35,9 @@ from dataclasses import dataclass, field
 from gdrives.sheets.cells import (
     ColumnSchema,
     ColumnType,
+    _declared,
     cell_problem,
     check_blank_keys,
-    column_type,
     index_rows,
     normalize_cell,
     row_key,
@@ -240,21 +240,6 @@ def _carried(
     return list(carry)
 
 
-def _declared(
-    types: Mapping[str, ColumnType] | None, cells: Sequence[str]
-) -> dict[str, str]:
-    """The declared type, by name, of each cell column that has one."""
-    declared: dict[str, str] = {}
-    for column, type_ in (types or {}).items():
-        try:
-            name = column_type(type_)
-        except ValueError as e:
-            raise ValueError(f"merge: column {column!r}: {e}") from None
-        if column in cells:
-            declared[column] = name
-    return declared
-
-
 @dataclass(frozen=True)
 class _Rules:
     """What a merge was asked for, as its helpers need it."""
@@ -362,7 +347,7 @@ def merge(
         local_owned=local_owned,
         sheet_owned=sheet_owned,
         prefer=prefer,
-        types=_declared(types, cells),
+        types={c: t for c, t in _declared(types, "merge: ").items() if c in cells},
         schema={c: spec for c, spec in (schema or {}).items() if c in columns},
         fill=carried if carry is not None else (),
     )

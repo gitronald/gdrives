@@ -63,6 +63,7 @@ from gdrives.sheets.apply import (
     ApplyResult,
     ReadBackError,
     SheetChangedError,
+    _links_left,
     apply_plan,
     insert_point,
 )
@@ -345,10 +346,14 @@ def _canonical(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
     return rows
 
 
-def _named(store: Store, role: str = "local") -> str:
+def _side(store: Store) -> str:
+    """What a message calls the local side: ``local file`` or ``local store``."""
+    return "local file" if isinstance(store, FileStore) else "local store"
+
+
+def _named(store: Store) -> str:
     """What a message calls a store: ``local file <path>``, ``local store <label>``."""
-    kind = "file" if isinstance(store, FileStore) else "store"
-    return f"{role} {kind} {store.label}"
+    return f"{_side(store)} {store.label}"
 
 
 def _started(report: TabReport, tab: TabConfig) -> Store:
@@ -1070,12 +1075,13 @@ def pull_tab(
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
+    left = f"the {_side(store)} is left alone"
     if listing is None:
         listing = tab_listing(service, spreadsheet_id)
     title = _sheet_title(tab.title, tab.sheet_id, listing, report)
     if title is None:
         report.tab_state = "missing"
-        raise ValueError(f"no tab named {tab.title!r}; the local file is left alone")
+        raise ValueError(f"no tab named {tab.title!r}; {left}")
     grid = _read_grid(service, spreadsheet_id, title)
     serials = pull_serials(service, spreadsheet_id, title, grid, tab.types)
     try:
@@ -1090,11 +1096,9 @@ def pull_tab(
         )
     except EmptyTabError:
         report.tab_state = "empty"
-        raise ValueError(
-            f"tab {tab.title!r} has no header row; the local file is left alone"
-        ) from None
+        raise ValueError(f"tab {tab.title!r} has no header row; {left}") from None
     if not table.rows:
-        raise ValueError(f"tab {tab.title!r} has no rows; the local file is left alone")
+        raise ValueError(f"tab {tab.title!r} has no rows; {left}")
     context = CheckContext(
         tab=tab.title,
         stage="sheet",
@@ -1334,15 +1338,7 @@ def push_rows(
             service, spreadsheet_id, title, out, header=out, sheet_id=sheet_id
         )
         if left:
-            raise ReadBackError(
-                f"tab {title!r}: the read-back found links the push did not "
-                "clear: "
-                + "; ".join(
-                    f"row {cell.row}, column {cell.column!r} still holds a link "
-                    f"to {list(cell.targets)}"
-                    for cell in left
-                )
-            )
+            raise _links_left(title, left, "push")
     if widths:
         set_column_widths(service, spreadsheet_id, title, widths)
         report.wrote_widths = True
@@ -1430,8 +1426,9 @@ def pull_all_tabs(
     which protects a local file that shares a name with a tab but is made
     elsewhere. ``name`` maps a title to a file stem of the caller's choosing,
     such as :func:`~gdrives.local.slug`; a title it raises ValueError for is
-    reported for its tab, which is not written. ``bom`` starts each file with
-    a byte-order mark.
+    reported for its tab, which is not written. The stem goes through
+    :func:`~gdrives.local.safe_filename` too, so a title cannot name a file
+    outside ``out_dir``. ``bom`` starts each file with a byte-order mark.
 
     Refused before any read of values: an unknown extension, ``bom`` with
     ``.json``, a ``skip`` title the spreadsheet lacks, and two titles whose
@@ -1456,7 +1453,8 @@ def pull_all_tabs(
     unnamed: dict[str, str] = {}
     for title in wanted:
         try:
-            stems[title] = (name or safe_filename)(title)
+            # A stem is a file name, never a path, whoever made it.
+            stems[title] = safe_filename(title if name is None else name(title))
         except ValueError as e:
             unnamed[title] = str(e)
     names: dict[str, list[str]] = {}
@@ -1667,8 +1665,15 @@ def format_report(report: SyncReport) -> str:
     return "\n\n".join(blocks)
 
 
+def _local(tab: TabReport) -> str:
+    """What a report calls the tab's local side: a file, or a store with none."""
+    stored = tab.local is None and tab.local_label is not None
+    return "local store" if stored else "local file"
+
+
 def _format_tab(tab: TabReport) -> list[str]:
     run = "apply" if tab.apply else "preview"
+    local = _local(tab)
     lines = [f"{tab.mode} tab {_q(tab.tab)} ({run})"]
     if tab.local is not None:
         lines.append(f"  local file: {printable(str(tab.local))}")
@@ -1690,7 +1695,7 @@ def _format_tab(tab: TabReport) -> list[str]:
         lines.append(f"  columns {will}deleted, with their data: {dropped}")
     if tab.bootstrapped:
         lines.append(
-            "  bootstrapped: there is no base yet, so the local file was taken as "
+            f"  bootstrapped: there is no base yet, so the {local} was taken as "
             "the base; nothing is written to the sheet on this run. Sheet edits "
             "fold in, and local rows the sheet lacks are flagged remote_deleted. "
             "To write local-only rows to the sheet, run with --adopt instead "
@@ -1698,11 +1703,11 @@ def _format_tab(tab: TabReport) -> list[str]:
         )
     if tab.adopted:
         lines.append(
-            "  adopt: the local file wins every difference on the sheet; "
+            f"  adopt: the {local} wins every difference on the sheet; "
             "sheet-only rows are flagged, never removed"
         )
     if tab.plan is not None:
-        lines.extend(_format_plan(tab.plan, tab.deferred, _placement(tab)))
+        lines.extend(_format_plan(tab.plan, tab.deferred, _placement(tab), local))
     if tab.replacement is not None:
         lines.extend(_format_replacement(tab, tab.replacement))
     if tab.problems:
@@ -1715,7 +1720,7 @@ def _format_tab(tab: TabReport) -> list[str]:
         name
         for name, done in (
             ("sheet", tab.wrote_sheet),
-            ("local file", tab.wrote_local),
+            (local, tab.wrote_local),
             ("base", tab.wrote_base),
             ("column widths", tab.wrote_widths),
         )
@@ -1766,7 +1771,10 @@ def _placement(tab: TabReport) -> str:
 
 
 def _format_plan(
-    plan: MergePlan, deferred: Sequence[Cell], placement: str = ""
+    plan: MergePlan,
+    deferred: Sequence[Cell],
+    placement: str = "",
+    local: str = "local file",
 ) -> list[str]:
     lines = [
         *_cells(
@@ -1775,7 +1783,7 @@ def _format_plan(
             lambda c: f"{_q(c.sheet)} -> {_q(c.local)}",
         ),
         *_cells(
-            "fold into the local file",
+            f"fold into the {local}",
             plan.fold_cells,
             lambda c: f"{_q(c.local)} -> {_q(c.sheet)}",
         ),
@@ -1792,7 +1800,7 @@ def _format_plan(
     ]
     for label, rows, where in (
         ("new rows for the sheet", plan.appends, placement),
-        ("new rows for the local file", plan.fold_rows, ""),
+        (f"new rows for the {local}", plan.fold_rows, ""),
     ):
         if rows:
             lines.append(
@@ -1828,7 +1836,7 @@ def _format_plan(
 
 
 def _format_replacement(tab: TabReport, change: Replacement) -> list[str]:
-    target = "the local file" if tab.mode == "pull" else "the sheet"
+    target = f"the {_local(tab)}" if tab.mode == "pull" else "the sheet"
     if change.unchanged:
         return []
     lines = [

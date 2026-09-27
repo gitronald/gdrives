@@ -20,8 +20,9 @@ from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import (
     SERIAL_TYPES,
     ColumnType,
+    _declared,
+    _header_row,
     check_blank_keys,
-    column_type,
     index_rows,
     serial_to_cell,
     to_cell,
@@ -75,23 +76,6 @@ class Table:
     blank_keys: str = "refuse"
 
 
-def _declared(types: Mapping[str, ColumnType] | None) -> dict[str, str]:
-    """Each declared type by name, refusing one that is not a column type."""
-    declared: dict[str, str] = {}
-    for column, type_ in (types or {}).items():
-        try:
-            declared[column] = column_type(type_)
-        except ValueError as e:
-            raise ValueError(f"column {column!r}: {e}") from None
-    return declared
-
-
-def _header(grid: Sequence[Sequence[Any]]) -> list[str]:
-    """The header row of a grid as read: canonical strings, stripped."""
-    first: Sequence[Any] = grid[0] if grid else []
-    return [to_cell(cell).strip() for cell in first]
-
-
 def _check_request(tab: str, columns: Sequence[str] | None, key: Sequence[str]) -> None:
     """Refuse a malformed request before it costs an API call."""
     if columns is not None:
@@ -122,7 +106,7 @@ def pull_serials(
     dates of undeclared columns into numbers. With no such column on the tab
     no request is made.
     """
-    header = _header(grid)
+    header = _header_row(grid)
     dated = [
         column
         for column, name in _declared(types).items()
@@ -248,7 +232,7 @@ def parse_tab(
     _check_request(tab, columns, key)
     check_blank_keys(blank_keys)
     declared = _declared(types)
-    header = _header(grid)
+    header = _header_row(grid)
     if not any(header):
         raise EmptyTabError(f"tab {tab!r} has no header row")
     repeated = sorted({name for name in header if name and header.count(name) > 1})

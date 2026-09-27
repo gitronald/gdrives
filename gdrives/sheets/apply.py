@@ -42,6 +42,7 @@ from gdrives.sheets.merge import MergePlan
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     RUNS_FIELD,
+    LinkedCell,
     link_clear,
     linked_cells,
 )
@@ -131,7 +132,11 @@ def insert_point(
     A column outside the projection gets no pushes, so its rows count as
     read. Folds change the local file only, and are not applied. Pure: the
     preview and the apply both call it, so a preview names the row the apply
-    inserts at. Raises ValueError for an ``insert_above`` that does not name
+    inserts at, on a tab that has not changed in between. The apply calls it
+    on its own fresh read, and its guard compares the projection's columns
+    only: an edit to an ``insert_above`` column outside the projection is not
+    refused, and the rows go where the column puts them as re-read. Raises
+    ValueError for an ``insert_above`` that does not name
     one header column with its values, or a column ``table`` did not read.
     """
     column, values = _insert_target(insert_above, table.header)
@@ -331,6 +336,18 @@ def _row_requests(
     return requests
 
 
+def _links_left(tab: str, left: Sequence[LinkedCell], by: str) -> ReadBackError:
+    """The error for links that ``by`` (the run, the push) wrote and did not clear."""
+    return ReadBackError(
+        f"tab {tab!r}: the read-back found links the {by} did not clear: "
+        + "; ".join(
+            f"row {cell.row}, column {cell.column!r} still holds a link to "
+            f"{list(cell.targets)}"
+            for cell in left
+        )
+    )
+
+
 def _check_links(
     service: Service, spreadsheet_id: str, fresh: Table, result: ApplyResult
 ) -> None:
@@ -347,14 +364,7 @@ def _check_links(
     )
     left = [cell for cell in found if (cell.row, cell.column) in written]
     if left:
-        raise ReadBackError(
-            f"tab {fresh.tab!r}: the read-back found links the run did not clear: "
-            + "; ".join(
-                f"row {cell.row}, column {cell.column!r} still holds a link to "
-                f"{list(cell.targets)}"
-                for cell in left
-            )
-        )
+        raise _links_left(fresh.tab, left, "run")
 
 
 def apply_plan(

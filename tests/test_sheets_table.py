@@ -399,8 +399,14 @@ class TestSerials:
         assert table.row_numbers == {("2026-09-27",): 2}
 
     def test_an_unknown_type_is_refused(self):
-        with pytest.raises(ValueError, match="unknown column type 'day'"):
+        with pytest.raises(ValueError, match="^column 'on': unknown column type 'day'"):
             self.parse(types={"on": "day"})
+
+    def test_every_unknown_type_is_listed(self):
+        with pytest.raises(ValueError) as refused:
+            self.parse(types={"on": "day", "id": "number"})
+        assert "column 'on': unknown column type 'day'" in str(refused.value)
+        assert "column 'id': unknown column type 'number'" in str(refused.value)
 
 
 class TestReadTabTypes:

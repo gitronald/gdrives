@@ -1057,6 +1057,23 @@ class TestPullAllTabs:
         assert by_tab["Q3 / Q4"].local == out / "q3-q4.csv"
         assert report.exit_code == 1
 
+    def test_a_name_cannot_put_a_file_outside_the_directory(self, tmp_path):
+        grid = FakeSheetGrid({"../up": [["x"], ["1"]], "a/b": [["y"], ["2"]]})
+        out = tmp_path / "out"
+        report = pull_all_tabs(grid, "S", out, apply=True, name=lambda title: title)
+        assert sorted(p.name for p in out.iterdir()) == [".._up.csv", "a_b.csv"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+        assert [tab.local for tab in report.tabs] == [
+            out / ".._up.csv",
+            out / "a_b.csv",
+        ]
+
+    def test_names_that_collide_once_made_safe_are_refused(self, tmp_path):
+        grid = FakeSheetGrid({"a/b": [["x"], ["1"]], "a_b": [["y"], ["2"]]})
+        with pytest.raises(ValueError, match="tabs whose file names collide"):
+            pull_all_tabs(grid, "S", tmp_path, apply=True, name=lambda title: title)
+        assert not list(tmp_path.iterdir())
+
     def test_names_that_collide_as_mapped_are_refused(self, tmp_path):
         from gdrives.local import slug
 

@@ -4,6 +4,8 @@ Each helper runs against ``FakeSheetGrid``, so the tests assert the header and
 cells a request leaves behind, and that a refused request sends nothing.
 """
 
+from datetime import date
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
@@ -543,7 +545,7 @@ class TestClearLinkFormat:
 
 
 class TestGetColumnWidths:
-    def test_each_named_column_in_header_order_from_one_read(self):
+    def test_each_named_column_in_header_order(self):
         grid = FakeSheetGrid({"My Tab": [["id", "", "name", 2026.0], ["a", "x"]]})
         grid.tab("My Tab").widths[:5] = [50, 60, 150, 80, 999]
         assert get_column_widths(grid, "S", "My Tab") == {
@@ -552,19 +554,24 @@ class TestGetColumnWidths:
             "2026": 80,
         }
         assert list(get_column_widths(grid, "S", "My Tab")) == ["id", "name", "2026"]
-        assert grid.calls[0] == (
+        assert grid.calls[1] == (
             "spreadsheets.get",
             {
                 "spreadsheetId": "S",
                 "ranges": ["'My Tab'!1:1"],
                 "includeGridData": True,
-                "fields": (
-                    "sheets(data(columnMetadata(pixelSize),"
-                    "rowData(values(effectiveValue))))"
-                ),
+                "fields": "sheets(data(columnMetadata(pixelSize)))",
             },
         )
-        assert grid.methods == [GRID, GRID]
+        assert grid.methods == ["values.get", GRID] * 2
+
+    def test_a_date_in_the_header_is_named_as_every_helper_names_it(self):
+        grid = FakeSheetGrid({"T": [["id", date(2026, 9, 27)], ["a", "x"]]})
+        widths = get_column_widths(grid, "S", "T")
+        assert list(widths) == ["id", "9/27/2026"]
+        # The names are the ones set_column_widths finds in the same header.
+        set_column_widths(grid, "S", "T", dict.fromkeys(widths, 70))
+        assert get_column_widths(grid, "S", "T") == {"id": 70, "9/27/2026": 70}
 
     def test_what_it_returns_is_what_set_column_widths_takes(self):
         grid = FakeSheetGrid({"T": [["id", "name"]]})
@@ -573,7 +580,9 @@ class TestGetColumnWidths:
 
     @pytest.mark.parametrize("rows", [[], [[], ["a"]]])
     def test_a_tab_with_no_header_has_no_widths(self, rows):
-        assert get_column_widths(FakeSheetGrid({"T": rows}), "S", "T") == {}
+        grid = FakeSheetGrid({"T": rows})
+        assert get_column_widths(grid, "S", "T") == {}
+        assert grid.methods == ["values.get"]
 
     def test_a_header_that_repeats_a_name_is_refused(self):
         grid = FakeSheetGrid({"T": [["id", "dup", " dup "]]})

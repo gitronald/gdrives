@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-h-docs-and-release
 ---
 
 # 007h — Write the guide sections, check the exports, and state the live budget
@@ -117,3 +117,122 @@ each, and waits out the refusals.
 - The export test above.
 - The guide's config examples are loaded by `parse_config` in a test, so an example
   with a field the loader refuses fails the suite.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-h-docs-and-release`, cut from step g's branch
+after plan 008 and the 0.12.0 release had been merged up the stack, with a draft PR
+onto it. Written at 2026-09-27T14:33:37-07:00.
+
+| Commit | Part |
+|---|---|
+| `6102071` | The guide's three sections, its corrections, and the README |
+| `6128b3f` | `tests/test_sheets_guide.py` |
+| `f89612c` | The changelog |
+
+**Where the guide departs from this file's design.** Two statements of the design
+were run against `FakeSheetGrid` before they were written, and neither held as
+worded:
+
+- **Typed dates.** The design says a file that holds display text in a declared
+  `date` column differs in every row of it. It does not get that far: the check of
+  the local rows refuses the file, and nothing is written. The guide says to rewrite
+  the column before declaring it, and that an undeclared column reads as before.
+  Step b's Log had the same finding from the side of the base.
+- **Starting over.** The design says a caller that does not want the folds deletes
+  its base. A bootstrap takes the local file as the base, so the same cells fold in.
+  Only `--adopt` avoids them, and it writes the local file's text over the sheet: a
+  cell holding the number 0.5 then holds the text `50%`. The guide says both, and
+  says that folding is the way through.
+
+The section on a caller's retry gives the waits as they are in `retry.py` (1, 2, 4,
+and 8 seconds, each with up to a second of jitter, so 15 to 19 seconds for one call
+that keeps failing). A wrapper of five attempts holds a run for more than a minute,
+which is what the guide says where the design said minutes.
+
+**The guide read against the Logs.** Each correction, and the Log it came from:
+
+| Guide | Was | From |
+|---|---|---|
+| Where new rows go | Silent on an `insert_above` column the tab lacks | a |
+| Dates | Silent on the two reads not being one moment, which a pull does not guard | b |
+| Holding invalid sheet values | Silent on overrides, and on a tab with `owns_rows` | c |
+| Hooks | `push_rows` not named, and nothing on what the context holds at each stage | d, f |
+| Links | The cost of a sync with pushes and no new rows left out the read of the grid size, and nothing said the header row is cleared too | f |
+| Requests | Said a run lists the tabs once, which a run that creates a tab does not | g |
+| Credentials and scopes | Read against plan 008: the order of stderr on a preview that waits, a broader cached token, and `gdrives login` | 008 |
+
+Three things were wrong in the guide's structure and came from no Log: the contents
+had no entry for Links, the paragraph on carried columns had ended up inside the
+section on `sheet_id`, which step g added above it, and two paragraphs had lines cut
+short by earlier edits.
+
+**Every example runs, as a test.** The design asked for the examples to be run and
+for two tests. `tests/test_sheets_guide.py` has those two and makes the run a test
+too, so that an example cannot go stale after this step:
+
+- The names each step added to `gdrives.sheets` are listed by step and imported, with
+  `slug` in `gdrives.local`, and the fields and properties added to classes that
+  existed. The list is the 39 names that `__all__` gained since 0.12.0, and `Records`.
+- Every JSON example of the guide and of the README goes through `parse_config`. An
+  example that shows one tab, or the output of `sheets-widths`, is wrapped in a
+  target first.
+- The names in the guide's two field tables are the loader's own sets of fields.
+- Every `gdrives` command line of the guide and of the README is parsed by the
+  command-line parser, with `--help` added so that nothing runs. It checks that the
+  command and its options exist, and not the values given to them.
+- The guide's six Python examples run in order in one namespace against
+  `FakeSheetGrid`. The last one's `check` refuses the column that the links example
+  reads, which is the hook doing what the example says.
+
+**The changelog.** `[Unreleased]` holds this plan's lines only, since plan 008's
+were promoted in 0.12.0. The blank lines between the groups under Added are gone.
+Added keeps the order of the steps, which is an order of subject. Changed is ordered
+by who meets the change: what a sync compares and reads, what it writes and where,
+the report, the requests, and then the library's types.
+
+- Every row of the umbrella's Compatibility table has a line under Changed.
+- Four lines under Changed have no row in that table, each written by the step that
+  made the change: a preview refusing an `insert_above` column the tab lacks (a), the
+  `in sync` line (c), the equality of `ApplyResult` (f), and one tab listing per run
+  (g). The table is left as it was designed.
+- Two lines named 0.11.0 as the version whose behavior changed. 0.12.0 shipped in
+  between with the same behavior, so they say `an earlier version`.
+- The 0.11.0 entry on the wrappers' retry has the sentence on a caller's own.
+- One line was added for the guide's sections. Nothing is promoted to a version.
+
+**Seen and left.**
+
+- `ColumnType`, `Check`, and `Validate` are type aliases a caller's annotations could
+  use, and none is exported. `Validate` was not in 0.11.0 either, and the package's
+  surface test exports what a module defines as a class, a function, or a constant.
+- The project `CLAUDE.md` is not tracked, so it cannot travel with this PR. Its
+  lines are drafted and left with the owner.
+
+**Live suite budget.** Two runs of the whole Sheets suite back to back, by the
+orchestrating session, with requests counted at the HTTP layer:
+
+| Run | Result | Wall time | Writes | Reads | Refused and sent again |
+|---|---|---|---|---|---|
+| 1 | 25 passed | 123 s | 79 | 97 | 7 reads |
+| 2 | 25 passed | 152 s | 79 | 97 | 6 reads |
+
+| | Writes | Reads |
+|---|---|---|
+| Before this plan | 55 | 66 |
+| The five new cases, as they are now | 24 | 32 |
+| The read the single listing took out of an older case | | -1 |
+| After | 79 | 97 |
+
+- This step adds no live case and changes no request, and the totals are step g's.
+- The plan stays inside the 30 of each that this file allowed for its five cases in
+  writes, and is 2 over in reads. Two cases are over the 6 reads allowed for one:
+  the sync that places a row and a column (9), and the push with `clear_links` (9).
+  The Logs of steps a and f say what each read is for.
+- Both counts are over the limit of 60 a minute, so every run waits on refusals. The
+  refusals fell on reads only, in one or two tests of a run, and cost the second run
+  29 seconds more than the first.
+- The test spreadsheet held the three `itest_` tabs of plan 006 before the runs and
+  holds the same three after them. No run of this plan left a tab.

@@ -10,6 +10,7 @@ that become local file names are made safe to join onto a directory.
 import os
 import re
 import stat
+import unicodedata
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -125,11 +126,17 @@ def slug(title: str) -> str:
 
     Each run of characters other than letters and digits becomes one hyphen,
     and hyphens are trimmed from the ends: ``Form responses 1`` is
-    ``form-responses-1``. Letters and digits of any script are kept. Raises
-    ValueError for a title that leaves nothing.
+    ``form-responses-1``. Letters and digits of any script are kept, and a
+    combining mark stays with the letter it follows, so a title is one stem
+    whether its accents are composed or not. Raises ValueError for a title
+    that leaves nothing.
     """
-    kept = "".join(ch if ch.isalnum() else "-" for ch in title.lower())
-    stem = re.sub(r"-+", "-", kept).strip("-")
+    kept: list[str] = []
+    # Composed after lower-casing, which can decompose a letter.
+    for ch in unicodedata.normalize("NFC", title.lower()):
+        marks = bool(kept) and kept[-1] != "-" and unicodedata.category(ch)[0] == "M"
+        kept.append(ch if ch.isalnum() or marks else "-")
+    stem = re.sub(r"-+", "-", "".join(kept)).strip("-")
     if not stem:
         raise ValueError(f"{title!r} has no letter or digit to make a slug of")
     return stem
