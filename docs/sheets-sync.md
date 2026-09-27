@@ -374,6 +374,14 @@ a run with any problem writes nothing.
 - **Structure is changed only when asked.** Columns are added only with
   `--add-missing` and deleted only with `--drop-extra`; a missing tab is created
   only by a run with `--apply`. A tab is never deleted.
+- **Formula-like text is not escaped in local files.** A cell holding text
+  such as `=1+2` is written to the local file exactly as it reads, since an
+  added prefix would come back as a change on the next sync or push. Anyone who
+  can edit the sheet can put such text in it, so open a pulled or synced
+  `.csv` or `.tsv` file in a text editor, or import it as text, rather than
+  opening it directly in a spreadsheet app, which may run it as a formula.
+  For a copy meant for a spreadsheet app, use
+  `gdrives sheets-get --escape-formulas`.
 
 ## A usage rule: no defaults in sheet-owned columns
 
