@@ -12,11 +12,13 @@ from gdrives.sheets import (
     COLUMN_TYPES,
     ColumnSchema,
     Problem,
+    cell_problem,
     column_type,
     decode_rows,
     encode_rows,
     from_cell,
     index_rows,
+    normalize_cell,
     normalize_key,
     problems,
     row_key,
@@ -206,6 +208,60 @@ class TestColumnTypes:
     def test_from_cell_refuses_a_class_that_is_no_column_type(self):
         with pytest.raises(ValueError, match="unknown column type"):
             from_cell("1", bytes)
+
+
+class TestNormalizeCell:
+    @pytest.mark.parametrize(
+        ("text", "type_", "normal"),
+        [
+            ("true", "bool", "TRUE"),
+            ("False", bool, "FALSE"),
+            ("3.0", "float", "3"),
+            ("3", float, "3"),
+            ("2.50", "float", "2.5"),
+            ("1E-7", "float", "1e-07"),
+            ("007", "int", "7"),
+            ("-0", "int", "0"),
+            ("2026-01-15T10:30:00", "datetime", "2026-01-15 10:30:00"),
+            ("2026-01-15 10:30", "datetime", "2026-01-15 10:30:00"),
+            ("2026-01-15", "date", "2026-01-15"),
+            (" 007 ", "str", " 007 "),
+            ("", "int", ""),
+            ("", "str", ""),
+        ],
+    )
+    def test_a_cell_that_parses_takes_the_form_to_cell_writes(
+        self, text, type_, normal
+    ):
+        assert normalize_cell(text, type_) == normal
+        assert normalize_cell(normal, type_) == normal
+
+    @pytest.mark.parametrize(
+        ("text", "type_"),
+        [("3.0", "int"), ("yes", "bool"), (" 3", "float"), ("Jan 15", "date")],
+    )
+    def test_a_cell_that_does_not_parse_is_unchanged(self, text, type_):
+        assert normalize_cell(text, type_) == text
+
+    def test_str_is_the_default(self):
+        assert normalize_cell("TRUE ") == "TRUE "
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            normalize_cell("1", "number")
+
+
+class TestCellProblem:
+    def test_the_reason_a_cell_does_not_fit_or_none(self):
+        assert cell_problem("yes", ColumnSchema(type="bool")) == (
+            "'yes' is not a valid bool"
+        )
+        assert cell_problem("", ColumnSchema(required=True)) == "is required"
+        assert cell_problem("z", ColumnSchema(allowed=["x", "y"])) == (
+            "'z' is not one of ['x', 'y']"
+        )
+        assert cell_problem("", ColumnSchema(type="int")) is None
+        assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
 
 
 class TestSerialToCell:

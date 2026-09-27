@@ -167,6 +167,23 @@ def serial_to_cell(number: float, type_: ColumnType) -> str:
     return to_cell(moment.date())
 
 
+def normalize_cell(text: str, type_: ColumnType = "str") -> str:
+    """``text`` as :func:`to_cell` writes its value, for comparing two cells.
+
+    Two cell strings can differ and mean one value: ``true`` and ``TRUE`` in
+    a ``bool`` column, ``3.0`` and ``3`` in a ``float`` column. A cell that
+    parses as ``type_`` is returned in the one form its value has; a cell that
+    does not is returned unchanged, to be compared as text. Parsing is as
+    strict as :func:`from_cell`: nothing is coerced. Only comparisons use
+    this form; the stored text is never rewritten.
+    """
+    name = column_type(type_)
+    try:
+        return to_cell(from_cell(text, name))
+    except ValueError:
+        return text
+
+
 # -- typed rows --
 
 
@@ -374,8 +391,11 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
-def _cell_problem(text: str, schema: ColumnSchema) -> str | None:
-    """Why ``text`` does not fit ``schema``, or None when it does."""
+def cell_problem(text: str, schema: ColumnSchema) -> str | None:
+    """Why ``text`` does not fit ``schema``, or None when it does.
+
+    The reason is the text :func:`problems` reports for the cell.
+    """
     if text == "":
         return "is required" if schema.required else None
     try:
@@ -407,7 +427,7 @@ def problems(
     for position, row in enumerate(rows, start=1):
         for column, spec in schema.items():
             text = row.get(column, "")
-            reason = _cell_problem(text, spec)
+            reason = cell_problem(text, spec)
             if reason is not None:
                 found.append(
                     Problem(
