@@ -29,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - The `gdrives.sheets` value wrappers retry transient failures. Reads, `update_values`, `clear_values`, and `batch_update_values` retry on 429, 500, 502, 503, and 504; `append_values` and `batch_update_spreadsheet`, which add rows, columns, or rules, retry on 429 only, since a 5xx may mean the change already landed.
-
 - `gdrives.sheets` is now a package, split into `values`, `a1`, `match`, `rules`, `files`, and `commands` submodules. Every name importable from `gdrives.sheets` before is still importable from it; code that patches a helper internally must now patch it on the submodule that looks it up.
 - `safe_filename` moved from `gdrives.download` to `gdrives.local`; it is still importable from `gdrives.download`.
 
