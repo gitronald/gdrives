@@ -49,6 +49,7 @@ from gdrives.sheets.apply import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
 )
 from gdrives.sheets.cells import index_rows, problems, row_key, to_cell
 from gdrives.sheets.config import (
@@ -131,7 +132,11 @@ class TabReport:
     ``drop_columns`` (with non-blank cell counts) are the structure steps
     asked for; ``bootstrapped`` marks a first run that took the local file as
     the base, and ``deferred`` the pushes such a run held back, which go on
-    the next run; ``adopted`` marks an ``adopt`` run. For pull and push,
+    the next run; ``adopted`` marks an ``adopt`` run. On a tab with
+    ``insert_above`` and new rows for the sheet, ``insert_row`` is the
+    spreadsheet row they go above, as :func:`~gdrives.sheets.apply.insert_point`
+    finds it, or None when no row matches and they go after ``last_row``, the
+    last row holding anything; both are None otherwise. For pull and push,
     ``replacement`` says what the write replaces. ``applied`` is what
     :func:`~gdrives.sheets.apply.apply_plan` wrote, and the ``wrote_*`` flags
     record the writes made, so a failed run shows how far it got: a structure
@@ -154,6 +159,8 @@ class TabReport:
     bootstrapped: bool = False
     adopted: bool = False
     deferred: list[Cell] = field(default_factory=list)
+    insert_row: int | None = None
+    last_row: int | None = None
     replacement: Replacement | None = None
     applied: ApplyResult | None = None
     skipped: bool = False
@@ -378,6 +385,7 @@ def _plan(
     report.problems, report.notes = list[str](), list[str]()
     report.deferred = list[Cell]()
     report.plan, report.bootstrapped = None, False
+    report.insert_row, report.last_row = None, None
     report.add_columns, report.drop_columns = list[str](), dict[str, int]()
     local = _read_local(tab)
     columns = _projection(tab, local)
@@ -413,6 +421,7 @@ def _plan(
         )
 
     table: Table | None = None
+    grid: list[list[Any]] = []
     remote: list[dict[str, str]] = []
     fresh = set(added)
     if tab.title not in list_tabs(service, spreadsheet_id):
@@ -475,6 +484,10 @@ def _plan(
         if report.bootstrapped and plan.pushes:
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
+    if table is not None and tab.insert_above is not None:
+        above = _insert_row(tab, table, grid, plan, report.add_columns)
+        if plan.appends:
+            report.insert_row, report.last_row = above, table.last_row
     if check:
         report.problems = _check(plan.new_local, tab, options["validate"], "merged")
     return planned(table, plan, base)
@@ -515,6 +528,35 @@ def _sheet_side(
     table = parse_tab(tab.title, grid, present, tab.key)
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
+
+
+def _insert_row(
+    tab: TabConfig,
+    table: Table,
+    grid: Sequence[Sequence[Any]],
+    plan: MergePlan,
+    missing: Sequence[str],
+) -> int | None:
+    """The row ``plan``'s new rows go above, on the tab ``grid`` was read from.
+
+    ``table`` holds the projection, which the ``insert_above`` column may be
+    outside of: it is then taken from the same grid, with no further request.
+    One of the ``missing`` columns, which the run is still to add, is blank in
+    every row. Raises ValueError for a column the tab lacks, as the apply
+    does.
+    """
+    insert_above = tab.insert_above or {}
+    column = next(iter(insert_above), "")
+    if column in missing:
+        table = replace(
+            table,
+            header=[*table.header, column],
+            columns=[*table.columns, column],
+            rows=[row | {column: ""} for row in table.rows],
+        )
+    elif column in table.header and column not in table.columns:
+        table = parse_tab(tab.title, grid, [*table.columns, column], tab.key)
+    return insert_point(table, plan, insert_above)
 
 
 def _defer_pushes(plan: MergePlan, key: Sequence[str], report: TabReport) -> MergePlan:
@@ -1219,7 +1261,7 @@ def _format_tab(tab: TabReport) -> list[str]:
             "sheet-only rows are flagged, never removed"
         )
     if tab.plan is not None:
-        lines.extend(_format_plan(tab.plan, tab.deferred))
+        lines.extend(_format_plan(tab.plan, tab.deferred, _placement(tab)))
     if tab.replacement is not None:
         lines.extend(_format_replacement(tab, tab.replacement))
     if tab.problems:
@@ -1264,7 +1306,23 @@ def _cells(label: str, cells: Sequence[Cell], show: Callable[[Cell], str]) -> li
     return lines
 
 
-def _format_plan(plan: MergePlan, deferred: Sequence[Cell]) -> list[str]:
+def _placement(tab: TabReport) -> str:
+    """Where the new rows of a tab with ``insert_above`` go, or went."""
+    if tab.last_row is None:
+        return ""
+    if tab.applied is not None and tab.applied.appended_rows:
+        rows = tab.applied.appended_rows
+        if len(rows) == 1:
+            return f", in row {rows[0]}"
+        return f", in rows {rows[0]} to {rows[-1]}"
+    if tab.insert_row is not None:
+        return f", above row {tab.insert_row}"
+    return f", after row {tab.last_row}"
+
+
+def _format_plan(
+    plan: MergePlan, deferred: Sequence[Cell], placement: str = ""
+) -> list[str]:
     lines = [
         *_cells(
             "push to the sheet",
@@ -1287,12 +1345,14 @@ def _format_plan(plan: MergePlan, deferred: Sequence[Cell]) -> list[str]:
             lambda c: f"{_q(c.sheet)} -> {_q(c.local)}",
         ),
     ]
-    for label, rows in (
-        ("new rows for the sheet", plan.appends),
-        ("new rows for the local file", plan.fold_rows),
+    for label, rows, where in (
+        ("new rows for the sheet", plan.appends, placement),
+        ("new rows for the local file", plan.fold_rows, ""),
     ):
         if rows:
-            lines.append(f"  {label} ({len(rows)}): {_keys([r.key for r in rows])}")
+            lines.append(
+                f"  {label} ({len(rows)}){where}: {_keys([r.key for r in rows])}"
+            )
     if plan.overrides:
         lines.append(f"  overrides ({len(plan.overrides)}):")
         for o in plan.overrides:

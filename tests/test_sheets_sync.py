@@ -289,6 +289,118 @@ class TestSync:
         run(grid, target, apply=True)
         assert grid.values("T") == [HEADER, ROWS[0], ["c", "Cy", "3"], ROWS[1]]
 
+
+class TestInsertRow:
+    """Where a preview says the new rows go, and where the apply puts them."""
+
+    HEADER = ["id", "status", "stage"]
+    ROWS = [["a", "open", "1"], ["b", "open", "1"], ["c", "closed", "2"]]
+
+    def arrange(self, tmp_path, *local, header=None, sheet_header=None, **fields):
+        target = make_target(tmp_path, **fields)
+        header = header or self.HEADER
+        write_local(target, *local, header=header)
+        write_base(target, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": [sheet_header or self.HEADER, *self.ROWS]})
+        return grid, target
+
+    def test_a_preview_names_the_row_the_apply_inserts_above(self, tmp_path):
+        # The run closes row b and adds row n, which belongs above b.
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+            ["n", "open", "1"],
+            insert_above={"status": "closed"},
+        )
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (3, 4)
+        assert writes(grid) == []
+        report = run(grid, target, apply=True)
+        assert applied_of(report).appended_rows == [3]
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", "open", "1"],
+            ["n", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+        ]
+
+    def test_no_matching_row_goes_after_the_last_row(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path, *self.ROWS, ["n", "open", "1"], insert_above={"status": "gone"}
+        )
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (None, 4)
+
+    def test_a_column_outside_the_projection_is_read_from_the_same_grid(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "1"],
+            ["b", "1"],
+            ["c", "2"],
+            ["n", "1"],
+            header=["id", "stage"],
+            insert_above={"status": "closed"},
+        )
+        write_base(target, ["a", "1"], ["b", "1"], ["c", "2"], header=["id", "stage"])
+        plain = make_target(tmp_path)
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (4, 4)
+        other = FakeSheetGrid({"T": [self.HEADER, *self.ROWS]})
+        run(other, plain)
+        assert grid.methods == other.methods
+
+    def test_a_column_still_to_be_added_counts_as_blank_but_for_its_pushes(
+        self, tmp_path
+    ):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1", ""],
+            ["b", "open", "1", "yes"],
+            ["c", "closed", "2", ""],
+            ["n", "open", "1", ""],
+            header=[*self.HEADER, "held"],
+            insert_above={"held": "yes"},
+        )
+        preview = run(grid, target, add_missing=True)
+        assert preview.add_columns == ["held"]
+        assert (preview.insert_row, preview.last_row) == (3, 4)
+        report = run(grid, target, apply=True, add_missing=True)
+        assert applied_of(report).appended_rows == [3]
+        assert [row[0] for row in grid.values("T")] == ["id", "a", "n", "b", "c"]
+
+    def test_a_column_the_tab_lacks_is_refused_in_the_preview_too(self, tmp_path):
+        grid, target = self.arrange(tmp_path, *self.ROWS, insert_above={"nope": "x"})
+        with pytest.raises(ValueError, match="'nope' is not in the header"):
+            run(grid, target)
+
+    def test_no_new_rows_names_no_row(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+            insert_above={"status": "closed"},
+        )
+        preview = run(grid, target)
+        assert plan_of(preview).pushes and not plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
+    def test_a_tab_without_insert_above_names_no_row(self, tmp_path):
+        grid, target = self.arrange(tmp_path, *self.ROWS, ["n", "open", "1"])
+        preview = run(grid, target)
+        assert plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
+    def test_a_missing_tab_names_no_row(self, tmp_path):
+        target = make_target(tmp_path, insert_above={"status": "closed"})
+        write_local(target, *self.ROWS, header=self.HEADER)
+        preview = run(FakeSheetGrid({"Other": []}), target)
+        assert plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
     def test_json_local_file_is_written_with_its_types(self, tmp_path):
         target = make_target(
             tmp_path, local="local.json", schema={"amt": {"type": "int"}}

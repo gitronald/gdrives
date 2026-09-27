@@ -13,6 +13,7 @@ from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     CONFIG_NAME,
+    ApplyResult,
     Cell,
     MergePlan,
     NewRow,
@@ -715,6 +716,37 @@ class TestFormatReport:
             "    z: local_deleted",
             "  wrote: sheet, base",
         ]
+
+    @pytest.mark.parametrize(
+        ("fields", "where"),
+        [
+            ({"insert_row": 5, "last_row": 40}, ", above row 5"),
+            ({"last_row": 40}, ", after row 40"),
+            ({}, ""),
+            (
+                {
+                    "insert_row": 5,
+                    "last_row": 40,
+                    "apply": True,
+                    "applied": ApplyResult(0, 2, [], [5, 6]),
+                },
+                ", in rows 5 to 6",
+            ),
+            (
+                {"last_row": 40, "apply": True, "applied": ApplyResult(0, 1, [], [41])},
+                ", in row 41",
+            ),
+            ({"apply": True, "applied": ApplyResult(0, 2, [], [41, 42])}, ""),
+            # An apply that stopped before the rows went out still says where.
+            ({"insert_row": 5, "last_row": 40, "apply": True}, ", above row 5"),
+        ],
+    )
+    def test_new_rows_say_where_they_go(self, fields, where):
+        plan = MergePlan(appends=[NewRow(("n",), {}), NewRow(("m",), {})])
+        report = TabReport(tab="T", mode="sync", plan=plan, **fields)
+        assert format_report(SyncReport([report])).splitlines()[1] == (
+            f"  new rows for the sheet (2){where}: n; m"
+        )
 
     def test_a_preview_says_would(self, tmp_path):
         report = TabReport(
