@@ -11,7 +11,7 @@ pull_values`` works regardless of which submodule defines a name:
 
 - ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
   lookups, and the structural ``spreadsheets.batchUpdate``
-- ``retry``: ``with_retry`` and the retryable status sets
+- ``retry``: ``with_retry``, the retryable status sets, and ``retry_notices``
 - ``cells``: canonical cell strings, column types, typed rows, row keys, and
   schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
@@ -84,6 +84,7 @@ from gdrives.sheets.commands import (
     run_set,
     run_sync,
     run_update,
+    run_widths,
 )
 from gdrives.sheets.config import (
     BOOTSTRAPS,
@@ -121,7 +122,13 @@ from gdrives.sheets.merge import (
     RowFlag,
     merge,
 )
-from gdrives.sheets.retry import IDEMPOTENT_STATUSES, RATE_LIMIT_STATUSES, with_retry
+from gdrives.sheets.retry import (
+    IDEMPOTENT_STATUSES,
+    RATE_LIMIT_STATUSES,
+    RetryNotice,
+    retry_notices,
+    with_retry,
+)
 from gdrives.sheets.rules import (
     add_conditional_rule,
     build_formula_rule,
@@ -138,11 +145,13 @@ from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     LINK_FIELDS,
     RUNS_FIELD,
+    WIDTH_FIELDS,
     LinkedCell,
     add_columns,
     clear_link_format,
     delete_columns,
     ensure_tabs,
+    get_column_widths,
     link_clear,
     linked_cells,
     place_columns,
@@ -238,6 +247,7 @@ __all__ = [
     "RAW",
     "ROW_FLAGS",
     "RUNS_FIELD",
+    "RetryNotice",
     "ReadBackError",
     "Records",
     "Replacement",
@@ -258,6 +268,7 @@ __all__ = [
     "Target",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
+    "WIDTH_FIELDS",
     "a1_quote",
     "a1_to_grid_range",
     "add_columns",
@@ -290,6 +301,7 @@ __all__ = [
     "format_rules",
     "format_values",
     "from_cell",
+    "get_column_widths",
     "grid_range_to_a1",
     "hex_to_color",
     "index_rows",
@@ -332,7 +344,9 @@ __all__ = [
     "run_set",
     "run_sync",
     "run_target",
+    "retry_notices",
     "run_update",
+    "run_widths",
     "serial_to_cell",
     "set_by_match",
     "set_column_widths",

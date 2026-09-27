@@ -1019,6 +1019,59 @@ class TestPullAllTabs:
         assert by_tab["Members"].wrote_local
         assert report.exit_code == 0
 
+    def test_bom_starts_each_file_with_the_mark(self, tmp_path):
+        out = tmp_path / "out"
+        pull_all_tabs(self.grid(), "S", out, apply=True, bom=True, extension=".tsv")
+        assert (out / "Members.tsv").read_bytes() == (
+            b"\xef\xbb\xbfid\tname\tamt\na\tAda\t1\nb\tBo\t2\n"
+        )
+
+    def test_bom_with_json_is_refused_before_any_request(self, tmp_path):
+        grid = self.grid()
+        with pytest.raises(ValueError, match="only to .csv and .tsv"):
+            pull_all_tabs(grid, "S", tmp_path, extension=".json", bom=True)
+        assert grid.calls == []
+
+    def test_name_maps_each_title_to_its_file_stem(self, tmp_path):
+        from gdrives.local import slug
+
+        grid = FakeSheetGrid(
+            {
+                "Form responses 1": [["x"], ["1"]],
+                "Q3 / Q4": [["y"], ["2"]],
+                "!!!": [["z"], ["3"]],
+            }
+        )
+        out = tmp_path / "out"
+        report = pull_all_tabs(grid, "S", out, apply=True, name=slug)
+        assert sorted(p.name for p in out.iterdir()) == [
+            "form-responses-1.csv",
+            "q3-q4.csv",
+        ]
+        by_tab = {tab.tab: tab for tab in report.tabs}
+        # A title that leaves no name is an error for its tab, and the rest go on.
+        assert by_tab["!!!"].error == (
+            "no file name for the tab: '!!!' has no letter or digit to make a slug of"
+        )
+        assert by_tab["!!!"].local is None and not by_tab["!!!"].wrote_local
+        assert by_tab["Q3 / Q4"].local == out / "q3-q4.csv"
+        assert report.exit_code == 1
+
+    def test_names_that_collide_as_mapped_are_refused(self, tmp_path):
+        from gdrives.local import slug
+
+        grid = FakeSheetGrid({"Q3 totals": [["x"]], "q3: totals": [["y"]], "Z": []})
+        with pytest.raises(ValueError, match="tabs whose file names collide") as raised:
+            pull_all_tabs(grid, "S", tmp_path, apply=True, name=slug)
+        assert "['Q3 totals', 'q3: totals']" in str(raised.value)
+        assert grid.methods == ["spreadsheets.get"]
+        # The same titles do not collide under the default names.
+        pull_all_tabs(grid, "S", tmp_path / "out", apply=True)
+        assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
+            "Q3 totals.csv",
+            "q3: totals.csv",
+        ]
+
     def test_a_preview_writes_nothing_and_creates_no_directory(self, tmp_path):
         report = pull_all_tabs(self.grid(), "S", tmp_path / "out")
         assert not (tmp_path / "out").exists()

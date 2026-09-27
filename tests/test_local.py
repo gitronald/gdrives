@@ -12,6 +12,7 @@ from gdrives.local import (
     escape_formula,
     printable,
     safe_filename,
+    slug,
     umask_mode,
     write_text,
 )
@@ -223,3 +224,28 @@ class TestSafeFilename:
         from gdrives import download
 
         assert download.safe_filename is safe_filename
+
+
+class TestSlug:
+    @pytest.mark.parametrize(
+        ("title", "stem"),
+        [
+            ("Form responses 1", "form-responses-1"),
+            ("Members", "members"),
+            ("  Q3 / Q4: totals!  ", "q3-q4-totals"),
+            ("a__b--c..d", "a-b-c-d"),
+            ("../etc/passwd", "etc-passwd"),
+            ("2026", "2026"),
+            ("Übersicht 2026", "übersicht-2026"),
+            ("名簿 (新)", "名簿-新"),
+            ("tab\x1b[2J\nname", "tab-2j-name"),
+        ],
+    )
+    def test_lower_case_letters_and_digits_joined_by_hyphens(self, title, stem):
+        assert slug(title) == stem
+        assert slug(stem) == stem
+
+    @pytest.mark.parametrize("title", ["", "   ", "!!!", "--", "../.."])
+    def test_a_title_that_leaves_nothing_is_refused(self, title):
+        with pytest.raises(ValueError, match="has no letter or digit"):
+            slug(title)

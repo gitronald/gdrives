@@ -45,6 +45,9 @@ CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
 #: The field of a cell's text format runs, where a link on part of its text is.
 RUNS_FIELD = "textFormatRuns"
 
+#: The ``fields`` mask of a grid read of a header row with its column widths.
+WIDTH_FIELDS = "sheets(data(columnMetadata(pixelSize),rowData(values(effectiveValue))))"
+
 
 def _check_names(names: Sequence[str], what: str) -> None:
     """Refuse a blank or repeated name in a request."""
@@ -504,6 +507,30 @@ def ensure_tabs(
             [{"addSheet": {"properties": {"title": title}}} for title in missing],
         )
     return missing
+
+
+def get_column_widths(
+    service: Service, spreadsheet_id: str, tab: str
+) -> dict[str, int]:
+    """Each named header column's width in pixels: ``{header name: pixels}``.
+
+    In header order, and ready to give :func:`set_column_widths` or to paste
+    under a tab's ``widths`` in the config. A column whose header cell is
+    blank is left out. One grid read of row 1
+    (:func:`~gdrives.sheets.values.pull_grid`), for the header cells and the
+    widths together. Raises ValueError for a header that repeats a name.
+    """
+    data = pull_grid(service, spreadsheet_id, f"{a1_quote(tab)}!1:1", WIDTH_FIELDS)
+    rows = data.get("rowData", [])
+    cells: list[dict[str, Any]] = rows[0].get("values", []) if rows else []
+    header = [
+        to_cell(next(iter(cell.get("effectiveValue", {}).values()), None)).strip()
+        for cell in cells
+    ]
+    names = [name for name in header if name]
+    positions = _positions(header, names, tab)
+    sizes = data.get("columnMetadata", [])
+    return {name: sizes[index]["pixelSize"] for name, index in positions.items()}
 
 
 def set_column_widths(

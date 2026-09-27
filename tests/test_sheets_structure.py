@@ -14,6 +14,7 @@ from gdrives.sheets import (
     clear_link_format,
     delete_columns,
     ensure_tabs,
+    get_column_widths,
     linked_cells,
     place_columns,
     set_column_widths,
@@ -539,6 +540,49 @@ class TestClearLinkFormat:
         with pytest.raises(ValueError, match=message):
             clear_link_format(grid, "S", "T", **options)
         assert STRUCTURE not in grid.methods
+
+
+class TestGetColumnWidths:
+    def test_each_named_column_in_header_order_from_one_read(self):
+        grid = FakeSheetGrid({"My Tab": [["id", "", "name", 2026.0], ["a", "x"]]})
+        grid.tab("My Tab").widths[:5] = [50, 60, 150, 80, 999]
+        assert get_column_widths(grid, "S", "My Tab") == {
+            "id": 50,
+            "name": 150,
+            "2026": 80,
+        }
+        assert list(get_column_widths(grid, "S", "My Tab")) == ["id", "name", "2026"]
+        assert grid.calls[0] == (
+            "spreadsheets.get",
+            {
+                "spreadsheetId": "S",
+                "ranges": ["'My Tab'!1:1"],
+                "includeGridData": True,
+                "fields": (
+                    "sheets(data(columnMetadata(pixelSize),"
+                    "rowData(values(effectiveValue))))"
+                ),
+            },
+        )
+        assert grid.methods == [GRID, GRID]
+
+    def test_what_it_returns_is_what_set_column_widths_takes(self):
+        grid = FakeSheetGrid({"T": [["id", "name"]]})
+        set_column_widths(grid, "S", "T", {"name": 240, "id": 70})
+        assert get_column_widths(grid, "S", "T") == {"id": 70, "name": 240}
+
+    @pytest.mark.parametrize("rows", [[], [[], ["a"]]])
+    def test_a_tab_with_no_header_has_no_widths(self, rows):
+        assert get_column_widths(FakeSheetGrid({"T": rows}), "S", "T") == {}
+
+    def test_a_header_that_repeats_a_name_is_refused(self):
+        grid = FakeSheetGrid({"T": [["id", "dup", " dup "]]})
+        with pytest.raises(ValueError, match=r"header repeats \['dup', 'dup'\]"):
+            get_column_widths(grid, "S", "T")
+
+    def test_an_unknown_tab_is_refused(self):
+        with pytest.raises(HttpError):
+            get_column_widths(FakeSheetGrid({"T": [["id"]]}), "S", "Nope")
 
 
 class TestStripLinks:

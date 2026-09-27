@@ -120,6 +120,21 @@ def printable(text: str) -> str:
     return CONTROL_CHARACTERS.sub(_escape_control, text)
 
 
+def slug(title: str) -> str:
+    """A title as a lower-case file stem of letters, digits, and hyphens.
+
+    Each run of characters other than letters and digits becomes one hyphen,
+    and hyphens are trimmed from the ends: ``Form responses 1`` is
+    ``form-responses-1``. Letters and digits of any script are kept. Raises
+    ValueError for a title that leaves nothing.
+    """
+    kept = "".join(ch if ch.isalnum() else "-" for ch in title.lower())
+    stem = re.sub(r"-+", "-", kept).strip("-")
+    if not stem:
+        raise ValueError(f"{title!r} has no letter or digit to make a slug of")
+    return stem
+
+
 def safe_filename(name: str) -> str:
     """Sanitize a Drive file name for use on the local filesystem.
 

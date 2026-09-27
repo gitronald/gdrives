@@ -1419,6 +1419,8 @@ def pull_all_tabs(
     extension: str = ".csv",
     skip: Collection[str] = (),
     apply: bool = False,
+    bom: bool = False,
+    name: Callable[[str], str] | None = None,
 ) -> SyncReport:
     """Dump every tab to ``out_dir``, one record file per tab, with no config.
 
@@ -1426,9 +1428,15 @@ def pull_all_tabs(
     :func:`~gdrives.local.safe_filename` of the title plus ``extension``
     (``.csv``, ``.tsv``, or ``.json``); tabs titled in ``skip`` are left out,
     which protects a local file that shares a name with a tab but is made
-    elsewhere. Refused before any read of values: an unknown extension, a
-    ``skip`` title the spreadsheet lacks, and two titles whose file names
-    collide (compared case-insensitively). A tab with no values, or no header
+    elsewhere. ``name`` maps a title to a file stem of the caller's choosing,
+    such as :func:`~gdrives.local.slug`; a title it raises ValueError for is
+    reported for its tab, which is not written. ``bom`` starts each file with
+    a byte-order mark.
+
+    Refused before any read of values: an unknown extension, ``bom`` with
+    ``.json``, a ``skip`` title the spreadsheet lacks, and two titles whose
+    file names collide (compared case-insensitively, as ``name`` maps them). A
+    tab with no values, or no header
     row, is reported and skipped, never written as an empty file. With
     ``apply`` the files are written (and ``out_dir`` created), a delimited
     one with LF line endings; an unchanged file is not rewritten.
@@ -1437,14 +1445,23 @@ def pull_all_tabs(
         raise ValueError(
             f"extension {extension!r} must be one of {sorted(LOCAL_EXTENSIONS)}"
         )
+    if bom and extension.lower() == ".json":
+        raise ValueError("a byte-order mark applies only to .csv and .tsv")
     titles = list_tabs(service, spreadsheet_id)
     unknown = [title for title in skip if title not in titles]
     if unknown:
         raise ValueError(f"no tab(s) named {unknown} to skip; tabs: {titles}")
     wanted = [title for title in titles if title not in skip]
-    names: dict[str, list[str]] = {}
+    stems: dict[str, str] = {}
+    unnamed: dict[str, str] = {}
     for title in wanted:
-        names.setdefault(safe_filename(title).casefold(), []).append(title)
+        try:
+            stems[title] = (name or safe_filename)(title)
+        except ValueError as e:
+            unnamed[title] = str(e)
+    names: dict[str, list[str]] = {}
+    for title, stem in stems.items():
+        names.setdefault(stem.casefold(), []).append(title)
     collisions = [group for group in names.values() if len(group) > 1]
     if collisions:
         raise ValueError(
@@ -1463,11 +1480,16 @@ def pull_all_tabs(
     )
     report = SyncReport()
     for title, grid in zip(wanted, grids, strict=True):
-        path = out / f"{safe_filename(title)}{extension}"
+        if title in unnamed:
+            failed = TabReport(tab=title, mode="pull", apply=apply)
+            failed.error = f"no file name for the tab: {unnamed[title]}"
+            report.tabs.append(failed)
+            continue
+        path = out / f"{stems[title]}{extension}"
         tab_report = TabReport(tab=title, mode="pull", local=path, apply=apply)
         report.tabs.append(tab_report)
         try:
-            _dump_tab(tab_report, title, grid, path, apply)
+            _dump_tab(tab_report, title, grid, path, apply, bom)
         except TAB_ERRORS as e:
             tab_report.error = str(e)
     return report
@@ -1479,6 +1501,7 @@ def _dump_tab(
     grid: Sequence[Sequence[Any]],
     path: Path,
     apply: bool,
+    bom: bool = False,
 ) -> None:
     """Write one tab of :func:`pull_all_tabs`, or say why it was skipped."""
     try:
@@ -1497,7 +1520,7 @@ def _dump_tab(
     before = read_records(path) if path.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, ())
     if apply and not report.replacement.unchanged:
-        write_records(path, table.columns, table.rows)
+        write_records(path, table.columns, table.rows, bom=bom)
         report.wrote_local = True
 
 
