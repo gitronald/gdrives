@@ -6,6 +6,8 @@ delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
 from importlib.metadata import version
+from pathlib import Path
+from typing import Any
 
 import pytest
 from google.auth.exceptions import RefreshError, TransportError
@@ -17,6 +19,13 @@ from typer.testing import CliRunner
 from gdrives import cli
 from gdrives.files import IncompleteSearchError
 from gdrives.resolve import DrivePathError
+
+DRIVE = {
+    "url": "https://drive.google.com/drive/my-drive",
+    "type": "user",
+    "name": "My Drive",
+    "id": "root",
+}
 
 
 class TestVersion:
@@ -741,3 +750,125 @@ class TestCliErrors:
         assert capsys.readouterr().err == (
             "Error: multiple items named 'a':\n  file  \\x1b]0;x\\x07a\n"
         )
+
+
+class TestLogin:
+    """``gdrives login`` forces a consent and reports the credential."""
+
+    @pytest.fixture
+    def consent(self, monkeypatch):
+        """Fake the consent and the description; record what was asked."""
+        from gdrives.auth import CredentialInfo
+
+        rec: dict[str, Any] = {"described": []}
+
+        def authenticate_oauth(scopes=None, *, force=False, timeout=None):
+            rec.update(scopes=scopes, force=force, timeout=timeout)
+            rec["info"] = CredentialInfo(kind="oauth", source=Path("token.json"))
+
+        def describe(scopes=None, *, force=False):
+            rec["described"].append((scopes, force))
+            return rec["info"]
+
+        rec["info"] = CredentialInfo(
+            kind="oauth", consent=True, source=Path("secrets.json")
+        )
+        monkeypatch.setattr("gdrives.auth.authenticate_oauth", authenticate_oauth)
+        monkeypatch.setattr("gdrives.auth.describe_credentials", describe)
+        return rec
+
+    def test_grants_read_access_by_default(self, consent):
+        from gdrives.auth import SCOPES
+
+        result = CliRunner().invoke(cli.app, ["login"])
+        assert result.exit_code == 0
+        assert (consent["scopes"], consent["force"]) == (SCOPES, True)
+        assert consent["timeout"] == 300
+        assert result.stderr == (
+            "Credential: OAuth, after an interactive consent (client secrets.json)\n"
+            "Credential: OAuth token token.json\n"
+        )
+        assert consent["described"] == [(SCOPES, True), (SCOPES, False)]
+
+    @pytest.mark.parametrize(
+        ("name", "scope"),
+        [
+            ("read", "drive.readonly"),
+            ("sheets", "spreadsheets"),
+            ("docs", "documents"),
+            ("drive", "drive"),
+        ],
+    )
+    def test_scope_names(self, consent, name, scope):
+        result = CliRunner().invoke(
+            cli.app, ["login", "--scope", name, "--timeout", "5"]
+        )
+        assert result.exit_code == 0
+        assert consent["scopes"] == [f"https://www.googleapis.com/auth/{scope}"]
+        assert consent["timeout"] == 5
+
+    def test_a_token_already_cached_is_reported_once(self, consent):
+        from gdrives.auth import CredentialInfo
+
+        consent["info"] = CredentialInfo(kind="oauth", source=Path("token.json"))
+        result = CliRunner().invoke(cli.app, ["login"])
+        assert result.exit_code == 0
+        assert result.stderr == "Credential: OAuth token token.json\n"
+
+    @pytest.mark.parametrize(
+        "args", [["--scope", "everything"], ["--timeout", "0"]], ids=["scope", "time"]
+    )
+    def test_a_bad_option_is_a_usage_error(self, consent, args):
+        result = CliRunner().invoke(cli.app, ["login", *args])
+        assert result.exit_code == 2
+        assert "scopes" not in consent
+
+    def test_a_consent_that_cannot_finish_exits_1(self, monkeypatch, consent):
+        from gdrives.auth import ConsentError
+
+        def timed_out(scopes=None, *, force=False, timeout=None):
+            raise ConsentError("no consent within 5 seconds; no token was written")
+
+        monkeypatch.setattr("gdrives.auth.authenticate_oauth", timed_out)
+        result = CliRunner().invoke(cli.app, ["login", "--timeout", "5"])
+        assert result.exit_code == 1
+        assert result.stderr.endswith(
+            "Error: no consent within 5 seconds; no token was written\n"
+        )
+
+
+class TestCommandsAnnounceAWait:
+    """Any command says so before its authentication waits on a person."""
+
+    @pytest.fixture
+    def waiting(self, monkeypatch):
+        from gdrives.auth import CredentialInfo
+
+        info = CredentialInfo(kind="oauth", refresh=True, source=Path("token.json"))
+        monkeypatch.setattr(
+            "gdrives.auth.describe_credentials",
+            lambda scopes=None, *, force=False: info,
+        )
+        monkeypatch.setattr(
+            "gdrives.auth.authenticate", lambda scopes=None, *, force=False: "creds"
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build", lambda api, version, credentials: api
+        )
+        monkeypatch.setattr("gdrives.drives.fetch", lambda service: [DRIVE])
+        monkeypatch.setattr("gdrives.drives.save", lambda drives: None)
+
+    def test_a_read_command_outside_sheets(self, waiting):
+        result = CliRunner().invoke(cli.app, ["show-drives"])
+        assert result.exit_code == 0
+        assert result.stderr.startswith(
+            "Credential: OAuth token token.json, refreshed first\n"
+        )
+
+    def test_nothing_is_announced_once_the_command_is_over(self, waiting, capsys):
+        from gdrives import auth
+
+        CliRunner().invoke(cli.app, ["show-drives"])
+        auth._credentials.cache_clear()
+        auth.build_drive_service()
+        assert capsys.readouterr().err == ""
