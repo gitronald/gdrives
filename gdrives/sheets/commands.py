@@ -8,9 +8,12 @@ the helpers in the sibling modules.
 import csv
 import json
 import sys
+from collections.abc import Sequence
+from typing import Any
 
 from gdrives.local import escape_formula
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
+from gdrives.sheets.config import Target, load_config
 from gdrives.sheets.files import read_values_csv, write_values_csv
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.rules import (
@@ -25,6 +28,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.sync import format_report, pull_all_tabs, run_target
 from gdrives.sheets.values import (
     RAW,
     USER_ENTERED,
@@ -343,3 +347,207 @@ def run_delete_rule(
             )
     delete_conditional_rule(service, spreadsheet_id, ids[tab], index)
     print(f"Deleted rule [{index}] on {tab}: {summary}")
+
+
+# -- sync, pull, and push --
+
+
+def _config_tabs(target: Target, mode: str, tabs: Sequence[str]) -> list[str]:
+    """The ``tabs`` asked for, checked against ``target`` before any request.
+
+    Lists every unknown tab and every tab of another mode at once, and refuses
+    a target with no ``mode`` tabs when none are named. Returns the titles
+    with repeats dropped, so a tab named twice runs once.
+    """
+    titles = [tab.title for tab in target.tabs]
+    wanted = list(dict.fromkeys(tabs))
+    problems: list[str] = []
+    unknown = [title for title in wanted if title not in titles]
+    if unknown:
+        problems.append(f"target {target.name!r} has no tab(s) {unknown}")
+    other = [
+        tab.title for tab in target.tabs if tab.title in wanted and tab.mode != mode
+    ]
+    if other:
+        problems.append(f"tab(s) {other} of target {target.name!r} are not {mode} tabs")
+    if not wanted and not any(tab.mode == mode for tab in target.tabs):
+        problems.append(f"target {target.name!r} has no {mode} tabs")
+    if problems:
+        problems.append(
+            "tabs: " + ", ".join(f"{tab.title!r} ({tab.mode})" for tab in target.tabs)
+        )
+        raise ValueError("\n".join(problems))
+    return wanted
+
+
+def _announce_credentials(scopes: list[str] | None) -> None:
+    """Say on stderr which credential the run's requests will use.
+
+    Printed before the first request, so a run waiting on a browser consent
+    does not look hung, and a write is not made as an unexpected identity.
+    """
+    from gdrives.auth import describe_credentials
+
+    print(f"Credential: {describe_credentials(scopes)}", file=sys.stderr)
+
+
+def _run_config(
+    mode: str,
+    name: str,
+    *,
+    config: str | None,
+    tabs: Sequence[str],
+    apply: bool,
+    **options: Any,
+) -> int:
+    """Run the ``mode`` tabs of config target ``name``; return the exit code.
+
+    The config, the target, and the tabs are checked before any request. A
+    preview reads with the read-only scope; ``apply`` on a sync or push tab
+    needs the Sheets write scope, and announces the credential first (as does
+    a pull, which writes only local files and stays read-only).
+    """
+    from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
+
+    target = load_config(config).target(name)
+    wanted = _config_tabs(target, mode, tabs)
+    scopes = SHEETS_WRITE_SCOPES if apply and mode != "pull" else None
+    if apply:
+        _announce_credentials(scopes)
+    spreadsheet_id = _resolve_and_report(target.spreadsheet)
+    service = build_sheets_service(scopes)
+    report = run_target(
+        service,
+        spreadsheet_id,
+        target,
+        mode,
+        tabs=wanted or None,
+        apply=apply,
+        **options,
+    )
+    print(format_report(report))
+    return report.exit_code
+
+
+def run_sync(
+    target: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    apply: bool = False,
+    adopt: bool = False,
+    add_missing: bool = False,
+    drop_extra: bool = False,
+    prefer: str | None = None,
+) -> int:
+    """Sync the ``sync`` tabs of config target ``target`` (or just ``tabs``).
+
+    Previews unless ``apply``. Prints the report to stdout and returns its exit
+    code: 0 in sync or applied, 1 for an error, 2 for work left to a person.
+    """
+    return _run_config(
+        "sync",
+        target,
+        config=config,
+        tabs=tabs,
+        apply=apply,
+        adopt=adopt,
+        add_missing=add_missing,
+        drop_extra=drop_extra,
+        prefer=prefer,
+    )
+
+
+def run_push(
+    target: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    apply: bool = False,
+) -> int:
+    """Replace the ``push`` tabs of ``target`` from their local files (``apply``).
+
+    Previews unless ``apply``; prints the report and returns its exit code.
+    """
+    return _run_config("push", target, config=config, tabs=tabs, apply=apply)
+
+
+# The file formats ``sheets-pull --all-tabs`` writes, by ``--format`` name.
+_PULL_FORMATS = ("csv", "tsv", "json")
+
+
+def run_pull(
+    source: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    apply: bool = False,
+    all_tabs: bool = False,
+    output: str | None = None,
+    skip: Sequence[str] = (),
+    file_format: str | None = None,
+) -> int:
+    """Replace local files from the ``pull`` tabs of config target ``source``.
+
+    With ``all_tabs``, ``source`` is a spreadsheet (URL, file ID, or Drive
+    path) instead, no config is read, and every tab but ``skip`` is written
+    to ``output`` in ``file_format`` (``csv`` by default). The options that
+    belong to the other form are refused before any request. Previews unless
+    ``apply``; prints the report and returns its exit code.
+    """
+    if all_tabs:
+        misused = [
+            flag
+            for flag, given in (("--tab", tabs), ("--config", config is not None))
+            if given
+        ]
+        if misused:
+            raise ValueError(f"--all-tabs cannot be combined with {', '.join(misused)}")
+        if output is None:
+            raise ValueError("--all-tabs needs -o/--output DIR")
+        if file_format is not None and file_format not in _PULL_FORMATS:
+            raise ValueError(
+                f"--format must be one of {list(_PULL_FORMATS)}, not {file_format!r}"
+            )
+        return _run_all_tabs(
+            source, output, skip=skip, file_format=file_format or "csv", apply=apply
+        )
+    misused = [
+        flag
+        for flag, given in (
+            ("-o/--output", output is not None),
+            ("--skip", skip),
+            ("--format", file_format is not None),
+        )
+        if given
+    ]
+    if misused:
+        raise ValueError(f"{', '.join(misused)} apply only with --all-tabs")
+    return _run_config("pull", source, config=config, tabs=tabs, apply=apply)
+
+
+def _run_all_tabs(
+    source: str,
+    output: str,
+    *,
+    skip: Sequence[str],
+    file_format: str,
+    apply: bool,
+) -> int:
+    """Dump every tab of ``source`` to ``output`` with no config; the exit code."""
+    from gdrives.auth import build_sheets_service
+
+    if apply:
+        _announce_credentials(None)
+    spreadsheet_id = _resolve_and_report(source)
+    service = build_sheets_service()
+    report = pull_all_tabs(
+        service,
+        spreadsheet_id,
+        output,
+        extension=f".{file_format}",
+        skip=list(dict.fromkeys(skip)),
+        apply=apply,
+    )
+    print(format_report(report))
+    return report.exit_code

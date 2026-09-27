@@ -64,8 +64,11 @@ from gdrives.sheets.commands import (
     run_clear,
     run_delete_rule,
     run_get,
+    run_pull,
+    run_push,
     run_rules,
     run_set,
+    run_sync,
     run_update,
 )
 from gdrives.sheets.config import (
@@ -251,8 +254,11 @@ __all__ = [
     "run_clear",
     "run_delete_rule",
     "run_get",
+    "run_pull",
+    "run_push",
     "run_rules",
     "run_set",
+    "run_sync",
     "run_target",
     "run_update",
     "set_by_match",
