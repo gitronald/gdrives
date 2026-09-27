@@ -30,6 +30,7 @@ import pytest
 
 import gdrives.auth  # import loads .env (python-dotenv), so a .env-set id is visible
 from gdrives import sheets
+from gdrives.sheets.retry import RATE_LIMIT_STATUSES, with_retry
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +64,26 @@ def live_service():
     return service, sid
 
 
+def _patiently(requests, service, sid):
+    """Send structural ``requests``, waiting out the per-minute write quota.
+
+    The fixture's own calls must not give up while the quota is exhausted: a
+    ``deleteSheet`` that fails in teardown leaves its temporary tab behind on
+    the shared spreadsheet. The quota resets each minute, so the waits here
+    (5, 10, 20, 32, and 32 seconds) outlast it.
+    """
+    return with_retry(
+        lambda: (
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=sid, body={"requests": requests})
+            .execute()
+        ),
+        statuses=RATE_LIMIT_STATUSES,
+        attempts=6,
+        base_delay=5.0,
+    )
+
+
 @pytest.fixture
 def tab(live_service):
     """Yield (service, spreadsheet_id, tab_name) for a fresh, empty tab.
@@ -72,22 +93,12 @@ def tab(live_service):
     """
     service, sid = live_service
     name = "itest_" + uuid.uuid4().hex[:8]
-    added = (
-        service.spreadsheets()
-        .batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"addSheet": {"properties": {"title": name}}}]},
-        )
-        .execute()
-    )
+    added = _patiently([{"addSheet": {"properties": {"title": name}}}], service, sid)
     sheet_id = added["replies"][0]["addSheet"]["properties"]["sheetId"]
     try:
         yield service, sid, name
     finally:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]},
-        ).execute()
+        _patiently([{"deleteSheet": {"sheetId": sheet_id}}], service, sid)
 
 
 def test_list_tabs_includes_new_tab(tab):
