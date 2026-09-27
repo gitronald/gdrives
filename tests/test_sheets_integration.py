@@ -30,6 +30,7 @@ import pytest
 
 import gdrives.auth  # import loads .env (python-dotenv), so a .env-set id is visible
 from gdrives import sheets
+from gdrives.sheets.retry import RATE_LIMIT_STATUSES, with_retry
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +64,26 @@ def live_service():
     return service, sid
 
 
+def _patiently(requests, service, sid):
+    """Send structural ``requests``, waiting out the per-minute write quota.
+
+    The fixture's own calls must not give up while the quota is exhausted: a
+    ``deleteSheet`` that fails in teardown leaves its temporary tab behind on
+    the shared spreadsheet. The quota resets each minute, so the waits here
+    (5, 10, 20, 32, and 32 seconds) outlast it.
+    """
+    return with_retry(
+        lambda: (
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=sid, body={"requests": requests})
+            .execute()
+        ),
+        statuses=RATE_LIMIT_STATUSES,
+        attempts=6,
+        base_delay=5.0,
+    )
+
+
 @pytest.fixture
 def tab(live_service):
     """Yield (service, spreadsheet_id, tab_name) for a fresh, empty tab.
@@ -72,22 +93,12 @@ def tab(live_service):
     """
     service, sid = live_service
     name = "itest_" + uuid.uuid4().hex[:8]
-    added = (
-        service.spreadsheets()
-        .batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"addSheet": {"properties": {"title": name}}}]},
-        )
-        .execute()
-    )
+    added = _patiently([{"addSheet": {"properties": {"title": name}}}], service, sid)
     sheet_id = added["replies"][0]["addSheet"]["properties"]["sheetId"]
     try:
         yield service, sid, name
     finally:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]},
-        ).execute()
+        _patiently([{"deleteSheet": {"sheetId": sheet_id}}], service, sid)
 
 
 def test_list_tabs_includes_new_tab(tab):
@@ -314,3 +325,90 @@ def test_pull_many_reads_ranges_in_order(tab):
         render=sheets.UNFORMATTED_VALUE,
     )
     assert grids == [[[1], [2.5]], [], [["h2"]]]
+
+
+# -- apply and structure: pin FakeSheetGrid's assumptions against the API --
+
+
+def _table(service, sid, name):
+    return sheets.read_tab(service, sid, name, ["id", "name", "code"], ["id"])
+
+
+def test_apply_pushes_and_appends_past_the_grid_end(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "keep", "Ada", "1"], ["b", "", "Bo"]],
+    )
+    # Shrink the grid to the rows in use, so the new rows need grid rows added.
+    sheet_id = sheets.tab_grid(service, sid, name).sheet_id
+    sheets.batch_update_spreadsheet(
+        service,
+        sid,
+        [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {"rowCount": 3},
+                    },
+                    "fields": "gridProperties.rowCount",
+                }
+            }
+        ],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        pushes=[sheets.Cell(("b",), "code", "", "01", "")],
+        appends=[
+            sheets.NewRow(("c",), {"id": "c", "name": "TRUE", "code": "007"}),
+            sheets.NewRow(("d",), {"id": "d", "name": "=1+2", "code": ""}),
+        ],
+    )
+    # apply_plan reads the tab back itself: literal strings must survive.
+    result = sheets.apply_plan(service, sid, table, plan)
+    assert result == sheets.ApplyResult(1, 2, [3], [4, 5])
+    assert _row_count(service, sid, name) == 5
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "keep", "Ada", "1"],
+        ["b", "", "Bo", "01"],
+        ["c", "", "TRUE", "007"],
+        ["d", "", "=1+2"],
+    ]
+
+
+def test_apply_inserts_above_a_matching_row(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "", "Ada"], ["b", "old", "Bo"]],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        appends=[sheets.NewRow(("c",), {"id": "c", "name": "Cy", "code": "3"})]
+    )
+    result = sheets.apply_plan(service, sid, table, plan, insert_above={"note": "old"})
+    assert result.appended_rows == [3]
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "", "Ada"],
+        ["c", "", "Cy", "3"],
+        ["b", "old", "Bo"],
+    ]
+
+
+def test_add_then_delete_columns_by_name(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["id", "name"], ["a", "Ada"]])
+    sheets.add_columns(service, sid, name, ["x", "y"], before="name")
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "x", "y", "name"],
+        ["a", "", "", "Ada"],
+    ]
+    sheets.delete_columns(service, sid, name, ["x", "name"])
+    assert sheets.pull_values(service, sid, f"'{name}'") == [["id", "y"], ["a"]]

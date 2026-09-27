@@ -13,6 +13,7 @@ import pytest
 from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
+    TabGrid,
     a1_to_grid_range,
     add_conditional_rule,
     build_formula_rule,
@@ -29,6 +30,7 @@ from gdrives.sheets import (
     run_delete_rule,
     run_rules,
     split_a1,
+    tab_grid,
     tab_sheet_ids,
 )
 
@@ -107,6 +109,44 @@ class TestTabSheetIds:
 
     def test_no_sheets(self):
         assert tab_sheet_ids(FakeSheetsService(), "sid") == {}
+
+
+class TestTabGrid:
+    def test_reads_id_and_size_in_one_request(self):
+        svc = FakeSheetsService(
+            meta={
+                "sheets": [
+                    {"properties": {"title": "S", "gridProperties": {"rowCount": 5}}},
+                    {
+                        "properties": {
+                            "sheetId": 7,
+                            "title": "Data",
+                            "gridProperties": {"rowCount": 40, "columnCount": 3},
+                        }
+                    },
+                ]
+            }
+        )
+        assert tab_grid(svc, "sid", "Data") == TabGrid(7, 40, 3)
+        assert svc.calls == [
+            (
+                "spreadsheets.get",
+                {
+                    "spreadsheetId": "sid",
+                    "fields": "sheets.properties(sheetId,title,gridProperties)",
+                },
+            )
+        ]
+
+    def test_omitted_fields_are_zero(self):
+        # The API leaves out zero values: the first tab's sheetId, for one.
+        svc = FakeSheetsService(meta={"sheets": [{"properties": {"title": "S"}}]})
+        assert tab_grid(svc, "sid", "S") == TabGrid(0, 0, 0)
+
+    def test_unknown_tab_raises(self):
+        svc = FakeSheetsService(meta={"sheets": [{"properties": {"title": "S"}}]})
+        with pytest.raises(ValueError, match="no tab named 'X'"):
+            tab_grid(svc, "sid", "X")
 
 
 class TestA1ToGridRange:

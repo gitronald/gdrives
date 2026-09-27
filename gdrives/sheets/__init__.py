@@ -19,6 +19,10 @@ pull_values`` works regardless of which submodule defines a name:
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``table``: ``read_tab``, a whole tab as header-named, keyed records
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
+- ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
+  and read back
+- ``structure``: add and delete columns by header name, create missing tabs,
+  and set column widths
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -29,6 +33,14 @@ from gdrives.sheets.a1 import (
     column_letter,
     grid_range_to_a1,
     split_a1,
+)
+from gdrives.sheets.apply import (
+    ApplyError,
+    ApplyResult,
+    ReadBackError,
+    SheetChangedError,
+    apply_plan,
+    verify,
 )
 from gdrives.sheets.cells import (
     COLUMN_TYPES,
@@ -83,6 +95,12 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.structure import (
+    add_columns,
+    delete_columns,
+    ensure_tabs,
+    set_column_widths,
+)
 from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.values import (
     FORMATTED_STRING,
@@ -92,6 +110,7 @@ from gdrives.sheets.values import (
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
     USER_ENTERED,
+    TabGrid,
     append_values,
     batch_update_spreadsheet,
     batch_update_values,
@@ -100,11 +119,14 @@ from gdrives.sheets.values import (
     list_tabs,
     pull_many,
     pull_values,
+    tab_grid,
     tab_sheet_ids,
     update_values,
 )
 
 __all__ = [
+    "ApplyError",
+    "ApplyResult",
     "COLUMN_TYPES",
     "Cell",
     "ColumnSchema",
@@ -120,17 +142,22 @@ __all__ = [
     "RATE_LIMIT_STATUSES",
     "RAW",
     "ROW_FLAGS",
+    "ReadBackError",
     "Records",
     "RowFlag",
     "SERIAL_NUMBER",
     "SIDES",
+    "SheetChangedError",
+    "TabGrid",
     "Table",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
     "a1_quote",
     "a1_to_grid_range",
+    "add_columns",
     "add_conditional_rule",
     "append_values",
+    "apply_plan",
     "batch_update_spreadsheet",
     "batch_update_values",
     "build_formula_rule",
@@ -138,8 +165,10 @@ __all__ = [
     "color_to_hex",
     "column_index",
     "column_letter",
+    "delete_columns",
     "delete_conditional_rule",
     "describe_rule",
+    "ensure_tabs",
     "find_rows",
     "first_tab",
     "format_rules",
@@ -170,10 +199,13 @@ __all__ = [
     "run_set",
     "run_update",
     "set_by_match",
+    "set_column_widths",
     "split_a1",
+    "tab_grid",
     "tab_sheet_ids",
     "to_cell",
     "update_values",
+    "verify",
     "with_retry",
     "write_records",
     "write_values_csv",
