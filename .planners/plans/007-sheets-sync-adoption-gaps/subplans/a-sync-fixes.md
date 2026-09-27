@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-a-sync-fixes
 ---
 
 # 007a — Fix where a sync puts new rows and columns, their formatting, and line endings
@@ -132,3 +132,74 @@ changes a file, and a permanent one for a repository that normalizes line ending
 - The guide's sections on `insert_above` and `--add-missing` say where rows and
   columns land.
 - Changelog, under Changed: the four changes of this step.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-a-sync-fixes`, cut from the umbrella branch, with
+a draft PR onto it. Each part landed with its tests, written first and seen to fail on
+the 0.11.0 behavior:
+
+| Commit | Part |
+|---|---|
+| `deec015` | Line endings: `newline=` on both writers, the `newline` tab field, and the base following its tab |
+| `88d5d3a` | `insert_point`, used by `apply_plan`, and `inheritFromBefore` |
+| `7dea99f` | `TabReport.insert_row` and the report text |
+| `742a404` | `place_columns`, `add_columns(after=)`, and `_restructure` |
+| `e94a648` | The guide and the changelog |
+
+Decisions made during the work, none of which the design had settled:
+
+- **`TabReport.last_row`** was added beside `insert_row`. The text `after row 40` needs
+  the row, and `insert_row` is None in that case. Both are set only on a tab with
+  `insert_above` and new rows for the sheet, so the report of every other tab reads as
+  it did.
+- **After an apply the report names the rows written** (`in rows 5 to 6`, from
+  `ApplyResult.appended_rows`), not the row they went above. That row has moved down
+  by then, and `above row 5` would point at the wrong row of the sheet as it is.
+- **`insert_point` returns a row for a plan with no new rows.** It is a function of the
+  table, the pushes, and the pair. `plan_tab` stores it only when there are rows to
+  place.
+- **`insert_point` refuses a column the table did not read.** `apply_plan` reads the
+  column with the projection, and `plan_tab` parses it from the grid it already has.
+  For a column that `add_missing` is still to add, `plan_tab` counts every row blank
+  but for the plan's pushes to it.
+- **A preview now refuses an `insert_above` column the tab lacks.** The apply already
+  did, before any request. The preview calls the same function, so it says so too.
+  Listed in the changelog under Changed.
+- **`place_columns` returns the columns it added**, as `ensure_tabs` returns the tabs
+  it created.
+- **`NEWLINES` is a frozenset of the two names**, like `MODES` and `INPUT_OPTIONS`. It,
+  `insert_point`, and `place_columns` are exported from `gdrives.sheets` in this step,
+  since the package's surface test compares `__all__` with what the submodules define.
+- **`newline: "lf"` is accepted on a `.json` tab**, and only `crlf` is refused there: a
+  JSON file is written with LF, so the value says what happens. `write_records`
+  refuses the same.
+- The design's test of a column dropped in the same run passes on 0.11.0 too, where
+  the new column went to the right edge, which is the same place in that case. It
+  guards the rule that positions are taken on the sheet's header, and is kept.
+
+**Live suite.** One live case covers both of this step's checks in a single sync: the
+run closes a row, adds a row, and adds a column mid-header, and the test reads the
+values and the fills back in one masked `spreadsheets.get`. Requests were counted per
+test from the HTTP layer, in one run of the whole suite by the orchestrating session:
+
+| | Writes | Reads |
+|---|---|---|
+| Before this step | 55 | 66 |
+| The new case | 6 | 10 |
+| After | 61 | 76 |
+
+The case is over the 6 reads that subplan h budgets for one: the sync it runs makes 9
+of them (two tab listings, two grid reads, the header and the grid size for
+`place_columns`, and the re-read, grid size, and read-back of `apply_plan`). Step g's
+single tab listing takes one out. The run of the whole suite was made with the two
+read-backs still separate (61 writes, 80 reads sent, 3 of them refused and retried,
+21 passed in 80 seconds); the case was then run again by itself with the single
+read-back, and passed.
+
+The three `itest_` tabs left on the test spreadsheet before this plan are still there,
+and no run of this step added one.
+
+The project `CLAUDE.md` is not tracked, so its lines are left to step h.

@@ -612,6 +612,117 @@ def test_sync_adopts_merges_and_then_writes_nothing(tab, tmp_path):
     assert [path.stat().st_mtime_ns for path in (local, base)] == stamps
 
 
+GREY = {"red": 0.8, "green": 0.8, "blue": 0.8}
+
+
+def _values_and_fills(service, sid, name, span):
+    """The displayed values of ``span``, and column A's fills, in one read.
+
+    Each row of values is cut at its last non-blank cell, as a values read
+    returns it. A fill is None where none is set.
+    """
+    response = (
+        service.spreadsheets()
+        .get(
+            spreadsheetId=sid,
+            ranges=[f"'{name}'!{span}"],
+            fields="sheets(data(rowData(values("
+            "formattedValue,userEnteredFormat(backgroundColor)))))",
+        )
+        .execute()
+    )
+    ((data,),) = [sheet["data"] for sheet in response["sheets"]]
+    values, fills = [], []
+    for row in data.get("rowData", []):
+        cells = row.get("values", [])
+        shown = [cell.get("formattedValue", "") for cell in cells]
+        while shown and shown[-1] == "":
+            shown.pop()
+        values.append(shown)
+        first = cells[0] if cells else {}
+        fills.append(first.get("userEnteredFormat", {}).get("backgroundColor"))
+    return values, fills
+
+
+def test_sync_places_a_new_row_and_a_new_column(seeded, shared_tab, tmp_path):
+    # One run closes row b, adds row n, and adds the column "email". The new
+    # row belongs above b, the first closed row once the run is done, with
+    # the formatting of the open row above it, and the column after "id".
+    service, sid, name = seeded(
+        [
+            ["id", "status", "note"],
+            ["a", "open", "keep"],
+            ["b", "open"],
+            ["c", "closed"],
+            ["d", "closed"],
+        ]
+    )
+    grey = {
+        "repeatCell": {
+            "range": {
+                "sheetId": shared_tab.sheet_id,
+                "startRowIndex": 3,
+                "endRowIndex": 5,
+            },
+            "cell": {"userEnteredFormat": {"backgroundColor": GREY}},
+            "fields": "userEnteredFormat.backgroundColor",
+        }
+    }
+    _patiently(service, sid, {"requests": [grey]})
+    target = _target(
+        tmp_path,
+        sid,
+        name,
+        {
+            "local": "cases.csv",
+            "key": ["id"],
+            "insert_above": {"status": ["closed"]},
+        },
+    )
+    tab = target.tabs[0]
+    sheets.write_records(
+        target.base_path(tab),
+        ["id", "status"],
+        [
+            {"id": "a", "status": "open"},
+            {"id": "b", "status": "open"},
+            {"id": "c", "status": "closed"},
+            {"id": "d", "status": "closed"},
+        ],
+    )
+    sheets.write_values_csv(
+        str(tab.local),
+        [
+            ["id", "email", "status"],
+            ["a", "a@example.com", "open"],
+            ["b", "", "closed"],
+            ["c", "", "closed"],
+            ["d", "", "closed"],
+            ["n", "n@example.com", "open"],
+        ],
+    )
+
+    report = sheets.run_target(
+        service, sid, target, "sync", apply=True, add_missing=True
+    )
+    assert report.exit_code == 0, sheets.format_report(report)
+    (done,) = report.tabs
+    assert done.add_columns == ["email"]
+    assert done.applied is not None and done.applied.appended_rows == [3]
+    values, fills = _values_and_fills(service, sid, name, "A1:D6")
+    assert values == [
+        ["id", "email", "status", "note"],
+        ["a", "a@example.com", "open", "keep"],
+        ["n", "n@example.com", "open"],
+        ["b", "", "closed"],
+        ["c", "", "closed"],
+        ["d", "", "closed"],
+    ]
+    # Only c and d were grey: the new row n did not take it from the row it
+    # sits above, nor did b, which was closed by a push.
+    assert fills == [None, None, None, None, GREY, GREY]
+
+
 def test_push_that_shrinks_the_tab_clears_the_old_cells(seeded, tmp_path):
     service, sid, name = seeded(
         [
