@@ -1,10 +1,10 @@
 ---
 id: 7
 slug: sheets-sync-adoption-gaps
-status: active
+status: done
 branch: feature/sheets-sync-adoption-gaps
 created: 2026-09-27T10:24:14-07:00
-concluded:
+concluded: 2026-09-27T16:04:11-07:00
 pr: https://github.com/gitronald/gdrives/pull/44
 ---
 
@@ -114,14 +114,14 @@ not check them. The table below is the status of record for the pieces.
 
 | Subplan | Scope | Items | Notes applied | Status |
 |---|---|---|---|---|
-| [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | active |
-| [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5, P9 to P12 | active |
-| [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | active |
-| [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | active |
-| [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | active |
-| [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | active |
-| [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | active |
-| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15, P13 | active |
+| [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | done, [#46](https://github.com/gitronald/gdrives/pull/46) |
+| [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5, P9 to P12 | done, [#47](https://github.com/gitronald/gdrives/pull/47) |
+| [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | done, [#48](https://github.com/gitronald/gdrives/pull/48) |
+| [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | done, [#49](https://github.com/gitronald/gdrives/pull/49) |
+| [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | done, [#50](https://github.com/gitronald/gdrives/pull/50) |
+| [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | done, [#51](https://github.com/gitronald/gdrives/pull/51) |
+| [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | done, [#52](https://github.com/gitronald/gdrives/pull/52) |
+| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15, P13 | done, [#54](https://github.com/gitronald/gdrives/pull/54) |
 
 Each subplan keeps its own Log. Entries that concern the whole effort go in this file's
 Log.
@@ -387,3 +387,113 @@ every PR of the stack stayed open as a draft.
 What the release changes for the close: `[Unreleased]` on `dev` is empty, so this
 plan's lines are the only ones the next release promotes, and the version on `dev`
 is `0.12.1a0`.
+
+### 2026-09-27 — close: review of the whole stack, and the merge
+
+Written at 2026-09-27T16:04:11-07:00. The eight step PRs were reviewed once more as
+one diff against `dev` (47 files, about 9,500 added lines) before anything merged.
+Five finders read it: two for correctness, split by module, and one each for reuse
+and efficiency, test coverage and edge cases, and docs and rule consistency. They
+raised 14 candidates, and a last read of the diff added one. Four verifiers confirmed
+9 and rejected 5. The review is posted on
+[#44](https://github.com/gitronald/gdrives/pull/44#issuecomment-5860633947).
+
+**Review follow-up.**
+
+Fixed, each with its tests:
+
+- **`slug` split a word at a combining mark** (`e195cb1`). `İstanbul` gave
+  `i-stanbul`, and a title with decomposed accents was split inside its words. A mark
+  now stays with the letter before it, and the title is composed after it is
+  lower-cased. Vowel signs are marks too, so a title in Devanagari was split the
+  same way, which no finder had raised. Tests: eight cases in `tests/test_local.py`.
+- **`get_column_widths` named a date header cell by its serial number**
+  (`34e6ea6`). Step g's Log has the change, which costs a second read.
+- **`pull_all_tabs` used a caller's file stem as given** (`6dba36e`). A `name`
+  function that returned the title let a tab titled `../up` write outside the
+  output directory. Every stem now goes through `safe_filename`. `--slug` was not
+  affected. This is the one the last read found.
+- **`pull_tab` and the report called a store a file** (`6dba36e`). Step e worded
+  the refusals of a sync and a push by the store, and left the three of a pull and
+  six lines of the report. A tab with a file reads as before.
+- **`encode_rows` tested membership against a list** (`34e6ea6`): 12.3 seconds for
+  50,000 rows by 200 columns, and 2.0 with a set. It has no test of its own, since
+  a test of speed would not be reliable.
+- **Three things were written more than once** (`34e6ea6`, `6dba36e`): the check of
+  declared column types, in steps b and c; the header transform, in step b and in
+  `structure.py` before it; and the error for a link that was not cleared, in step
+  f. Each is one helper. `merge` and `parse_tab` now list every unknown type in one
+  error, as `decode_rows` did.
+- **Thirteen names exported from `gdrives.sheets` were in no line of the
+  changelog** (`bc5cedd`), `link_clear` and `run_widths` among them.
+
+Conscious no-op:
+
+- **The re-read guard compares the projection's columns only.** An edit to an
+  `insert_above` column outside the projection, made between the plan's read and
+  the apply's, is not refused, and the new rows go where the fresh read puts them.
+  It is as 0.12.0 does it, no data is lost, and the report after an apply names the
+  rows written. A config requires the column to be in the projection, so only a
+  caller of `apply_plan` can meet it. The docstring of `insert_point` says so.
+
+Rejected, each on a decision this plan had recorded: the rounding of a serial
+(decision 13), `carry=None` (step c), and the link clear's mask of two fields, which
+the probe of note `004` had sent to the API [P6]. Two more were rejected as the
+package's own convention: `STAGES` is checked against nowhere, as `ROW_FLAGS` is not,
+and the rule on `bom` and `newline` is written once for each way in.
+
+**Checks after the fixes.** Ruff, the format check, and pyrefly are clean. The unit
+tests went from 2247 to 2265, at 100% coverage. One run of the whole suite with the
+live tests, by the orchestrating session: 2298 passed in 173 seconds. Requests were
+not counted in that run; no fix changes a request a live test makes. The test
+spreadsheet holds the three `itest_` tabs of plan 006 and no other. CI passed on
+#54 with the fixes.
+
+**Merge.** The stack landed on the umbrella branch bottom-up, as merge commits.
+#46 merged as it stood, and each later PR was retargeted to the umbrella branch and
+then merged, so each step is one merge commit in order:
+
+| Step | PR | Merge |
+|---|---|---|
+| a | #46 | `640278d` |
+| b | #47 | `063b5fa` |
+| c | #48 | `4691c59` |
+| d | #49 | `effc2d7` |
+| e | #50 | `7488e7f` |
+| f | #51 | `a7ce5da` |
+| g | #52 | `cc4b249` |
+| h | #54 | `9a80437` |
+
+The workflow's `pull_request` branches are `dev` and `main` again (`90d4e02`), which
+is the last change of this plan outside its own files, and the date of `concluded`.
+The umbrella PR, #44, carries the result into `dev`. The version and the promotion
+of `[Unreleased]` are the release's, which the owner cuts.
+
+## Retrospective
+
+- **The defects were between the steps, not inside them.** Every step met its
+  subplan. What the review of the whole found was a rule applied in one step and
+  not the next: step e worded two modes by the store and not the third, and steps
+  b and c each wrote the same check of types. A review of one step against its own
+  subplan cannot see either. One review of the whole stack before the merge is
+  worth keeping whatever was reviewed along the way.
+- **A second way to read the same thing is a defect waiting for an input.**
+  `get_column_widths` took the header from the grid read to save a request, and
+  the two readings differ for a date. The request budget was a stated goal this
+  time, which plan 006 had lacked, and it pulled toward the shortcut. A saving
+  that reads a value by another path needs a test that the two paths agree.
+- **Recorded decisions made the review cheap.** Five candidates were rejected
+  against a line of a Log or a probe note, among them two that read as real
+  defects (the rounding of a serial, the mask of two fields). Without the
+  notes each would have cost a live probe, or a fix to something that was right.
+- **A test that a name is exported does not say it is documented.** The guide's
+  test imports each promised name, and thirteen of them were in no changelog
+  line. A check of each name against the text of `[Unreleased]` would have been
+  ten lines.
+- **CI on every step PR did what plan 006's retrospective asked.** Each step had a
+  run on four Python versions before it was stacked on, and the fixes of the close
+  had one before the merge. The cost was one pattern in the workflow and one
+  commit to take it out.
+- **The live suite is past both limits** (79 writes and 97 reads against 60 a
+  minute), so every run waits, and takes about three minutes. Reading the tabs of
+  a run in one `values.batchGet` is the saving left.

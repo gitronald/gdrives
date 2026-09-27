@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feature/sheets-sync-adoption-a-sync-fixes
 ---
 

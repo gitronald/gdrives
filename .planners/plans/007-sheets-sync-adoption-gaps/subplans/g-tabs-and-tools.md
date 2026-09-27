@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feature/sheets-sync-adoption-g-tabs-and-tools
 ---
 
@@ -225,3 +225,15 @@ as `acc7289`. The umbrella's Log has the whole merge.
 Ruff and pyrefly are clean, and 2189 unit tests pass at 100% coverage. The live suite
 was not run for the merge: 008 has no live tests and changed no request. Step h runs
 it.
+
+### 2026-09-27 — `get_column_widths` reads the header as the other helpers do
+
+Changed at the close, by the review of the whole stack (`34e6ea6`). The decision
+above, one read for the header cells and the widths together, took the header from
+the grid's `effectiveValue`. That is a second way of reading a header, and it differs
+from the first for a date: a header cell holding a date was named by its serial
+number (`46292`), where `set_column_widths` and a config look for its display text
+(`9/27/2026`). The header is now read through the values API, as every helper of
+`structure.py` reads it, and the grid read asks for the widths only
+(`WIDTH_FIELDS` is `sheets(data(columnMetadata(pixelSize)))`). It is two reads, and
+one for a tab with no header. No run of a sync, a pull, or a push calls it.
