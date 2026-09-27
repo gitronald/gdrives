@@ -119,6 +119,7 @@ to keep in step with local files:
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
+| `clear_links` | `sync`, `push` | `true` leaves the cells a run writes with no link, where the sheet links a URL or a domain as it is written. Default `false`. See [links](#links) |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
@@ -403,6 +404,19 @@ added, and changed. With `--apply`:
 An empty local file is refused, as is a local file with a blank or repeated
 key when a `key` is configured.
 
+As a library, `push_rows` is the push of rows held in memory, with no config
+and no file: the tab's title, the columns, and the rows, as records of cell
+strings (`encode_rows` makes them from typed rows).
+
+```python
+from gdrives.sheets import encode_rows, push_rows
+
+rows = encode_rows([{"id": 1, "total": 2.5, "paid": True}])
+report = push_rows(
+    service, "<spreadsheet-id>", "Summary", ["id", "total", "paid"], rows, apply=True
+)
+```
+
 **`sheets-pull --all-tabs`** dumps every tab of a spreadsheet with no config:
 
 ```bash
@@ -419,6 +433,56 @@ with a tab but is produced elsewhere. A `--skip` title the spreadsheet lacks,
 and two tabs whose file names collide, are refused before any values are
 read. A tab with no values or no header row is skipped and reported, never
 written as an empty file.
+
+## Links
+
+The sheet formats text as a link when it is written, and a sync or a push
+cannot write a URL without it: literal strings (`RAW`) are linked too.
+
+- A cell whose **whole text** is a URL or a bare domain is linked. A bare
+  domain's link points somewhere other than its text: `example.com` is given
+  the target `http://example.com`.
+- A URL inside a sentence, an email address, and plain text are not linked.
+- Writing the same value again puts a cleared link back.
+
+For a tab meant to hold plain text, `clear_links: true` leaves the cells a
+run writes with no link, and no other cell is touched:
+
+- A **push** clears the links of the columns it pushed, after the write. It
+  costs one read when the push left no link, and a write and a second read
+  when it left some.
+- A **sync** clears the cells it pushed and the rows it added. New rows are
+  written with no link at no cost. Pushed cells are cleared in the request
+  that adds the new rows, so a run with pushes and no new rows sends one
+  request more. The links of the written cells are then read back, which is
+  one read more.
+- A link that remains stops the run with a read-back error.
+- Every other format is left alone: a cell keeps its bold and its fill.
+- A tab's older cells keep their links. `clear_link_format` clears them, once.
+
+As a library, `linked_cells` returns each cell of a tab that holds a link,
+with the target of each and whether it is on part of the cell's text, and
+`clear_link_format` clears the links of the columns and rows named:
+
+```python
+from gdrives.sheets import clear_link_format, linked_cells
+
+for cell in linked_cells(service, "<spreadsheet-id>", "Members"):
+    print(cell.row, cell.column, cell.targets, cell.in_runs)
+
+clear_link_format(service, "<spreadsheet-id>", "Members", columns=["website"])
+```
+
+A link on part of a cell's text lives in the cell's text format runs. The
+API cannot take a link out of a run without rewriting the run, so
+`clear_link_format` clears the runs of such a cell whole; a cell whose runs
+hold no link keeps them. `runs=False` leaves runs alone and saves the read
+that finds them.
+
+A caller that wants links, not plain text, looks for a target that differs
+from the cell's text. Setting a link is the caller's to do. A link sent as a
+text format run over the whole text takes; a link set as the cell's own
+format on plain text did not, when tried.
 
 ## How cells are read and written
 
@@ -490,11 +554,12 @@ a run with any problem writes nothing.
   (`remote_deleted` or `local_deleted`) on every run, never removed from the
   other side. Delete it on both sides by hand.
 - **Formulas and formatting are not synced.** A sync moves values only: cell
-  formatting, formulas, hyperlink styling, data validation, and conditional
-  format rules are neither read nor copied. A formula cell in a synced column
-  reads as its result, and a push to that cell replaces the formula with a
-  literal value, so keep formula columns out of the projection or make them
-  `sheet_owned`.
+  formatting, formulas, data validation, and conditional format rules are
+  neither read nor copied. A formula cell in a synced column reads as its
+  result, and a push to that cell replaces the formula with a literal value,
+  so keep formula columns out of the projection or make them `sheet_owned`.
+  Links are the one format a tab can ask a run to touch: `clear_links` takes
+  off the link the sheet gives a URL when it is written. See [links](#links).
 - **A changed key is not followed.** Editing a key cell reads as one row
   removed and another added: the old key is flagged as deleted, and the new
   one arrives as a new row. To change a key, edit it on both sides (on the
@@ -710,6 +775,26 @@ What a store has to keep to:
   tab, as a file error is.
 - The config loader refuses two tabs that would write one file. It checks
   files only, so a caller that gives tabs stores of its own owns that check.
+
+### The cells a run wrote
+
+A formatting pass of the caller's own runs after a run that wrote to the
+sheet, over what it wrote. `TabReport.wrote_sheet` says whether to run it,
+and `TabReport.applied`, an `ApplyResult`, says where:
+
+| Field | Holds |
+|---|---|
+| `pushed_cells` | Each pushed cell as `(row, column)`, the row as it is after the run |
+| `appended_rows` | The spreadsheet rows of the new rows |
+| `appended_columns` | The columns written in each new row, so the cells of the new rows are every such row by every such column |
+
+A whole-tab push writes every cell of the columns pushed, in rows 2 to
+`replacement.after_rows + 1`, under the header in row 1.
+
+To read grid data for such a pass, `pull_grid` reads one range under a
+`fields` mask, which it requires: an unmasked read returns every property of
+every formatted cell, and a tab formatted throughout returned 18.6 MB where
+the read of its links returned 382 bytes.
 
 ### Hooks
 
