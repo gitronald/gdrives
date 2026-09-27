@@ -17,6 +17,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
+- ``table``: ``read_tab``, a whole tab as header-named, keyed records
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -70,6 +71,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -102,6 +104,7 @@ __all__ = [
     "RAW",
     "Records",
     "SERIAL_NUMBER",
+    "Table",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
     "a1_quote",
@@ -134,6 +137,7 @@ __all__ = [
     "pull_values",
     "read_records",
     "read_rule_json",
+    "read_tab",
     "read_values_csv",
     "row_key",
     "run_add_rule",

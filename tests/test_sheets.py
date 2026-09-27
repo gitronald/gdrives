@@ -844,6 +844,7 @@ SUBMODULES = (
     "match",
     "retry",
     "rules",
+    "table",
     "values",
 )
 
