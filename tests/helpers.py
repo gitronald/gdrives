@@ -123,12 +123,17 @@ def mock_list_response(
 
 
 class _Executable:
-    """Stand-in for a Sheets API request whose ``execute()`` returns a fixed dict."""
+    """Stand-in for a Sheets API request whose ``execute()`` returns a fixed dict.
 
-    def __init__(self, result: dict[str, Any]) -> None:
+    A preset exception is raised instead, so a test can model an API failure.
+    """
+
+    def __init__(self, result: dict[str, Any] | BaseException) -> None:
         self._result = result
 
     def execute(self) -> dict[str, Any]:
+        if isinstance(self._result, BaseException):
+            raise self._result
         return self._result
 
 
@@ -138,6 +143,9 @@ class _FakeValues:
 
     def get(self, **kwargs: Any) -> _Executable:
         return self._service._record("values.get", kwargs, "get")
+
+    def batchGet(self, **kwargs: Any) -> _Executable:  # camelCase: Sheets API name
+        return self._service._record("values.batchGet", kwargs, "batchGet")
 
     def update(self, **kwargs: Any) -> _Executable:
         return self._service._record("values.update", kwargs, "update")
@@ -173,16 +181,19 @@ class FakeSheetsService:
 
     Records every ``(method, kwargs)`` call in ``calls`` and returns the preset
     response for that method, so tests can assert both the request shape and the
-    parsed result. Register responses by key: ``get``/``update``/``append``/
-    ``clear``/``batchUpdate`` (values ops), ``meta`` (``spreadsheets.get``, used
-    by ``list_tabs``, ``tab_sheet_ids``, and ``list_conditional_rules``), and
-    ``spreadsheetBatchUpdate`` (``spreadsheets.batchUpdate``, the structural
-    one). Any unregistered key returns ``{}``. A list registers successive
-    responses, one per call, with the last repeating: ``get=[before, after]``
-    models a sheet that a collaborator edits between two reads.
+    parsed result. Register responses by key: ``get``/``batchGet``/``update``/
+    ``append``/``clear``/``batchUpdate`` (values ops), ``meta``
+    (``spreadsheets.get``, used by ``list_tabs``, ``tab_sheet_ids``, and
+    ``list_conditional_rules``), and ``spreadsheetBatchUpdate``
+    (``spreadsheets.batchUpdate``, the structural one). Any unregistered key
+    returns ``{}``. A list registers successive responses, one per call, with
+    the last repeating: ``get=[before, after]`` models a sheet that a
+    collaborator edits between two reads. A response that is an exception is
+    raised by ``execute()``: ``get=[http_error(503, ...), {...}]`` fails once,
+    then succeeds.
     """
 
-    def __init__(self, **responses: dict[str, Any] | list[dict[str, Any]]) -> None:
+    def __init__(self, **responses: Any) -> None:
         self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
