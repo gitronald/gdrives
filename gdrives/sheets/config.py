@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from gdrives.local import safe_filename
-from gdrives.sheets.cells import COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.values import RAW, USER_ENTERED
 
@@ -70,6 +70,7 @@ _TAB_FIELDS = frozenset(
         "widths",
         "bom",
         "newline",
+        "blank_keys",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -101,7 +102,9 @@ class TabConfig:
     ``columns`` is the projection, or None for every column of the local
     file. ``insert_above`` maps its one column to the values it matches.
     ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
-    local file is written with, and with it the tab's base.
+    local file is written with, and with it the tab's base. ``blank_keys``
+    is ``"refuse"`` or ``"partial"``, as for
+    :func:`~gdrives.sheets.cells.index_rows`.
     """
 
     title: str
@@ -118,6 +121,7 @@ class TabConfig:
     widths: Mapping[str, int] = field(default_factory=dict)
     bom: bool = False
     newline: str = "lf"
+    blank_keys: str = "refuse"
 
     @property
     def types(self) -> dict[str, str]:
@@ -393,6 +397,12 @@ class _Checker:
         key = self._names(where, raw, "key")
         if mode == "sync" and not key:
             problems.append(f"{where}: a sync tab needs a 'key' of one or more columns")
+        blank_keys = raw.get("blank_keys", "refuse")
+        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
+            problems.append(
+                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
+                f"not {blank_keys!r}"
+            )
         columns = self._columns(where, raw)
         local_owned = self._names(where, raw, "local_owned")
         sheet_owned = self._names(where, raw, "sheet_owned")
@@ -428,6 +438,7 @@ class _Checker:
             widths=widths,
             bom=bool(bom),
             newline=str(newline),
+            blank_keys=str(blank_keys),
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:

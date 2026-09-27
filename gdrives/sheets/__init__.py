@@ -49,10 +49,12 @@ from gdrives.sheets.apply import (
     verify,
 )
 from gdrives.sheets.cells import (
+    BLANK_KEYS,
     COLUMN_TYPES,
     SERIAL_TYPES,
     ColumnSchema,
     Problem,
+    check_blank_keys,
     column_type,
     decode_rows,
     encode_rows,
@@ -175,6 +177,7 @@ from gdrives.sheets.values import (
 )
 
 __all__ = [
+    "BLANK_KEYS",
     "ApplyError",
     "ApplyResult",
     "BOOTSTRAPS",
@@ -228,6 +231,7 @@ __all__ = [
     "batch_update_spreadsheet",
     "batch_update_values",
     "build_formula_rule",
+    "check_blank_keys",
     "clear_values",
     "color_to_hex",
     "column_index",

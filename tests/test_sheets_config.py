@@ -72,6 +72,7 @@ class TestValidConfig:
                     "widths": {"notes": 320},
                     "bom": True,
                     "newline": "crlf",
+                    "blank_keys": "partial",
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -107,6 +108,7 @@ class TestValidConfig:
                             widths={"notes": 320},
                             bom=True,
                             newline="crlf",
+                            blank_keys="partial",
                         ),
                         TabConfig(
                             title="Summary",
@@ -129,6 +131,7 @@ class TestValidConfig:
         assert tab.columns is None
         assert tab.insert_above is None
         assert tab.newline == "lf"
+        assert tab.blank_keys == "refuse"
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -413,6 +416,19 @@ class TestTabProblems:
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
         )
+
+    @pytest.mark.parametrize("blank_keys", ["allow", "Partial", "", True, None, 1])
+    def test_blank_keys_not_a_setting(self, blank_keys):
+        self.tab_refused(
+            members(blank_keys=blank_keys),
+            f"'blank_keys' must be one of ['partial', 'refuse'], not {blank_keys!r}",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_blank_keys_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, blank_keys="partial")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].blank_keys == "partial"
 
     @pytest.mark.parametrize("newline", ["cr", "LF", "\n", True, None])
     def test_newline_not_a_line_ending(self, newline):

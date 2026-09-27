@@ -473,6 +473,7 @@ def _plan(
             columns,
             local_owned=[column for column in columns if column not in tab.key],
             owns_rows=True,
+            blank_keys=tab.blank_keys,
         )
     else:
         if base is not None:
@@ -496,6 +497,7 @@ def _plan(
             sheet_owned=tab.sheet_owned,
             owns_rows=tab.owns_rows,
             prefer=options["prefer"],
+            blank_keys=tab.blank_keys,
         )
         if report.bootstrapped and plan.pushes:
             plan = _defer_pushes(plan, tab.key, report)
@@ -544,7 +546,13 @@ def _sheet_side(
     )
     present = [column for column in columns if column not in missing]
     table = parse_tab(
-        tab.title, grid, present, tab.key, types=tab.types, serials=serials
+        tab.title,
+        grid,
+        present,
+        tab.key,
+        types=tab.types,
+        serials=serials,
+        blank_keys=tab.blank_keys,
     )
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
@@ -583,6 +591,7 @@ def _insert_row(
             tab.key,
             types=tab.types,
             serials=serials,
+            blank_keys=tab.blank_keys,
         )
     return insert_point(table, plan, insert_above)
 
@@ -852,7 +861,13 @@ def pull_tab(
     serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
     try:
         table = parse_tab(
-            tab.title, grid, tab.columns, tab.key, types=tab.types, serials=serials
+            tab.title,
+            grid,
+            tab.columns,
+            tab.key,
+            types=tab.types,
+            serials=serials,
+            blank_keys=tab.blank_keys,
         )
     except EmptyTabError:
         report.tab_state = "empty"
@@ -938,7 +953,12 @@ def push_tab(
     if report.problems:
         return report
     if tab.key:
-        index_rows(local.rows, tab.key, side=f"local file {tab.local}")
+        index_rows(
+            local.rows,
+            tab.key,
+            side=f"local file {tab.local}",
+            blank_keys=tab.blank_keys,
+        )
     expected = [out, *([row[column] for column in out] for row in local.rows)]
 
     exists = tab.title in list_tabs(service, spreadsheet_id)

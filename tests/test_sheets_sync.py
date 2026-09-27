@@ -297,6 +297,61 @@ class TestSync:
         assert grid.values("T") == [HEADER, ROWS[0], ["c", "Cy", "3"], ROWS[1]]
 
 
+class TestPartialKeys:
+    HEADER = ["y", "id", "v"]
+    ROWS = [["2026", "", "a"], ["", "1", "b"], ["2026", "1", "c"]]
+
+    def scene(self, tmp_path, **fields):
+        target = make_target(tmp_path, key=["y", "id"], **fields)
+        write_local(target, *self.ROWS, header=self.HEADER)
+        write_base(target, *self.ROWS, header=self.HEADER)
+        return FakeSheetGrid({"T": [self.HEADER, *self.ROWS]}), target
+
+    def test_a_blank_component_is_refused_by_default(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        with pytest.raises(ValueError, match=r"blank key \['y', 'id'\] in rows"):
+            run(grid, target)
+
+    def test_partial_syncs_rows_by_the_components_they_have(self, tmp_path):
+        grid, target = self.scene(tmp_path, blank_keys="partial")
+        write_local(
+            target,
+            ["2026", "", "A"],
+            ["", "1", "b"],
+            ["2026", "1", "c"],
+            ["2027", "", "d"],
+            header=self.HEADER,
+        )
+        grid.write("T", [["", "1", "B"]], row=3)
+        grid.tab("T").cells[2][0] = None
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        merged = [
+            ["2026", "", "A"],
+            ["", "1", "B"],
+            ["2026", "1", "c"],
+            ["2027", "", "d"],
+        ]
+        assert grid.values("T") == [self.HEADER, *merged]
+        assert local_rows(target) == merged
+        assert base_rows(target) == merged
+        again = run(grid, target, apply=True)
+        assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
+
+    def test_partial_with_insert_above_outside_the_projection(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            key=["y", "id"],
+            blank_keys="partial",
+            insert_above={"v": "b"},
+        )
+        rows = [row[:2] for row in self.ROWS]
+        write_local(target, *rows, ["2027", ""], header=["y", "id"])
+        write_base(target, *rows, header=["y", "id"])
+        grid = FakeSheetGrid({"T": [self.HEADER, *self.ROWS]})
+        assert run(grid, target).insert_row == 3
+
+
 class TestTypedDates:
     """A column declared a date reads as ISO 8601 whatever the sheet displays."""
 

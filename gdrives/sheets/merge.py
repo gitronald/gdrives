@@ -26,7 +26,7 @@ every plan entry names its row by that key.
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from gdrives.sheets.cells import index_rows, row_key
+from gdrives.sheets.cells import check_blank_keys, index_rows, row_key
 
 #: The sides a plan entry can keep, and ``prefer`` can name.
 SIDES = frozenset({"local", "sheet"})
@@ -164,10 +164,10 @@ def _project(record: _Record, columns: Sequence[str]) -> dict[str, str]:
 
 
 def _by_key(
-    rows: Sequence[_Record], key: Sequence[str], side: str
+    rows: Sequence[_Record], key: Sequence[str], side: str, blank_keys: str
 ) -> dict[_Key, _Record]:
     """Map each row's normalized key to the row, refusing blank or repeated keys."""
-    index_rows(rows, key, side=side)
+    index_rows(rows, key, side=side, blank_keys=blank_keys)
     return {row_key(row, key): row for row in rows}
 
 
@@ -182,6 +182,7 @@ def merge(
     sheet_owned: Collection[str] = (),
     owns_rows: bool = False,
     prefer: str | None = None,
+    blank_keys: str = "refuse",
 ) -> MergePlan:
     """Merge ``local`` and ``remote`` (the sheet) against ``base``, by ``key``.
 
@@ -201,15 +202,19 @@ def merge(
     conflict toward that side, reported as an override; it never affects row
     flags.
 
+    ``blank_keys="partial"`` lets a row of a composite key leave a component
+    blank, on every side; see :func:`~gdrives.sheets.cells.index_rows`.
+
     Raises ValueError when a side (``"base"``, ``"local"``, or ``"sheet"``) has
     a blank or repeated key, when the key is empty or outside ``columns``, when
     an ownership set names a key column, a column outside ``columns``, or a
     column the other set also names, or when ``prefer`` is not a side.
     """
     _check_columns(key, columns, local_owned, sheet_owned, prefer)
-    base_rows = _by_key(base, key, "base")
-    local_rows = _by_key(local, key, "local")
-    sheet_rows = _by_key(remote, key, "sheet")
+    check_blank_keys(blank_keys)
+    base_rows = _by_key(base, key, "base", blank_keys)
+    local_rows = _by_key(local, key, "local", blank_keys)
+    sheet_rows = _by_key(remote, key, "sheet", blank_keys)
     cells = [c for c in columns if c not in key]
     carried = list(dict.fromkeys(c for row in local for c in row if c not in columns))
     plan = MergePlan()

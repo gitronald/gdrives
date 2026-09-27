@@ -440,6 +440,51 @@ class TestKeys:
             NewRow(key=("1", "y"), values={"a": "1", "b": "y", "v": "2"})
         ]
 
+    def test_a_blank_key_component_is_refused_by_default(self):
+        rows = [{"a": "1", "b": "", "v": "0"}]
+        for position, side in enumerate(["base", "local", "sheet"]):
+            sides = [[], [], []]
+            sides[position] = rows
+            with pytest.raises(ValueError, match=rf"^{side}: blank key \['a', 'b'\]"):
+                base, local, sheet = sides
+                merge(base, local, sheet, ["a", "b"], ["a", "b", "v"])
+
+    def test_partial_matches_rows_by_the_components_they_have(self):
+        plan = merge(
+            [{"a": "1", "b": "", "v": "0"}, {"a": "", "b": "x", "v": "0"}],
+            [
+                {"a": "1", "b": "", "v": "1"},
+                {"a": "", "b": "x", "v": "0"},
+                {"a": "1", "b": "x", "v": "new"},
+            ],
+            [{"a": "1", "b": " ", "v": "0"}, {"a": "", "b": "x", "v": "2"}],
+            ["a", "b"],
+            ["a", "b", "v"],
+            blank_keys="partial",
+        )
+        assert plan.pushes == [Cell(("1", ""), "v", "0", "1", "0")]
+        assert plan.fold_cells == [Cell(("", "x"), "v", "0", "0", "2")]
+        # The row that differs from the first only in a blank component is
+        # another row.
+        assert [new.key for new in plan.appends] == [("1", "x")]
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_partial_refuses_a_key_blank_in_every_component(self, position):
+        sides = [[], [], []]
+        sides[position] = [{"a": "", "b": " ", "v": "0"}]
+        base, local, sheet = sides
+        with pytest.raises(ValueError, match=r"blank key \['a', 'b'\] in rows \[1\]"):
+            merge(base, local, sheet, ["a", "b"], ["a", "b", "v"], blank_keys="partial")
+
+    def test_partial_refuses_duplicates_blank_components_included(self):
+        local = [{"a": "1", "b": "", "v": "0"}, {"a": "1", "b": "", "v": "1"}]
+        with pytest.raises(ValueError, match=r"^local: duplicate key \('1', ''\)"):
+            merge([], local, [], ["a", "b"], ["a", "b", "v"], blank_keys="partial")
+
+    def test_an_unknown_blank_keys_is_refused(self):
+        with pytest.raises(ValueError, match="blank_keys must be one of"):
+            run([], [], [], blank_keys="some")
+
     def test_plan_entries_name_rows_by_normalized_key(self):
         plan = run([], [row("  x  y ")], [])
         assert plan.appends[0].key == ("x y",)

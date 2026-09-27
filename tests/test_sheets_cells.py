@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from gdrives.sheets import (
+    BLANK_KEYS,
     COLUMN_TYPES,
     ColumnSchema,
     Problem,
@@ -513,6 +514,46 @@ class TestIndexRows:
     def test_no_key_columns_is_refused(self):
         with pytest.raises(ValueError, match="local: no key columns"):
             index_rows([{"id": "a"}], [], side="local")
+
+    def test_the_settings(self):
+        assert BLANK_KEYS == {"refuse", "partial"}
+
+    def test_partial_allows_a_blank_component_beside_one_that_is_not(self):
+        rows = [
+            {"y": "2026", "id": ""},
+            {"y": "", "id": "1"},
+            {"y": "2026", "id": "1"},
+            {"y": "2026"},
+        ]
+        with pytest.raises(ValueError, match="duplicate key"):
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+        found = index_rows(rows[:3], ["y", "id"], side="local", blank_keys="partial")
+        assert found == {("2026", ""): 1, ("", "1"): 2, ("2026", "1"): 3}
+
+    def test_partial_refuses_a_row_whose_every_component_is_blank(self):
+        rows = [{"y": "2026", "id": ""}, {"y": " ", "id": ""}, {"name": "x"}]
+        with pytest.raises(ValueError) as raised:
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+        assert str(raised.value) == "local: blank key ['y', 'id'] in rows [2, 3]"
+
+    def test_partial_compares_blank_components_in_duplicates(self):
+        rows = [{"y": "2026", "id": ""}, {"y": "2026 ", "id": " "}]
+        with pytest.raises(
+            ValueError, match=r"duplicate key \('2026', ''\) in rows \[1, 2\]"
+        ):
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+
+    def test_with_a_one_column_key_the_settings_are_the_same(self):
+        rows = [{"id": ""}, {"id": "a"}]
+        for setting in sorted(BLANK_KEYS):
+            with pytest.raises(ValueError, match=r"blank key \['id'\] in rows \[1\]"):
+                index_rows(rows, ["id"], side="local", blank_keys=setting)
+
+    def test_an_unknown_setting_is_refused(self):
+        with pytest.raises(
+            ValueError, match=r"blank_keys must be one of \['partial', 'refuse'\]"
+        ):
+            index_rows([], ["id"], side="local", blank_keys="allow")
 
     def test_empty_rows(self):
         assert index_rows([], ["id"], side="local") == {}
