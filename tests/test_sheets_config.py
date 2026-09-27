@@ -73,6 +73,7 @@ class TestValidConfig:
                     "bom": True,
                     "newline": "crlf",
                     "blank_keys": "partial",
+                    "on_invalid": "hold",
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -109,6 +110,7 @@ class TestValidConfig:
                             bom=True,
                             newline="crlf",
                             blank_keys="partial",
+                            on_invalid="hold",
                         ),
                         TabConfig(
                             title="Summary",
@@ -132,6 +134,7 @@ class TestValidConfig:
         assert tab.insert_above is None
         assert tab.newline == "lf"
         assert tab.blank_keys == "refuse"
+        assert tab.on_invalid == "refuse"
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -381,8 +384,10 @@ class TestTabProblems:
                 "owns_rows": True,
                 "bootstrap": "local",
                 "insert_above": {"a": "x"},
+                "on_invalid": "hold",
             },
-            "['local_owned', 'owns_rows', 'bootstrap', 'insert_above'] apply "
+            "['local_owned', 'owns_rows', 'bootstrap', 'insert_above', "
+            "'on_invalid'] apply "
             "only to a sync tab",
         )
 
@@ -415,6 +420,13 @@ class TestTabProblems:
         self.tab_refused(
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
+        )
+
+    @pytest.mark.parametrize("on_invalid", ["skip", "Hold", "", True, None, 1])
+    def test_on_invalid_not_a_setting(self, on_invalid):
+        self.tab_refused(
+            members(on_invalid=on_invalid),
+            f"'on_invalid' must be one of ['hold', 'refuse'], not {on_invalid!r}",
         )
 
     @pytest.mark.parametrize("blank_keys", ["allow", "Partial", "", True, None, 1])

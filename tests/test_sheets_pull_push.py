@@ -15,6 +15,7 @@ from gdrives.sheets import (
     CONFIG_NAME,
     ApplyResult,
     Cell,
+    HeldCell,
     MergePlan,
     NewRow,
     Override,
@@ -830,6 +831,35 @@ class TestFormatReport:
             f"  local file: {tmp_path / 't.csv'}",
             "  the tab does not exist: would be created with a header row",
             "  columns would be added: 'x'",
+        ]
+
+    @pytest.mark.parametrize(
+        "plan",
+        [
+            MergePlan(conflicts=[Cell(("a",), "amt", "1", "2", "3")]),
+            MergePlan(row_flags=[RowFlag(("z",), "local_deleted")]),
+            MergePlan(held=[HeldCell(("a",), "amt", "1", "1", "x", "bad")]),
+        ],
+    )
+    def test_work_left_for_a_person_is_not_in_sync(self, plan):
+        report = TabReport(tab="T", mode="sync", plan=plan)
+        assert "in sync" not in format_report(SyncReport([report]))
+
+    def test_row_flags_beside_held_rows(self):
+        plan = MergePlan(
+            row_flags=[
+                RowFlag(("n",), "remote_invalid"),
+                RowFlag(("z",), "local_deleted"),
+            ],
+            held=[HeldCell(("n",), "amt", "", "", "x", "'x' is not a valid int")],
+        )
+        report = TabReport(tab="T", mode="sync", plan=plan)
+        assert format_report(SyncReport([report])).splitlines()[1:] == [
+            "  sheet values held, left for a person (1):",
+            "    n / 'amt': 'x' is not a valid int",
+            "  new sheet rows held for their invalid cells (1): n",
+            "  row flags (1), left for a person:",
+            "    z: local_deleted",
         ]
 
     def test_in_sync(self):

@@ -44,6 +44,10 @@ MODES = frozenset({"sync", "pull", "push"})
 #: How a sync tab with no base yet is started; ``--adopt`` is a flag instead.
 BOOTSTRAPS = frozenset({"local"})
 
+#: What a sync does with a sheet value that fails the schema: ``refuse``
+#: writes nothing for the tab, and ``hold`` keeps that value out and goes on.
+ON_INVALID = frozenset({"refuse", "hold"})
+
 #: The ``valueInputOption`` a target writes with.
 INPUT_OPTIONS = frozenset({RAW, USER_ENTERED})
 
@@ -71,11 +75,19 @@ _TAB_FIELDS = frozenset(
         "bom",
         "newline",
         "blank_keys",
+        "on_invalid",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
 # Fields that only mean something to a merge, so only to a sync tab.
-_SYNC_ONLY = ("local_owned", "sheet_owned", "owns_rows", "bootstrap", "insert_above")
+_SYNC_ONLY = (
+    "local_owned",
+    "sheet_owned",
+    "owns_rows",
+    "bootstrap",
+    "insert_above",
+    "on_invalid",
+)
 
 
 class ConfigError(ValueError):
@@ -104,7 +116,8 @@ class TabConfig:
     ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
     local file is written with, and with it the tab's base. ``blank_keys``
     is ``"refuse"`` or ``"partial"``, as for
-    :func:`~gdrives.sheets.cells.index_rows`.
+    :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
+    or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
     """
 
     title: str
@@ -122,6 +135,7 @@ class TabConfig:
     bom: bool = False
     newline: str = "lf"
     blank_keys: str = "refuse"
+    on_invalid: str = "refuse"
 
     @property
     def types(self) -> dict[str, str]:
@@ -417,6 +431,12 @@ class _Checker:
                 f"{where}: 'bootstrap' must be one of {sorted(BOOTSTRAPS)}, not "
                 f"{bootstrap!r} (--adopt is a flag, not a config value)"
             )
+        on_invalid = raw.get("on_invalid", "refuse")
+        if not isinstance(on_invalid, str) or on_invalid not in ON_INVALID:
+            problems.append(
+                f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
+                f"not {on_invalid!r}"
+            )
         schema = self._schema(where, raw.get("schema", {}), columns)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
@@ -439,6 +459,7 @@ class _Checker:
             bom=bool(bom),
             newline=str(newline),
             blank_keys=str(blank_keys),
+            on_invalid=str(on_invalid),
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:
