@@ -16,7 +16,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``a1``: A1 notation and ``GridRange`` conversion
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
-- ``files``: local CSV/TSV interchange
+- ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -50,7 +50,13 @@ from gdrives.sheets.commands import (
     run_set,
     run_update,
 )
-from gdrives.sheets.files import read_values_csv, write_values_csv
+from gdrives.sheets.files import (
+    Records,
+    read_records,
+    read_values_csv,
+    write_records,
+    write_values_csv,
+)
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.retry import IDEMPOTENT_STATUSES, RATE_LIMIT_STATUSES, with_retry
 from gdrives.sheets.rules import (
@@ -94,6 +100,7 @@ __all__ = [
     "Problem",
     "RATE_LIMIT_STATUSES",
     "RAW",
+    "Records",
     "SERIAL_NUMBER",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
@@ -125,6 +132,7 @@ __all__ = [
     "problems",
     "pull_many",
     "pull_values",
+    "read_records",
     "read_rule_json",
     "read_values_csv",
     "row_key",
@@ -142,5 +150,6 @@ __all__ = [
     "to_cell",
     "update_values",
     "with_retry",
+    "write_records",
     "write_values_csv",
 ]
