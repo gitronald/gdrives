@@ -50,6 +50,7 @@ gdrives/
 │   ├── apply.py      # Write a merge plan to a tab, guarded and read back
 │   ├── structure.py  # Add and delete columns, create tabs, set column widths
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
+│   ├── stores.py     # Stores for the local side and the base (FileStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
 │   └── commands.py   # run_* entry points for the sheets-* commands
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
@@ -361,7 +362,8 @@ values with the local file.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
-error, and 2 when conflicts or row flags are left for a person. A preview uses
+error, and 2 when conflicts, row flags, or held sheet values are left for a
+person. A preview uses
 the read-only scope; `--apply` first prints the credential it will use to
 stderr, and `sheets-sync` and `sheets-push` then request the `spreadsheets`
 write scope (`sheets-pull` writes only local files and stays read-only). Values
