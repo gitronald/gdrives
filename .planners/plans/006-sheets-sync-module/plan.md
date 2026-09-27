@@ -4,7 +4,7 @@ slug: sheets-sync-module
 status: done
 branch: feature/sheets-sync-module
 created: 2026-09-27T00:16:35-07:00
-concluded: 2026-09-27T08:23:53-07:00
+concluded: 2026-09-27T08:29:18-07:00
 pr: https://github.com/gitronald/gdrives/pull/36
 ---
 
@@ -265,13 +265,28 @@ as it stood. Each later PR was retargeted from the branch below it to the umbrel
 and then merged (#38 to #42), so each step is one merge commit in order. The umbrella PR,
 #36, carries the result into `dev`.
 
+### 2026-09-27 — close: the umbrella PR's CI run failed on one test
+
+The first CI run on the stack's code was #36's, after the stack had merged into the
+umbrella branch. It failed on all four Python versions, on one test:
+`test_a_bad_prefer_is_a_usage_error_before_any_request` looks for
+`Invalid value for '--prefer'` in the usage error that Typer prints, and Typer forces
+terminal styling when `GITHUB_ACTIONS` is set, which puts escape codes inside that text.
+The command was right and the assertion depended on the environment. The test now strips
+the styling before it looks (`5b053ab`). Running the suite with `GITHUB_ACTIONS=true`
+reproduces the CI result locally, and it was the only test that differed.
+
+Nothing had merged into `dev` when the run failed. `concluded` is the date of that commit,
+the last change to the code.
+
 ## Retrospective
 
 - **A stack keeps each step reviewable, and costs a retarget per PR at the end.** Six
   PRs of one step each were easier to review than one PR of 13,400 lines. CI did not run
   on them, since it triggers on PRs into `dev` and `main` only, so the checks were run by
   hand before each push, and the first CI run on the code was the umbrella PR's, after
-  the stack had merged. Adding the umbrella branch to the workflow's `pull_request`
+  the stack had merged. That run failed on a test that passes on every local machine,
+  which the checks run by hand could not have shown. Adding the umbrella branch to the workflow's `pull_request`
   branches for the life of a stack would give every step a CI run.
 - **Reviewing a step against its subplan cannot find what the subplan leaves out.** Step
   b built both readers, the tab's and the local file's, and its subplan gave the header
