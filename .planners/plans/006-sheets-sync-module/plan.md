@@ -82,12 +82,12 @@ not check them. The table below is the status of record for the pieces.
 
 | Subplan | Scope | Step | Status |
 |---|---|---|---|
-| [`a-package-split.md`](subplans/a-package-split.md) | Move `sheets.py` into the `gdrives/sheets/` package, with the import surface unchanged | 1 | draft |
-| [`b-read-layer.md`](subplans/b-read-layer.md) | Canonical cells and column types, local record files, reading a tab as keyed records, row keys, and retry | 2 | draft |
-| [`c-merge-engine.md`](subplans/c-merge-engine.md) | The pure three-way merge, column ownership, and `MergePlan` | 3 | draft |
-| [`d-apply-and-structure.md`](subplans/d-apply-and-structure.md) | Applying a plan with its guards, row writes, and the column, tab, and width helpers | 4 | draft |
-| [`e-config-and-orchestration.md`](subplans/e-config-and-orchestration.md) | The config file, base snapshots, whole-tab pull and push, the library API, and the credential announcement | 5 | draft |
-| [`f-cli-and-docs.md`](subplans/f-cli-and-docs.md) | The `sheets-sync`, `sheets-pull`, and `sheets-push` commands, and the docs | 6 | draft |
+| [`a-package-split.md`](subplans/a-package-split.md) | Move `sheets.py` into the `gdrives/sheets/` package, with the import surface unchanged | 1 | active, [#37](https://github.com/gitronald/gdrives/pull/37) |
+| [`b-read-layer.md`](subplans/b-read-layer.md) | Canonical cells and column types, local record files, reading a tab as keyed records, row keys, and retry | 2 | active, [#38](https://github.com/gitronald/gdrives/pull/38) |
+| [`c-merge-engine.md`](subplans/c-merge-engine.md) | The pure three-way merge, column ownership, and `MergePlan` | 3 | active, [#39](https://github.com/gitronald/gdrives/pull/39) |
+| [`d-apply-and-structure.md`](subplans/d-apply-and-structure.md) | Applying a plan with its guards, row writes, and the column, tab, and width helpers | 4 | active, [#40](https://github.com/gitronald/gdrives/pull/40) |
+| [`e-config-and-orchestration.md`](subplans/e-config-and-orchestration.md) | The config file, base snapshots, whole-tab pull and push, the library API, and the credential announcement | 5 | active, [#41](https://github.com/gitronald/gdrives/pull/41) |
+| [`f-cli-and-docs.md`](subplans/f-cli-and-docs.md) | The `sheets-sync`, `sheets-pull`, and `sheets-push` commands, and the docs | 6 | active, [#42](https://github.com/gitronald/gdrives/pull/42) |
 
 ```
 a (package) -> b (read) -> c (merge) -> d (apply) -> e (config, sync) -> f (CLI, docs)
@@ -175,3 +175,41 @@ Each step is built by one implementing agent, reviewed by three independent revi
 are checked by a separate verifier before a fix pass. The three project checks and the
 test suite with its coverage floor are run again outside the agents before a step is
 pushed.
+
+### 2026-09-27 — all six steps built, in review
+
+Each step is built on its own branch with a draft PR, stacked in order: #37 (a), #38 (b),
+#39 (c), #40 (d), #41 (e), and #42 (f). None is merged. Each subplan's Log records what
+was built, the decisions made where the plan was silent, and what review found. The suite
+grew from 785 tests to 1543, with coverage at 100% throughout.
+
+What review found across the six steps:
+
+- Step d: a missing test for an invalid `insert_above` on a plan with no new rows.
+- Step e: `apply_tab` wrote tab structure before the last schema and `validate` check
+  could fail. Fixed so that every check runs before the first write.
+- Steps a, b, c, and f: no findings.
+
+Open questions, as they stand:
+
+- **Base location.** Settled: the default is `sheets-base/<target>`, and a base directory
+  inside `.gdrives/` is a config error.
+- **Numeric cells under `RAW`.** Unchanged. Values are written as literal strings, which
+  read back identical, and sheet formulas over a synced column see text. A per-column
+  `USER_ENTERED` write remains a possible follow-up.
+- **Deleting rows.** Unchanged: flagged, never applied.
+
+Raised during the work, for a decision before or after merge:
+
+- **Bootstrap and `--adopt`.** A bootstrap run with `--apply` saves a base, after which
+  local rows the sheet lacks are flagged on every run and `--adopt` is refused until the
+  base is deleted. The guide documents it. Not saving a base on a bootstrap run that has
+  row flags would avoid it.
+- **A preview's exit code** is 0 whenever the run can go ahead, so it does not tell
+  automation that changes are pending.
+- **The `merge` name.** `gdrives.sheets.merge` is the function, which shadows the
+  submodule as a package attribute.
+- **The credential line** is printed by the three new commands only.
+- **Live test quota.** The live suite now exceeds 60 writes per minute, so a full run
+  waits on the quota and takes about two minutes. One temporary tab shared by the module,
+  cleared between tests, would cut the writes.
