@@ -1079,8 +1079,20 @@ class FakeSheetGrid:
                 entered["bold"] = True
         if entered:
             cell["userEnteredFormat"] = {"textFormat": entered}
-        if "formattedValue" in fields and tab.cells[r][c] is not None:
-            cell["formattedValue"] = _displayed(tab.cells[r][c])
+        value = tab.cells[r][c]
+        if "formattedValue" in fields and value is not None:
+            cell["formattedValue"] = _displayed(value)
+        if "effectiveValue" in fields and value is not None:
+            if isinstance(value, date):
+                value = _serial(value)
+            kind = (
+                "boolValue"
+                if isinstance(value, bool)
+                else "stringValue"
+                if isinstance(value, str)
+                else "numberValue"
+            )
+            cell["effectiveValue"] = {kind: value}
         return cell
 
     def _meta(self, **kwargs: Any) -> dict[str, Any]:

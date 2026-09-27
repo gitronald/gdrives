@@ -523,6 +523,66 @@ class TestPushRows:
         assert report.local_label == "the cases" and not report.wrote_sheet
 
 
+class TestSheetId:
+    def grid(self):
+        return FakeSheetGrid({"First": [["x"]], "Renamed": [HEADER, *ROWS]})
+
+    def test_a_pull_finds_the_tab_by_its_id(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", sheet_id=1)
+        report = pull_tab(self.grid(), "S", tab, apply=True)
+        assert rows_of(tab.local) == ROWS
+        assert report.tab == "T" and report.notes == [
+            "renamed on the sheet: 'T' is now 'Renamed'"
+        ]
+
+    def test_a_push_finds_the_tab_by_its_id(self, tmp_path):
+        tab = one_tab(tmp_path, "push", sheet_id=1, widths={"amt": 50})
+        write_local(tab, ["a", "Ada", "9"])
+        grid = self.grid()
+        report = push_tab(grid, "S", tab, apply=True)
+        assert grid.values("Renamed") == [HEADER, ["a", "Ada", "9"]]
+        assert [t.title for t in grid.tabs] == ["First", "Renamed"]
+        assert grid.tab("Renamed").widths[2] == 50
+        assert report.notes == ["renamed on the sheet: 'T' is now 'Renamed'"]
+
+    @pytest.mark.parametrize("mode", ["pull", "push"])
+    def test_an_id_the_spreadsheet_lacks_is_an_error_and_creates_no_tab(
+        self, tmp_path, mode
+    ):
+        tab = one_tab(tmp_path, mode, sheet_id=9)
+        write_local(tab, *ROWS)
+        before = tab.local.read_bytes() if tab.local else b""
+        grid = FakeSheetGrid({"T": [HEADER, ["z", "Zed", "0"]]})
+        run = pull_tab if mode == "pull" else push_tab
+        with pytest.raises(ValueError, match="has no tab with sheet_id 9"):
+            run(grid, "S", tab, apply=True)
+        assert writes(grid) == [] and [t.title for t in grid.tabs] == ["T"]
+        assert tab.local is not None and tab.local.read_bytes() == before
+
+    def test_push_rows_takes_the_id(self):
+        grid = self.grid()
+        report = push_rows(
+            grid,
+            "S",
+            "Cases",
+            HEADER,
+            as_records(["a", "Ada", "9"]),
+            sheet_id=1,
+            apply=True,
+        )
+        assert report.tab == "Cases"
+        assert report.notes == ["renamed on the sheet: 'Cases' is now 'Renamed'"]
+        assert grid.values("Renamed") == [HEADER, ["a", "Ada", "9"]]
+
+    def test_a_listing_given_saves_its_read(self):
+        from gdrives.sheets import tab_listing
+
+        grid = self.grid()
+        listing = tab_listing(grid, "S")
+        push_rows(grid, "S", "Renamed", HEADER, as_records(*ROWS), listing=listing)
+        assert grid.methods == ["spreadsheets.get", "values.get"]
+
+
 class TestPushClearLinks:
     HEADER = ["id", "site", "note"]
     ROWS = [
@@ -958,6 +1018,59 @@ class TestPullAllTabs:
         assert by_tab["Headless"].notes == ["no header row; skipped"]
         assert by_tab["Members"].wrote_local
         assert report.exit_code == 0
+
+    def test_bom_starts_each_file_with_the_mark(self, tmp_path):
+        out = tmp_path / "out"
+        pull_all_tabs(self.grid(), "S", out, apply=True, bom=True, extension=".tsv")
+        assert (out / "Members.tsv").read_bytes() == (
+            b"\xef\xbb\xbfid\tname\tamt\na\tAda\t1\nb\tBo\t2\n"
+        )
+
+    def test_bom_with_json_is_refused_before_any_request(self, tmp_path):
+        grid = self.grid()
+        with pytest.raises(ValueError, match="only to .csv and .tsv"):
+            pull_all_tabs(grid, "S", tmp_path, extension=".json", bom=True)
+        assert grid.calls == []
+
+    def test_name_maps_each_title_to_its_file_stem(self, tmp_path):
+        from gdrives.local import slug
+
+        grid = FakeSheetGrid(
+            {
+                "Form responses 1": [["x"], ["1"]],
+                "Q3 / Q4": [["y"], ["2"]],
+                "!!!": [["z"], ["3"]],
+            }
+        )
+        out = tmp_path / "out"
+        report = pull_all_tabs(grid, "S", out, apply=True, name=slug)
+        assert sorted(p.name for p in out.iterdir()) == [
+            "form-responses-1.csv",
+            "q3-q4.csv",
+        ]
+        by_tab = {tab.tab: tab for tab in report.tabs}
+        # A title that leaves no name is an error for its tab, and the rest go on.
+        assert by_tab["!!!"].error == (
+            "no file name for the tab: '!!!' has no letter or digit to make a slug of"
+        )
+        assert by_tab["!!!"].local is None and not by_tab["!!!"].wrote_local
+        assert by_tab["Q3 / Q4"].local == out / "q3-q4.csv"
+        assert report.exit_code == 1
+
+    def test_names_that_collide_as_mapped_are_refused(self, tmp_path):
+        from gdrives.local import slug
+
+        grid = FakeSheetGrid({"Q3 totals": [["x"]], "q3: totals": [["y"]], "Z": []})
+        with pytest.raises(ValueError, match="tabs whose file names collide") as raised:
+            pull_all_tabs(grid, "S", tmp_path, apply=True, name=slug)
+        assert "['Q3 totals', 'q3: totals']" in str(raised.value)
+        assert grid.methods == ["spreadsheets.get"]
+        # The same titles do not collide under the default names.
+        pull_all_tabs(grid, "S", tmp_path / "out", apply=True)
+        assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
+            "Q3 totals.csv",
+            "q3: totals.csv",
+        ]
 
     def test_a_preview_writes_nothing_and_creates_no_directory(self, tmp_path):
         report = pull_all_tabs(self.grid(), "S", tmp_path / "out")

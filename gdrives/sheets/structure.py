@@ -16,7 +16,7 @@ that hold a link, and :func:`clear_link_format` takes the link format off
 cells meant to hold plain text, leaving every other format alone.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +44,9 @@ CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
 
 #: The field of a cell's text format runs, where a link on part of its text is.
 RUNS_FIELD = "textFormatRuns"
+
+#: The ``fields`` mask of a grid read of a header row with its column widths.
+WIDTH_FIELDS = "sheets(data(columnMetadata(pixelSize),rowData(values(effectiveValue))))"
 
 
 def _check_names(names: Sequence[str], what: str) -> None:
@@ -476,19 +479,26 @@ def delete_columns(
 
 
 def ensure_tabs(
-    service: Service, spreadsheet_id: str, tabs: Sequence[str]
+    service: Service,
+    spreadsheet_id: str,
+    tabs: Sequence[str],
+    *,
+    existing: Collection[str] | None = None,
 ) -> list[str]:
     """Create each of ``tabs`` the spreadsheet lacks; return the titles created.
 
     New tabs go after the existing ones, in the order given. A tab is never
     deleted or renamed: one this list does not name belongs to whoever added
-    it. Raises ValueError for a blank title; a repeated title is created once.
+    it. ``existing`` is the spreadsheet's tab titles when the caller has just
+    read them, which saves the read here. Raises ValueError for a blank
+    title; a repeated title is created once.
     """
     if "" in tabs:
         raise ValueError(f"blank tab title in {list(tabs)}")
     if not tabs:
         return []
-    existing = set(list_tabs(service, spreadsheet_id))
+    if existing is None:
+        existing = list_tabs(service, spreadsheet_id)
     missing = [title for title in dict.fromkeys(tabs) if title not in existing]
     if missing:
         batch_update_spreadsheet(
@@ -497,6 +507,30 @@ def ensure_tabs(
             [{"addSheet": {"properties": {"title": title}}} for title in missing],
         )
     return missing
+
+
+def get_column_widths(
+    service: Service, spreadsheet_id: str, tab: str
+) -> dict[str, int]:
+    """Each named header column's width in pixels: ``{header name: pixels}``.
+
+    In header order, and ready to give :func:`set_column_widths` or to paste
+    under a tab's ``widths`` in the config. A column whose header cell is
+    blank is left out. One grid read of row 1
+    (:func:`~gdrives.sheets.values.pull_grid`), for the header cells and the
+    widths together. Raises ValueError for a header that repeats a name.
+    """
+    data = pull_grid(service, spreadsheet_id, f"{a1_quote(tab)}!1:1", WIDTH_FIELDS)
+    rows = data.get("rowData", [])
+    cells: list[dict[str, Any]] = rows[0].get("values", []) if rows else []
+    header = [
+        to_cell(next(iter(cell.get("effectiveValue", {}).values()), None)).strip()
+        for cell in cells
+    ]
+    names = [name for name in header if name]
+    positions = _positions(header, names, tab)
+    sizes = data.get("columnMetadata", [])
+    return {name: sizes[index]["pixelSize"] for name, index in positions.items()}
 
 
 def set_column_widths(

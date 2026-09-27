@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid, plain
+from helpers import FakeSheetGrid, http_error, plain
 from typer.testing import CliRunner
 
 from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo, build_sheets_service
@@ -135,6 +135,24 @@ class TestAWaitIsAnnounced:
         result = env.invoke("sheets-pull", "roster", "--apply")
         assert result.exit_code == 0
         assert result.stderr == self.LINE + "Spreadsheet ID: SHEET\n"
+
+    def test_on_a_command_that_takes_no_config(self, env):
+        result = env.invoke("sheets-widths", "SHEET")
+        assert result.exit_code == 0
+        assert result.stderr == "Spreadsheet ID: SHEET\n" + self.LINE
+        assert env.writes() == []
+
+    def test_before_the_notice_of_a_retried_call(self, env, monkeypatch):
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("gdrives.sheets.retry.random.random", lambda: 0.0)
+        env.grid.fail("values.get", http_error(429, "rate limited"))
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert result.stderr == (
+            "Spreadsheet ID: SHEET\n"
+            + self.LINE
+            + "Sheets API returned 429; retrying in 1s (attempt 2 of 5)\n"
+        )
 
 
 class TestSheetsSync:
@@ -387,6 +405,43 @@ class TestSheetsPull:
         ]
         assert env.writes() == []
 
+    def test_all_tabs_with_bom_and_slug(self, env):
+        env.grid.tabs[1].title = "Form responses 1"
+        result = env.invoke(
+            "sheets-pull",
+            "SHEET",
+            "--all-tabs",
+            "-o",
+            "out",
+            "--bom",
+            "--slug",
+            "--apply",
+        )
+        assert result.exit_code == 0, result.stdout
+        assert sorted(p.name for p in (env.root / "out").iterdir()) == [
+            "form-responses-1.csv",
+            "members.csv",
+            "totals.csv",
+        ]
+        assert (env.root / "out" / "totals.csv").read_bytes() == (
+            b"\xef\xbb\xbfstatus,count\nactive,2\n"
+        )
+
+    def test_bom_with_json_is_refused_before_any_request(self, env):
+        result = env.invoke(
+            "sheets-pull",
+            "SHEET",
+            "--all-tabs",
+            "-o",
+            "out",
+            "--format",
+            "json",
+            "--bom",
+        )
+        assert result.exit_code == 1
+        assert "--bom applies only to --format csv and tsv" in result.stderr
+        assert_no_request(env, result)
+
     def test_all_tabs_defaults_to_csv(self, env):
         result = env.invoke(
             "sheets-pull", "SHEET", "--all-tabs", "-o", "out", "--apply"
@@ -412,8 +467,10 @@ class TestSheetsPull:
             (["-o", "out"], "-o/--output apply only with --all-tabs"),
             (["--skip", "Members"], "--skip apply only with --all-tabs"),
             (["--format", "tsv"], "--format apply only with --all-tabs"),
+            (["--bom"], "--bom apply only with --all-tabs"),
+            (["--slug"], "--slug apply only with --all-tabs"),
         ],
-        ids=["tab", "config", "no-output", "output", "skip", "format"],
+        ids=["tab", "config", "no-output", "output", "skip", "format", "bom", "slug"],
     )
     def test_misused_options_are_refused_before_any_request(self, env, args, message):
         result = env.invoke("sheets-pull", "roster", "--apply", *args)
@@ -425,3 +482,82 @@ class TestSheetsPull:
         with pytest.raises(ValueError, match="--format must be one of"):
             run_pull("SHEET", all_tabs=True, output="out", file_format="xlsx")
         assert env.scopes == [] and env.grid.calls == []
+
+
+class TestSheetsWidths:
+    def test_the_first_tab_by_default_as_json_read_only(self, env):
+        env.grid.tab("Members").widths[:3] = [80, 200, 120]
+        result = env.invoke("sheets-widths", "SHEET")
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == dict(
+            zip(HEADER, [80, 200, 120], strict=True)
+        )
+        assert list(json.loads(result.stdout)) == HEADER
+        assert result.stderr == "Spreadsheet ID: SHEET\n"
+        assert env.scopes == [None] and env.writes() == []
+
+    def test_a_named_tab(self, env):
+        env.grid.tab("Totals").widths[:2] = [90, 40]
+        result = env.invoke("sheets-widths", "SHEET", "--tab", "Totals")
+        assert json.loads(result.stdout) == {"status": 90, "count": 40}
+        assert env.grid.methods == ["spreadsheets.get"]
+
+    def test_the_output_is_a_tab_s_widths_in_the_config(self, env):
+        from gdrives.sheets import parse_config
+
+        result = env.invoke("sheets-widths", "SHEET", "--tab", "Members")
+        tab = {"local": "m.csv", "key": ["member_id"]}
+        tab["widths"] = json.loads(result.stdout)
+        data = {"roster": {"spreadsheet": "S", "tabs": {"Members": tab}}}
+        loaded = parse_config(data, env.root / CONFIG_NAME).target("roster")
+        assert loaded.tabs[0].widths == dict.fromkeys(HEADER, 100)
+
+    def test_an_unknown_tab_exits_1(self, env):
+        result = env.invoke("sheets-widths", "SHEET", "--tab", "Nope")
+        assert result.exit_code == 1 and "Error:" in result.stderr
+
+
+class TestRetryNotices:
+    def test_a_command_says_when_a_call_is_retried(self, env, monkeypatch):
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("gdrives.sheets.retry.random.random", lambda: 0.0)
+        env.grid.fail("values.get", http_error(429, "rate limited"))
+        env.grid.fail("values.get", http_error(503, "unavailable"), occurrence=2)
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert result.stderr == (
+            "Spreadsheet ID: SHEET\n"
+            "Sheets API returned 429; retrying in 1s (attempt 2 of 5)\n"
+            "Sheets API returned 503; retrying in 2s (attempt 3 of 5)\n"
+        )
+        assert "in sync: nothing to write" in result.stdout
+
+    def test_the_library_says_nothing_unless_asked(self, env, monkeypatch, capsys):
+        from gdrives.sheets import pull_values
+
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        env.grid.fail("values.get", http_error(429, "rate limited"))
+        assert pull_values(env.grid, "S", "'Members'!A1") == [["member_id"]]
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err) == ("", "")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["sheets-get", "SHEET", "Members!A1:A1"],
+            ["sheets-widths", "SHEET"],
+            ["sheets-pull", "roster"],
+            ["sheets-push", "roster"],
+        ],
+    )
+    def test_every_sheets_command_runs_inside_the_notices(
+        self, env, monkeypatch, command
+    ):
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("gdrives.sheets.retry.random.random", lambda: 0.0)
+        for method in ("values.get", "spreadsheets.get"):
+            env.grid.fail(method, http_error(429, "rate limited"))
+        result = env.invoke(*command)
+        assert "Sheets API returned 429; retrying in 1s (attempt 2 of 5)" in (
+            result.stderr
+        )

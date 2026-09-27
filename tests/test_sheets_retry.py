@@ -13,6 +13,7 @@ from helpers import FakeSheetsService, http_error
 from gdrives.sheets import (
     IDEMPOTENT_STATUSES,
     RATE_LIMIT_STATUSES,
+    RetryNotice,
     append_values,
     batch_update_spreadsheet,
     batch_update_values,
@@ -20,6 +21,7 @@ from gdrives.sheets import (
     list_tabs,
     pull_many,
     pull_values,
+    retry_notices,
     tab_sheet_ids,
     update_values,
     with_retry,
@@ -55,6 +57,80 @@ class TestStatusSets:
 
     def test_rate_limit_set(self):
         assert RATE_LIMIT_STATUSES == {429}
+
+
+class TestNotices:
+    def test_on_retry_is_called_before_each_wait_and_not_after_the_last_call(self):
+        seen: list[object] = []
+        errors = [
+            http_error(429, "rate"),
+            http_error(503, "down"),
+            http_error(429, "x"),
+        ]
+        with pytest.raises(type(errors[0])):
+            with_retry(
+                Flaky(list(errors)),
+                attempts=3,
+                sleep=lambda delay: seen.append(("slept", delay)),
+                jitter=lambda: 0.25,
+                on_retry=seen.append,
+            )
+        assert seen == [
+            RetryNotice(status=429, delay=1.25, attempt=2, attempts=3),
+            ("slept", 1.25),
+            RetryNotice(status=503, delay=2.25, attempt=3, attempts=3),
+            ("slept", 2.25),
+        ]
+
+    def test_a_call_that_succeeds_at_once_notifies_nothing(self):
+        seen: list[RetryNotice] = []
+        assert run(Flaky([]), on_retry=seen.append) == ("ok", [])
+        assert seen == []
+
+    def test_an_error_that_is_not_retried_notifies_nothing(self):
+        seen: list[RetryNotice] = []
+        with pytest.raises(type(http_error(404, "gone"))):
+            run(Flaky([http_error(404, "gone")]), on_retry=seen.append)
+        assert seen == []
+
+    def test_retry_notices_reaches_the_wrappers_own_retries(self, monkeypatch):
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("gdrives.sheets.retry.random.random", lambda: 0.0)
+        svc = FakeSheetsService(get=[http_error(429, "rate"), {"values": [["a"]]}])
+        seen: list[RetryNotice] = []
+        with retry_notices(seen.append):
+            assert pull_values(svc, "sid", "A1") == [["a"]]
+        assert seen == [RetryNotice(status=429, delay=1.0, attempt=2, attempts=5)]
+
+    def test_blocks_nest_and_the_callback_is_unset_after_its_block(self):
+        outer: list[RetryNotice] = []
+        inner: list[RetryNotice] = []
+
+        def once():
+            return run(Flaky([http_error(429, "rate")]))
+
+        with retry_notices(outer.append):
+            once()
+            with retry_notices(inner.append):
+                once()
+            once()
+        once()
+        assert (len(outer), len(inner)) == (2, 1)
+
+    def test_the_callback_is_unset_when_its_block_raises(self):
+        seen: list[RetryNotice] = []
+        with pytest.raises(RuntimeError):
+            with retry_notices(seen.append):
+                raise RuntimeError("boom")
+        run(Flaky([http_error(429, "rate")]))
+        assert seen == []
+
+    def test_on_retry_given_wins_over_the_block(self):
+        block: list[RetryNotice] = []
+        given: list[RetryNotice] = []
+        with retry_notices(block.append):
+            run(Flaky([http_error(429, "rate")]), on_retry=given.append)
+        assert (len(block), len(given)) == (0, 1)
 
 
 class TestWithRetry:

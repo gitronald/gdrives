@@ -78,6 +78,7 @@ _TAB_FIELDS = frozenset(
         "blank_keys",
         "on_invalid",
         "clear_links",
+        "sheet_id",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -125,7 +126,10 @@ class TabConfig:
     :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
     or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
     ``clear_links`` leaves the cells a sync or a push writes with no link,
-    where the Sheets API links a URL when it is written.
+    where the Sheets API links a URL when it is written. ``sheet_id`` names
+    the tab by its ``sheetId``, which a rename leaves as it is: the tab is
+    then found by it, and ``title`` is what reports and the base file call
+    the tab.
     """
 
     title: str
@@ -145,6 +149,7 @@ class TabConfig:
     blank_keys: str = "refuse"
     on_invalid: str = "refuse"
     clear_links: bool = False
+    sheet_id: int | None = None
     store: Store | None = None
 
     def __post_init__(self) -> None:
@@ -367,6 +372,12 @@ class _Checker:
                 tab = self.tab(where, title, raw_tab)
                 if tab is None:
                     continue
+                named = [t.title for t in tabs if t.sheet_id == tab.sheet_id]
+                if tab.sheet_id is not None and named:
+                    problems.append(
+                        f"{where}, tab {title!r}: 'sheet_id' {tab.sheet_id} is "
+                        f"tab {named[0]!r} too"
+                    )
                 tabs.append(tab)
                 if tab.mode == "sync" and input_option == USER_ENTERED:
                     problems.append(
@@ -478,6 +489,15 @@ class _Checker:
                 f"{where}: 'bootstrap' must be one of {sorted(BOOTSTRAPS)}, not "
                 f"{bootstrap!r} (--adopt is a flag, not a config value)"
             )
+        sheet_id = raw.get("sheet_id")
+        # bool is an int subclass, and True is not a sheetId.
+        if sheet_id is not None and (
+            isinstance(sheet_id, bool) or not isinstance(sheet_id, int) or sheet_id < 0
+        ):
+            problems.append(
+                f"{where}: 'sheet_id' must be a whole number, the tab's sheetId, "
+                f"not {sheet_id!r}"
+            )
         clear_links = raw.get("clear_links", False)
         if not isinstance(clear_links, bool):
             problems.append(f"{where}: 'clear_links' must be true or false")
@@ -511,6 +531,7 @@ class _Checker:
             blank_keys=str(blank_keys),
             on_invalid=str(on_invalid),
             clear_links=bool(clear_links),
+            sheet_id=sheet_id,
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:

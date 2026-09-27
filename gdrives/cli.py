@@ -472,6 +472,25 @@ def sheets_rules(
         run_rules(source, as_json=as_json)
 
 
+@app.command(name="sheets-widths")
+def sheets_widths(
+    source: Annotated[str, typer.Argument(help=_SOURCE_HELP)],
+    tab: Annotated[
+        str | None,
+        typer.Option("--tab", help="Tab name (default: first tab)"),
+    ] = None,
+):
+    """Print a tab's column widths in pixels, as JSON by header name.
+
+    The output is ready to paste under a tab's "widths" in
+    gdrives-sheets.json. Example: gdrives sheets-widths <sheet> --tab Members
+    """
+    from gdrives.sheets import run_widths
+
+    with _cli_errors():
+        run_widths(source, tab=tab)
+
+
 def _flag(name: str, what: str) -> typer.models.OptionInfo:
     return typer.Option(f"--{name}", help=f"Format matching cells {what}")
 
@@ -661,6 +680,21 @@ def sheets_pull(
         Literal["csv", "tsv", "json"] | None,
         typer.Option("--format", help="With --all-tabs, the file format (csv)"),
     ] = None,
+    bom: Annotated[
+        bool,
+        typer.Option(
+            "--bom",
+            help="With --all-tabs, start each .csv or .tsv file with a byte-order mark",
+        ),
+    ] = False,
+    slug: Annotated[
+        bool,
+        typer.Option(
+            "--slug",
+            help="With --all-tabs, name each file by its title in lower case, "
+            "with hyphens: 'Form responses 1' is form-responses-1",
+        ),
+    ] = False,
 ):
     """Replace local files with the pull tabs of a target (or dump every tab).
 
@@ -681,6 +715,8 @@ def sheets_pull(
             output=output,
             skip=skip or [],
             file_format=file_format,
+            bom=bom,
+            slugs=slug,
         )
     raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
 

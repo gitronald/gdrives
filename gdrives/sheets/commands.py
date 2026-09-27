@@ -6,16 +6,18 @@ the helpers in the sibling modules.
 """
 
 import csv
+import functools
 import json
 import sys
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, ParamSpec, TypeVar
 
-from gdrives.local import escape_formula
+from gdrives.local import escape_formula, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
 from gdrives.sheets.config import Target, load_config
 from gdrives.sheets.files import read_values_csv, write_values_csv
 from gdrives.sheets.match import set_by_match
+from gdrives.sheets.retry import RetryNotice, retry_notices
 from gdrives.sheets.rules import (
     _flatten_rules,
     _rule_tabs,
@@ -28,6 +30,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.structure import get_column_widths
 from gdrives.sheets.sync import format_report, pull_all_tabs, run_target
 from gdrives.sheets.values import (
     RAW,
@@ -61,6 +64,29 @@ def format_values(values: list[list[str]]) -> str:
 
 # -- CLI entry points --
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _print_retry(notice: RetryNotice) -> None:
+    """Say on stderr that a call is being retried, so a wait does not look hung."""
+    print(
+        f"Sheets API returned {notice.status}; retrying in {notice.delay:.0f}s "
+        f"(attempt {notice.attempt} of {notice.attempts})",
+        file=sys.stderr,
+    )
+
+
+def _noticed(run: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run a command inside :func:`retry_notices`, printing each wait."""
+
+    @functools.wraps(run)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with retry_notices(_print_retry):
+            return run(*args, **kwargs)
+
+    return wrapped
+
 
 def _resolve_and_report(source: str) -> str:
     """Resolve ``source`` to a spreadsheet ID and echo it to stderr.
@@ -73,6 +99,7 @@ def _resolve_and_report(source: str) -> str:
     return resolve_and_report(source, "Spreadsheet")
 
 
+@_noticed
 def run_get(
     source: str,
     range_: str | None = None,
@@ -120,6 +147,7 @@ def run_get(
         )
 
 
+@_noticed
 def run_update(
     source: str, range_: str, values_file: str, *, raw: bool = False
 ) -> None:
@@ -142,6 +170,7 @@ def run_update(
     )
 
 
+@_noticed
 def run_append(
     source: str, range_: str, values_file: str, *, raw: bool = False
 ) -> None:
@@ -165,6 +194,7 @@ def run_append(
     )
 
 
+@_noticed
 def run_clear(source: str, range_: str, *, yes: bool = False) -> None:
     """Clear the values in a range, confirming first unless ``yes``."""
     import typer
@@ -180,6 +210,7 @@ def run_clear(source: str, range_: str, *, yes: bool = False) -> None:
     print(f"Cleared {result.get('clearedRange', range_)}")
 
 
+@_noticed
 def run_set(
     source: str,
     match: dict[str, str],
@@ -218,6 +249,25 @@ def run_set(
     )
 
 
+@_noticed
+def run_widths(source: str, *, tab: str | None = None) -> None:
+    """Print a tab's column widths as a JSON object, by header name.
+
+    The object is ready to paste under a tab's ``widths`` in the config.
+    Targets the first tab when ``tab`` is None, and reads with the read-only
+    scope.
+    """
+    from gdrives.auth import build_sheets_service
+
+    spreadsheet_id = _resolve_and_report(source)
+    service = build_sheets_service()
+    if tab is None:
+        tab = first_tab(service, spreadsheet_id)
+    widths = get_column_widths(service, spreadsheet_id, tab)
+    print(json.dumps(widths, indent=2, ensure_ascii=False))
+
+
+@_noticed
 def run_rules(source: str, *, as_json: bool = False) -> None:
     """List conditional format rules grouped by tab, or as raw JSON for replay."""
     from gdrives.auth import build_sheets_service
@@ -233,6 +283,7 @@ def run_rules(source: str, *, as_json: bool = False) -> None:
         print(format_rules(rules))
 
 
+@_noticed
 def run_add_rule(
     source: str,
     *,
@@ -302,6 +353,7 @@ def run_add_rule(
     print(f"Added rule at index {index}: {describe_rule(rule)}")
 
 
+@_noticed
 def run_delete_rule(
     source: str, index: int, *, tab: str | None = None, yes: bool = False
 ) -> None:
@@ -422,6 +474,7 @@ def _run_config(
     return report.exit_code
 
 
+@_noticed
 def run_sync(
     target: str,
     *,
@@ -451,6 +504,7 @@ def run_sync(
     )
 
 
+@_noticed
 def run_push(
     target: str,
     *,
@@ -469,6 +523,7 @@ def run_push(
 _PULL_FORMATS = ("csv", "tsv", "json")
 
 
+@_noticed
 def run_pull(
     source: str,
     *,
@@ -479,14 +534,18 @@ def run_pull(
     output: str | None = None,
     skip: Sequence[str] = (),
     file_format: str | None = None,
+    bom: bool = False,
+    slugs: bool = False,
 ) -> int:
     """Replace local files from the ``pull`` tabs of config target ``source``.
 
     With ``all_tabs``, ``source`` is a spreadsheet (URL, file ID, or Drive
     path) instead, no config is read, and every tab but ``skip`` is written
-    to ``output`` in ``file_format`` (``csv`` by default). The options that
-    belong to the other form are refused before any request. Previews unless
-    ``apply``; prints the report and returns its exit code.
+    to ``output`` in ``file_format`` (``csv`` by default), with a byte-order
+    mark under ``bom`` and named by :func:`~gdrives.local.slug` of its title
+    under ``slugs``. The options that belong to the other form are refused
+    before any request. Previews unless ``apply``; prints the report and
+    returns its exit code.
     """
     if all_tabs:
         misused = [
@@ -502,8 +561,16 @@ def run_pull(
             raise ValueError(
                 f"--format must be one of {list(_PULL_FORMATS)}, not {file_format!r}"
             )
+        if bom and file_format == "json":
+            raise ValueError("--bom applies only to --format csv and tsv")
         return _run_all_tabs(
-            source, output, skip=skip, file_format=file_format or "csv", apply=apply
+            source,
+            output,
+            skip=skip,
+            file_format=file_format or "csv",
+            apply=apply,
+            bom=bom,
+            slugs=slugs,
         )
     misused = [
         flag
@@ -511,6 +578,8 @@ def run_pull(
             ("-o/--output", output is not None),
             ("--skip", skip),
             ("--format", file_format is not None),
+            ("--bom", bom),
+            ("--slug", slugs),
         )
         if given
     ]
@@ -526,6 +595,8 @@ def _run_all_tabs(
     skip: Sequence[str],
     file_format: str,
     apply: bool,
+    bom: bool = False,
+    slugs: bool = False,
 ) -> int:
     """Dump every tab of ``source`` to ``output`` with no config; the exit code."""
     from gdrives.auth import announce_credentials, build_sheets_service
@@ -541,6 +612,8 @@ def _run_all_tabs(
         extension=f".{file_format}",
         skip=list(dict.fromkeys(skip)),
         apply=apply,
+        bom=bom,
+        name=slug if slugs else None,
     )
     print(format_report(report))
     return report.exit_code

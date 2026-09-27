@@ -26,6 +26,11 @@ order that is a safety property, stopping at the first failure:
    cells, the new rows, and the read-back check.
 4. The local store, then the base store, then the column widths.
 
+A run lists the spreadsheet's tabs once
+(:func:`~gdrives.sheets.values.tab_listing`) and passes the listing to each
+tab, which says whether the tab exists and, for a tab the config names by
+``sheet_id``, what its title is now. A function called by itself reads its own.
+
 A caller's own checks are three hooks. ``validate`` takes rows, ``check`` a
 :class:`CheckContext` (the rows, the columns of both sides, and the merge),
 and both block a write. ``warn`` takes a :class:`CheckContext` too, runs once
@@ -96,11 +101,13 @@ from gdrives.sheets.values import (
     FORMATTED_STRING,
     RAW,
     UNFORMATTED_VALUE,
+    TabListing,
     batch_update_spreadsheet,
     list_tabs,
     pull_many,
     pull_values,
     tab_grid,
+    tab_listing,
     update_values,
 )
 
@@ -285,9 +292,11 @@ class TabPlan:
     ``columns`` is the projection. ``table`` is the tab as read, over the
     projection columns it has (None when the tab is missing or empty), and
     ``plan`` the merge against it (None when the local rows had problems).
-    ``base`` is the base file as read, None when there is none yet. The
-    options are kept so :func:`apply_tab` can merge again after changing the
-    tab's structure.
+    ``base`` is the base file as read, None when there is none yet. ``title``
+    is the title the tab has on the sheet, which differs from the config's
+    for a tab found by its ``sheet_id`` and renamed. The options are kept so
+    :func:`apply_tab` can merge again after changing the tab's structure, and
+    ``listing`` is the tab listing the plan was made with.
     """
 
     target: Target
@@ -307,6 +316,8 @@ class TabPlan:
     warn: Check | None = None
     created: bool = False
     added: tuple[str, ...] = ()
+    title: str = ""
+    listing: TabListing | None = None
 
 
 # -- reading --
@@ -409,6 +420,30 @@ def _warn(report: TabReport, context: CheckContext, warn: Check | None) -> None:
         report.warnings = list(warn(context))
 
 
+def _sheet_title(
+    title: str, sheet_id: int | None, listing: TabListing, report: TabReport
+) -> str | None:
+    """The title a tab has on the sheet, or None when the sheet has no such tab.
+
+    A tab with a ``sheet_id`` is found by it, and a title that differs from
+    the config's is noted in the report. A ``sheet_id`` the spreadsheet lacks
+    raises: the run never falls back to the title, which another tab may
+    have taken, and never creates the tab.
+    """
+    if sheet_id is None:
+        return title if title in listing.grids else None
+    found = listing.title_of(sheet_id)
+    if found is None:
+        raise ValueError(
+            f"tab {title!r}: the spreadsheet has no tab with sheet_id {sheet_id}; "
+            "a tab named by its sheet_id is not looked for by title, and is "
+            "not created"
+        )
+    if found != title:
+        report.notes.append(f"renamed on the sheet: {title!r} is now {found!r}")
+    return found
+
+
 def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
 
@@ -429,6 +464,7 @@ def plan_tab(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabPlan:
     """Read a sync tab, its local file, and its base, and merge them. Writes nothing.
@@ -474,6 +510,11 @@ def plan_tab(
     the row the new rows go above.
     ``report`` is filled in place when given (a caller keeping a partial
     report on error), else created.
+
+    ``listing`` is the spreadsheet's tab listing when the caller has read it,
+    as :func:`run_target` has; with None it is read here. A tab with a
+    ``sheet_id`` is found by it, under whatever title it has now, and one the
+    spreadsheet lacks is an error.
     """
     if prefer is not None and prefer not in SIDES:
         raise ValueError(
@@ -491,7 +532,7 @@ def plan_tab(
         "check": check,
         "warn": warn,
     }
-    return _plan(service, spreadsheet_id, target, tab, report, options)
+    return _plan(service, spreadsheet_id, target, tab, report, options, listing=listing)
 
 
 def _plan(
@@ -505,6 +546,7 @@ def _plan(
     created: bool = False,
     added: Sequence[str] = (),
     check: bool = True,
+    listing: TabListing | None = None,
 ) -> TabPlan:
     """:func:`plan_tab`'s body. ``created`` marks a tab this run created, and
     ``added`` the columns this run added, both of which the base cannot hold.
@@ -522,6 +564,8 @@ def _plan(
     local = _read_local(tab)
     columns = _projection(tab, local)
 
+    title = tab.title
+
     def planned(
         table: Table | None, plan: MergePlan | None, base: Records | None
     ) -> TabPlan:
@@ -536,6 +580,8 @@ def _plan(
             plan=plan,
             created=created,
             added=tuple(added),
+            title=title,
+            listing=listing,
             **options,
         )
 
@@ -566,12 +612,16 @@ def _plan(
     serials: Serials = {}
     remote: list[dict[str, str]] = []
     fresh = set(added)
-    if tab.title not in list_tabs(service, spreadsheet_id):
+    if listing is None:
+        listing = tab_listing(service, spreadsheet_id)
+    found = _sheet_title(tab.title, tab.sheet_id, listing, report)
+    if found is None:
         report.tab_state = "missing"
     else:
-        grid = _read_grid(service, spreadsheet_id, tab.title)
+        title = found
+        grid = _read_grid(service, spreadsheet_id, title)
         try:
-            whole = parse_tab(tab.title, grid, None)
+            whole = parse_tab(title, grid, None)
         except EmptyTabError:
             if _canonical(grid):
                 raise ValueError(
@@ -582,7 +632,7 @@ def _plan(
         else:
             report.tab_state = "present"
             sheet_columns = tuple(whole.columns)
-            serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
+            serials = pull_serials(service, spreadsheet_id, title, grid, tab.types)
             table, remote = _sheet_side(
                 tab, columns, grid, serials, whole, report, options
             )
@@ -696,7 +746,7 @@ def _sheet_side(
     )
     present = [column for column in columns if column not in missing]
     table = parse_tab(
-        tab.title,
+        whole.tab,
         grid,
         present,
         tab.key,
@@ -735,7 +785,7 @@ def _insert_row(
         )
     elif column in table.header and column not in table.columns:
         table = parse_tab(
-            tab.title,
+            table.tab,
             grid,
             [*table.columns, column],
             tab.key,
@@ -824,7 +874,7 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
         planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
-        set_column_widths(service, spreadsheet_id, tab.title, tab.widths)
+        set_column_widths(service, spreadsheet_id, planned.title, tab.widths)
         report.wrote_widths = True
     return report
 
@@ -841,21 +891,26 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
     made in between raises :class:`SheetChangedError` rather than writing
     unchecked rows.
     """
-    report, tab = planned.report, planned.tab
+    report, tab, title = planned.report, planned.tab, planned.title
     state, added, dropped = report.tab_state, report.add_columns, report.drop_columns
+    notes = list(report.notes)
+    listing = planned.listing
     # Flagged step by step, so a failure shows the steps that landed before it.
     if state == "missing":
-        ensure_tabs(service, spreadsheet_id, [tab.title])
+        titles = listing.titles if listing is not None else None
+        ensure_tabs(service, spreadsheet_id, [title], existing=titles)
         report.wrote_sheet = True
+        # A listing from before the tab was created is not used again.
+        listing = None
     if state != "present":
-        add_columns(service, spreadsheet_id, tab.title, planned.columns)
+        add_columns(service, spreadsheet_id, title, planned.columns)
         report.wrote_sheet = True
     if added:
         # Placed on the sheet's header as it is now: the deletes run after.
-        place_columns(service, spreadsheet_id, tab.title, planned.columns)
+        place_columns(service, spreadsheet_id, title, planned.columns)
         report.wrote_sheet = True
     if dropped:
-        delete_columns(service, spreadsheet_id, tab.title, list(dropped))
+        delete_columns(service, spreadsheet_id, title, list(dropped))
         report.wrote_sheet = True
 
     options: dict[str, Any] = {
@@ -877,6 +932,7 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         created=planned.created or state != "present",
         added=[*planned.added, *added],
         check=False,
+        listing=listing,
     )
     if (
         report.add_columns
@@ -888,6 +944,7 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
             f"tab {tab.title!r} changed while it was restructured; run again"
         )
     report.tab_state, report.add_columns, report.drop_columns = state, added, dropped
+    report.notes = notes
     return again
 
 
@@ -905,6 +962,7 @@ def sync_tab(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """:func:`plan_tab`, then :func:`apply_tab` when ``apply``."""
@@ -920,6 +978,7 @@ def sync_tab(
         validate=validate,
         check=check,
         warn=warn,
+        listing=listing,
         report=report,
     )
     if not apply:
@@ -988,6 +1047,7 @@ def pull_tab(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """Replace ``tab``'s local file with the tab's records (with ``apply``).
@@ -1004,18 +1064,23 @@ def pull_tab(
     changed by key when there is one, and the drop in row count); a missing
     local file is simply created. An unchanged file is not rewritten. A
     delimited file ends its lines as the tab's ``newline`` says.
+
+    ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
-    if tab.title not in list_tabs(service, spreadsheet_id):
+    if listing is None:
+        listing = tab_listing(service, spreadsheet_id)
+    title = _sheet_title(tab.title, tab.sheet_id, listing, report)
+    if title is None:
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; the local file is left alone")
-    grid = _read_grid(service, spreadsheet_id, tab.title)
-    serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
+    grid = _read_grid(service, spreadsheet_id, title)
+    serials = pull_serials(service, spreadsheet_id, title, grid, tab.types)
     try:
         table = parse_tab(
-            tab.title,
+            title,
             grid,
             tab.columns,
             tab.key,
@@ -1079,6 +1144,7 @@ def push_tab(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """Replace ``tab``'s values with its local file (with ``apply``).
@@ -1087,9 +1153,9 @@ def push_tab(
     :func:`push_rows`, which says what is checked, written, and refused. The
     header row and every local row are written in the local file's column
     order (the configured columns only, when there are some), and the tab's
-    ``key``, ``blank_keys``, ``schema``, and ``widths`` are passed on. A
-    local side that does not exist, holds no rows, or lacks a configured
-    column is refused.
+    ``key``, ``blank_keys``, ``schema``, ``widths``, and ``sheet_id`` are
+    passed on, with ``listing``. A local side that does not exist, holds no
+    rows, or lacks a configured column is refused.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
@@ -1116,6 +1182,8 @@ def push_tab(
         widths=tab.widths,
         clear_links=tab.clear_links,
         label=_named(store),
+        sheet_id=tab.sheet_id,
+        listing=listing,
         report=report,
     )
 
@@ -1138,6 +1206,8 @@ def push_rows(
     widths: Mapping[str, int] | None = None,
     clear_links: bool = False,
     label: str = "rows",
+    sheet_id: int | None = None,
+    listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """Replace the values of the tab ``title`` with ``rows`` (with ``apply``).
@@ -1177,6 +1247,11 @@ def push_rows(
     costs one grid read when the push left none, and a write and a second
     read when it left some. A link that remains raises
     :class:`ReadBackError`.
+
+    With ``sheet_id`` the tab is found by it, under whatever title it has
+    now, and ``title`` is only what the report calls it; a ``sheet_id`` the
+    spreadsheet lacks is an error, and no tab is created. ``listing`` is the
+    spreadsheet's tab listing when the caller has read it.
     """
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
@@ -1204,7 +1279,11 @@ def push_rows(
         index_rows(rows, key, side=label, blank_keys=blank_keys)
     expected = [out, *([row.get(column, "") for column in out] for row in rows)]
 
-    exists = title in list_tabs(service, spreadsheet_id)
+    if listing is None:
+        listing = tab_listing(service, spreadsheet_id)
+    found = _sheet_title(title, sheet_id, listing, report)
+    exists = found is not None
+    title = found if found is not None else title
     grid = _read_grid(service, spreadsheet_id, title) if exists else []
     if not exists:
         report.tab_state = "missing"
@@ -1231,7 +1310,7 @@ def push_rows(
                 f"tab {title!r} changed since it was read, so nothing was written"
             )
     else:
-        ensure_tabs(service, spreadsheet_id, [title])
+        ensure_tabs(service, spreadsheet_id, [title], existing=listing.titles)
         report.wrote_sheet = True
     height = max(len(grid), len(expected))
     width = max(max((len(row) for row in grid), default=0), len(out))
@@ -1340,6 +1419,8 @@ def pull_all_tabs(
     extension: str = ".csv",
     skip: Collection[str] = (),
     apply: bool = False,
+    bom: bool = False,
+    name: Callable[[str], str] | None = None,
 ) -> SyncReport:
     """Dump every tab to ``out_dir``, one record file per tab, with no config.
 
@@ -1347,9 +1428,15 @@ def pull_all_tabs(
     :func:`~gdrives.local.safe_filename` of the title plus ``extension``
     (``.csv``, ``.tsv``, or ``.json``); tabs titled in ``skip`` are left out,
     which protects a local file that shares a name with a tab but is made
-    elsewhere. Refused before any read of values: an unknown extension, a
-    ``skip`` title the spreadsheet lacks, and two titles whose file names
-    collide (compared case-insensitively). A tab with no values, or no header
+    elsewhere. ``name`` maps a title to a file stem of the caller's choosing,
+    such as :func:`~gdrives.local.slug`; a title it raises ValueError for is
+    reported for its tab, which is not written. ``bom`` starts each file with
+    a byte-order mark.
+
+    Refused before any read of values: an unknown extension, ``bom`` with
+    ``.json``, a ``skip`` title the spreadsheet lacks, and two titles whose
+    file names collide (compared case-insensitively, as ``name`` maps them). A
+    tab with no values, or no header
     row, is reported and skipped, never written as an empty file. With
     ``apply`` the files are written (and ``out_dir`` created), a delimited
     one with LF line endings; an unchanged file is not rewritten.
@@ -1358,14 +1445,23 @@ def pull_all_tabs(
         raise ValueError(
             f"extension {extension!r} must be one of {sorted(LOCAL_EXTENSIONS)}"
         )
+    if bom and extension.lower() == ".json":
+        raise ValueError("a byte-order mark applies only to .csv and .tsv")
     titles = list_tabs(service, spreadsheet_id)
     unknown = [title for title in skip if title not in titles]
     if unknown:
         raise ValueError(f"no tab(s) named {unknown} to skip; tabs: {titles}")
     wanted = [title for title in titles if title not in skip]
-    names: dict[str, list[str]] = {}
+    stems: dict[str, str] = {}
+    unnamed: dict[str, str] = {}
     for title in wanted:
-        names.setdefault(safe_filename(title).casefold(), []).append(title)
+        try:
+            stems[title] = (name or safe_filename)(title)
+        except ValueError as e:
+            unnamed[title] = str(e)
+    names: dict[str, list[str]] = {}
+    for title, stem in stems.items():
+        names.setdefault(stem.casefold(), []).append(title)
     collisions = [group for group in names.values() if len(group) > 1]
     if collisions:
         raise ValueError(
@@ -1384,11 +1480,16 @@ def pull_all_tabs(
     )
     report = SyncReport()
     for title, grid in zip(wanted, grids, strict=True):
-        path = out / f"{safe_filename(title)}{extension}"
+        if title in unnamed:
+            failed = TabReport(tab=title, mode="pull", apply=apply)
+            failed.error = f"no file name for the tab: {unnamed[title]}"
+            report.tabs.append(failed)
+            continue
+        path = out / f"{stems[title]}{extension}"
         tab_report = TabReport(tab=title, mode="pull", local=path, apply=apply)
         report.tabs.append(tab_report)
         try:
-            _dump_tab(tab_report, title, grid, path, apply)
+            _dump_tab(tab_report, title, grid, path, apply, bom)
         except TAB_ERRORS as e:
             tab_report.error = str(e)
     return report
@@ -1400,6 +1501,7 @@ def _dump_tab(
     grid: Sequence[Sequence[Any]],
     path: Path,
     apply: bool,
+    bom: bool = False,
 ) -> None:
     """Write one tab of :func:`pull_all_tabs`, or say why it was skipped."""
     try:
@@ -1418,7 +1520,7 @@ def _dump_tab(
     before = read_records(path) if path.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, ())
     if apply and not report.replacement.unchanged:
-        write_records(path, table.columns, table.rows)
+        write_records(path, table.columns, table.rows, bom=bom)
         report.wrote_local = True
 
 
@@ -1443,7 +1545,9 @@ def run_target(
 ) -> SyncReport:
     """Run every ``mode`` tab of ``target`` (or just ``tabs``), one report each.
 
-    ``validate``, ``check``, and ``warn`` are passed to every tab.
+    ``validate``, ``check``, and ``warn`` are passed to every tab. The
+    spreadsheet's tabs are listed once, and again only after a tab was
+    created, so a run of N tabs makes one listing and not N.
     ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
     that fails (a refusal, an API error, a failed guard) is reported with its
     error and the run goes on to the next tab, since tabs are independent.
@@ -1473,11 +1577,14 @@ def run_target(
             raise ValueError(f"target {target.name!r} has no {mode} tabs")
 
     report = SyncReport(target=target.name)
+    listing: TabListing | None = None
     for tab in selected:
         tab_report = TabReport(tab=tab.title, mode=mode, apply=apply)
         _started(tab_report, tab)
         report.tabs.append(tab_report)
         try:
+            if listing is None:
+                listing = tab_listing(service, spreadsheet_id)
             if mode == "sync":
                 sync_tab(
                     service,
@@ -1492,6 +1599,7 @@ def run_target(
                     validate=validate,
                     check=check,
                     warn=warn,
+                    listing=listing,
                     report=tab_report,
                 )
             elif mode == "pull":
@@ -1503,6 +1611,7 @@ def run_target(
                     validate=validate,
                     check=check,
                     warn=warn,
+                    listing=listing,
                     report=tab_report,
                 )
             else:
@@ -1515,10 +1624,14 @@ def run_target(
                     validate=validate,
                     check=check,
                     warn=warn,
+                    listing=listing,
                     report=tab_report,
                 )
         except TAB_ERRORS as e:
             tab_report.error = str(e)
+        if tab_report.tab_state == "missing" and tab_report.wrote_sheet:
+            # The run created the tab, so the listing is read again.
+            listing = None
     return report
 
 

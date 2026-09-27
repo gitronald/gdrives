@@ -347,6 +347,8 @@ gdrives sheets-sync roster --apply --prefer local  # Resolve conflicts toward lo
 gdrives sheets-pull roster --apply                 # Replace local files for the pull tabs
 gdrives sheets-push roster --apply                 # Replace the push tabs from local files
 gdrives sheets-pull <sheet-url> --all-tabs -o out/ --apply  # Dump every tab, no config
+gdrives sheets-pull <sheet-url> --all-tabs -o out/ --slug --bom --apply  # Slug file names, with a byte-order mark
+gdrives sheets-widths <sheet-url> --tab Members    # Column widths as JSON, for a tab's "widths"
 ```
 
 A `sync` tab is merged three ways by row key against a **base snapshot** (one
