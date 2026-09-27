@@ -2,7 +2,6 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
-| 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | active | — | [#56](https://github.com/gitronald/gdrives/pull/56) |
 | 017 | [List and download a file's Drive revisions, read-only](plans/017-drive-revisions/plan.md) | draft | — | — |
 | 016 | [Make Target.base optional when every tab has a base store](plans/016-optional-target-base/plan.md) | draft | — | — |
 | 015 | [Refuse projection columns the schema does not declare](plans/015-strict-schema/plan.md) | draft | — | — |
@@ -12,6 +11,7 @@
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
+| 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | done | 2026-09-27 16:51 PT | [#56](https://github.com/gitronald/gdrives/pull/56) |
 | 007 | [Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets](plans/007-sheets-sync-adoption-gaps/plan.md) | done | 2026-09-27 16:04 PT | [#44](https://github.com/gitronald/gdrives/pull/44) |
 | 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | done | 2026-09-27 13:47 PT | [#45](https://github.com/gitronald/gdrives/pull/45) |
 | 006 | [Add a sheets package with keyed two-way sync between Sheets and local files](plans/006-sheets-sync-module/plan.md) | done | 2026-09-27 08:29 PT | [#36](https://github.com/gitronald/gdrives/pull/36) |
