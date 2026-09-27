@@ -2,6 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | draft | — | — |
 | 007 | [Add typed records, pluggable stores, and in-memory pushes to sheets sync](plans/007-sheets-sync-typed-stores/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
