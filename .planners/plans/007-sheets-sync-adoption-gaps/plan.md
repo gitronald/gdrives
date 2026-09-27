@@ -26,8 +26,24 @@ A caller can use the orchestration only when its data is one `.csv`, `.tsv`, or 
 file per tab. A caller holding typed rows in memory, a file that holds several tabs, or a
 local side computed by code has to drop to the primitives, and then rebuilds what the
 orchestration already does: converting typed values to and from cell strings, ordering the
-writes, saving the base, and reporting. This plan closes that gap with additions that are
-each optional and each backward compatible.
+writes, saving the base, and reporting. This plan closes that gap.
+
+Three reviews in [`implementation-notes/`](implementation-notes/) widened it. `001`
+checked the first draft against the code. `002` and `003` each followed a downstream
+caller that had written its own sync code and tried to replace it with 0.11.0: one ran a
+keyed three-way sync, the other replaced whole tabs. `004` checked the three against the
+code and the live API. What they found falls in three groups, and the plan covers all
+three within `gdrives.sheets`:
+
+- defects in the released sync that change what a run writes: where new rows and new
+  columns land, the formatting new rows take, and line endings;
+- the additions of the first draft, corrected where it misread the code; and
+- smaller additions a caller needs before it can delete its own code: typed dates, hooks
+  that see the columns and the plan, the cells a run wrote, tabs named by `sheetId`, and
+  a few tools.
+
+Most additions are optional and keep today's behavior by default. The ones that do not
+are listed under [Compatibility](#compatibility).
 
 ### Scope
 
@@ -43,24 +59,108 @@ In scope:
 8. Helpers to clear and to find link formatting on written cells.
 9. `MergePlan` write predicates, and a non-blocking `warn` hook beside `validate`.
 
+Added from the notes (the note behind each is in brackets):
+
+10. New rows placed by the `insert_above` column as it will be after the run's pushes,
+    with the row named in the preview [D1].
+11. Added columns placed at their position in the projection [D2].
+12. Inserted rows formatted like the row above them [D4].
+13. LF line endings in the files a sync or a pull writes, and a `newline` tab field
+    [D6, M4].
+14. `date` and `datetime` columns read from the sheet's serial numbers as ISO 8601 [M5].
+15. A blocking `check` hook that sees both sides' columns [D3], and `carry=` on `merge`
+    [D9].
+16. The cells a run wrote, by row and column [D11].
+17. A tab named by its `sheetId`, which survives a rename [M7], and one tab listing per
+    run.
+18. Tools: `get_column_widths` and `sheets-widths` [M12], `--bom` and `--slug` for
+    `sheets-pull --all-tabs` [M8], and a notice when a call is retried [D8].
+19. Guide sections: moving an existing sync over [D5, M6, D10], a caller's own retry
+    [D7], and pulling and pushing the same files [M9].
+
 Out of scope:
 
 - A DataFrame dependency. Records stay plain dicts, as in plan 006.
-- Syncing formatting. Item 8 is a standalone helper and an opt-in step of a push; the
+- Syncing formatting. Item 8 is a standalone helper and an opt-in step of a run; the
   merge still moves values only.
+- Setting links. `linked_cells` reports a link and its target; writing one stays the
+  caller's [D12].
 - Applying row deletions, and per-column `USER_ENTERED` writes. Both remain open from
   plan 006.
-- New CLI commands. The existing `sheets-sync`, `sheets-pull`, and `sheets-push` gain no
-  flags; the new tab options are config fields.
+- CLI flags for the new tab options. `sheets-sync`, `sheets-pull`, and `sheets-push`
+  reach them through config fields. The only CLI additions are those of item 18.
+- A tab mode that both pulls and pushes [M9], and a schema setting that refuses an
+  undeclared column [D3]. The guide covers the first and the `check` hook the second.
+- A store factory for `pull_all_tabs`. It keeps writing one file per tab.
+- Authentication [M1 to M3], which is plan
+  [008](../008-oauth-token-and-consent-safety/plan.md), and file upload and spreadsheet
+  creation [M10, M11], which are plan
+  [009](../009-drive-upload-and-sheet-create/plan.md). 008 goes first: M1 breaks a
+  caller at upgrade time, before it changes any code.
 
 ### Subplans
+
+The plan passed 500 lines once the notes were applied, so the design is in `subplans/`,
+one file per implementation step, as in plan 006. This file keeps what every step
+shares. The draft's design sections moved there verbatim (`b8ff5c0`) and were then
+edited, so the diff of each file shows what the notes changed.
+
+These are **sidecar files, not `planners` subplans**. They carry no `id` or `sub`
+frontmatter, so they do not appear in `.planners/README.md` and `planners validate` does
+not check them. The table below is the status of record for the pieces.
+
+| Subplan | Scope | Items | Notes applied | Status |
+|---|---|---|---|---|
+| [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | draft |
+| [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5 | draft |
+| [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | draft |
+| [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | draft |
+| [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | draft |
+| [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | draft |
+| [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | draft |
+| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15 | draft |
+
+Each subplan keeps its own Log. Entries that concern the whole effort go in this file's
+Log.
+
+### Decisions
+
+Settled on 2026-09-27, before any work started. The first four were put to the owner;
+the rest were proposals of the draft or follow from a note, and are recorded here so
+that a step does not reopen them by accident.
+
+| # | Decision | Alternative set aside | From |
+|---|---|---|---|
+| 1 | The plan covers all of `gdrives.sheets`; auth and Drive writes are plans 008 and 009 | One plan for every note | owner |
+| 2 | One umbrella with sidecar subplans, an umbrella branch, and a stack of step PRs | `planners` subplans; sequential plans | owner |
+| 3 | LF line endings, formatting inherited from the row above, and normalized comparison are defaults, not options | Each as an opt-in | owner |
+| 4 | Item 8 is designed from the live probe in note `004`, which overrules D12 and part of D13 and D14 | Designing from the notes as written | owner, P1 to P8 |
+| 5 | A new sheet row with any invalid cell is held whole | Folding it with the invalid cells blank, which writes a row that does not match the sheet | draft |
+| 6 | A sheet cell blanked in a `required` column is held | Folding it, after which the local file fails its own check | draft |
+| 7 | `on_invalid` is a sync tab option read by the orchestration; `merge` takes `schema=` and holds what fails it | `on_invalid` on `merge`, where `"refuse"` means nothing | R6 |
+| 8 | `TabConfig.local` becomes `Path \| None`, listed as a visible change | Store arguments on every orchestration function, with a placeholder path on the tab | R2, R5 |
+| 9 | Classes are normalized by a public `column_type`; `ColumnSchema.type` stays `str` | Widening the field to `str \| type` | R9 |
+| 10 | `validate` keeps its rows-only signature; `check` and `warn` take a `CheckContext` | Detecting a hook's arity; changing `validate` | R11, D3 |
+| 11 | A typed date column costs a second read, of the declared columns only | Reading the whole tab with `SERIAL_NUMBER`, which changes undeclared date columns | M5 |
+| 12 | `clear_links` is a tab field for `push` and `sync` tabs | A helper the caller runs by hand after every run | P3 |
 
 ### Compatibility
 
 Every addition is a new function, a new optional argument, or a new config field with a
-default that keeps today's behavior. The one visible change for an existing config is
-item 3: a tab with a schema stops reporting differences of spelling as edits. That is
-noted in the changelog. The release is a minor version.
+default that keeps today's behavior, with the exceptions below. The draft named the
+first only [R2]. Each gets a line under Changed in the changelog, written in the step
+that makes the change. The release is a minor version.
+
+| Change | Who sees it | Step |
+|---|---|---|
+| A tab with a schema compares cells by declared type, so a difference of spelling is no longer an edit | Every sync tab with a schema | c |
+| Delimited local files and bases are written with LF | A file 0.11.0 wrote flips once, on its next changed write. `newline: "crlf"` keeps CRLF. `write_values_csv` and `sheets-get -o` keep CRLF | a |
+| Rows inserted with `insert_above` take the formatting of the row above | A tab whose rows below the insert point are formatted directly | a |
+| New rows are placed by the `insert_above` column as it will be after the run's pushes | A tab whose `insert_above` column is in the projection | a |
+| Columns added by `add_missing` land at their place in the projection, not at the right edge | Every `--add-missing` run | a |
+| A `date` or `datetime` column reads as ISO 8601 whatever the sheet displays | A tab that declares one. A base saved from display text reports each such cell as a sheet edit, once | b |
+| `TabConfig.local` is `Path \| None` | A caller that reads `tab.local` under a strict type checker | e |
+| `write_records` lists every cell that does not parse, not the first | A caller that matches the message text | b |
 
 ### Testing
 
@@ -74,33 +174,111 @@ Coverage is gated at 100%, so each step lands with its tests.
   `pull_tab`, and `push_tab` tests must pass unchanged over `FileStore`, which is the
   check that the refactor kept behavior. New tests use `MemoryStore` and a store whose
   `write` raises, to confirm the order of writes and what a failed run leaves behind.
-- Item 8 needs `FakeSheetGrid` to keep a link flag per cell and to apply `repeatCell`.
-- The live integration suite gains one case per item that reaches the API: a partial-key
-  tab, a `push_rows` with `clear_links`, and a sync through a custom store.
+- Item 8 needs `FakeSheetGrid` to model what the probe found: a whole-cell URL or domain
+  written as a value gains a cell link, `repeatCell` and `updateCells` honour a `fields`
+  mask over `userEnteredFormat.textFormat.link` and `textFormatRuns`, and
+  `spreadsheets.get` with `includeGridData` returns `hyperlink` and the runs. The fake's
+  link rule is pinned by one live test, so the two cannot drift apart unnoticed.
+- The fake also gains a `SERIAL_NUMBER` read (step b) and records the
+  `inheritFromBefore` it is sent (step a).
+- A step that changes what a run writes (all of step a, and item 3) gets a test that
+  fails on the old behavior, written first.
+
+**Live suite.** It makes 55 writes and 66 reads against limits of 60 a minute each, and
+waits out the refusals [R15]. New live cases are limited to what the fake cannot pin,
+and each shares the module's one temporary tab:
+
+| Step | Live case |
+|---|---|
+| a | `insert_above` with a pushed match, and the format the new row takes; a column placed mid-header |
+| b | A date cell and a date-time cell read as serial numbers, beside an ISO string in the same column |
+| c | A sync of a partial-key tab |
+| f | `push_rows` with `clear_links` over a whole-cell URL and a link on part of a cell |
+| g | A tab found by `sheetId` after a rename |
+
+The sync through a custom store reaches no API surface a file store does not, so it
+runs against `FakeSheetGrid` only [R15]. Step g's single tab listing per run takes reads
+out of every sync test. Each step's Log records the suite's request counts before and
+after, and step h states the budget. Subagents stay off the live suite; one run, at the
+end of a step, by the orchestrating session.
 
 ### Implementation order
 
-Each step is its own branch and PR, in this order:
+Each step is its own branch and PR, stacked in this order, and leaves the package
+releasable. Step a changes only released behavior and is sized to ship by itself if a
+release is wanted before the rest.
 
-| Step | Items | Depends on |
+| Step | Subplan | Depends on |
 |---|---|---|
-| a | 1, 2: the codec and Python types | — |
-| b | 5: partial blank keys | — |
-| c | 3, 4, 9 (predicates): the merge additions | a |
-| d | 6: stores | a |
-| e | 7, 8: `push_rows` and link formatting | d |
-| f | 9 (`warn`), config fields, docs, changelog | c, d, e |
+| 1 | a: sync fixes | — |
+| 2 | b: typed cells | — |
+| 3 | c: merge additions | b (`normalize_cell`, `column_type`) |
+| 4 | d: checks and hooks | c (the plan in the context) |
+| 5 | e: stores | b, c (`carry=`), d (`TabReport.warnings`) |
+| 6 | f: `push_rows` and links | d, e |
+| 7 | g: tabs and tools | f (one listing serves `push_rows` too) |
+| 8 | h: docs and release | all |
+
+```
+a (fixes) -> b (cells) -> c (merge) -> d (hooks) -> e (stores) -> f (push, links) -> g (tabs, tools) -> h (docs)
+```
+
+Branches follow plan 006: `feature/sheets-sync-adoption-gaps` is the umbrella branch and
+this plan's `branch`, with a draft PR into `dev` that is this plan's `pr`. Each step is
+`feature/sheets-sync-adoption-<letter>-<slug>`, cut from the step below it, with a draft
+PR onto that branch. The stack merges bottom-up into the umbrella branch.
+
+Two things carried over from plan 006's retrospective:
+
+- CI triggers on PRs into `dev` and `main` only, so the first commit on the umbrella
+  branch adds it to the workflow's `pull_request` branches, and the last one removes it.
+  Every step PR then gets a CI run.
+- A config field lands in the step that adds its feature, with its row in the guide's
+  tab field table, so no step ships a feature that a config cannot reach. Step h writes
+  the guide's longer sections and checks them against the Logs, not the design text.
 
 ### Open questions
 
-- **Normalized comparison by default.** Item 3 turns on for any tab with a schema. The
-  alternative is an explicit tab option. Default-on is proposed because a declared type
-  already states how the column should be read.
-- **Held rows.** Item 4 holds a whole new row for one invalid cell. Folding the row with
-  the invalid cells blank is the alternative, and it writes a row to the local file that
-  does not match the sheet.
-- **`required` under `hold`.** A sheet cell blanked in a `required` column is an edit, not
-  a malformed value. Proposed: hold it too, since folding it would make the local file
-  fail its own check on the next run.
-- **Store and `pull_all_tabs`.** It writes one file per tab with no config. It could take
-  a store factory; left as is unless a use appears.
+Settled, and moved to [Decisions](#decisions): normalized comparison by default (3),
+held rows (5), `required` under `hold` (6), and a store for `pull_all_tabs` (out of
+scope).
+
+Still open, each with the step that settles it:
+
+- **What a serial-number read returns for a text cell** in a declared date column, and
+  the precision a date-time serial carries. Step b opens with a live check; the design
+  assumes text comes back as text and rounds to the millisecond.
+- **Whether an unbounded grid read can fail.** D14 reports `DecodeRatioError` on a
+  16 MB response. The probe got 18.6 MB back without an error [P8]. Step f bounds the
+  read and masks its fields either way, which makes the response a few hundred bytes.
+- **Pushed dates land as text.** A sync writes `RAW` strings, so an ISO date pushed to
+  the sheet is text there, and sheet formulas over the column see text. This is plan
+  006's open question on numeric cells under `RAW`, now for dates too. Step h documents
+  it; a per-column `USER_ENTERED` write stays a follow-up.
+- **Unformatted reads and a saved base** [D5]. The note reasons from the code that a
+  `50%` cell reads `0.5`. Step h's guide section gets a live check of its examples.
+
+## Log
+
+### 2026-09-27 — renamed, widened from the notes, and split
+
+The plan was `007-sheets-sync-typed-stores`, "Add typed records, pluggable stores, and
+in-memory pushes to sheets sync". Three notes reviewed it on the day it was written
+(`001` to `003`), and the scope they describe is wider than the name, so it was renamed
+(`d4abc6f`) and its design split into sidecar subplans (`b8ff5c0`, a verbatim move).
+
+The notes were then checked against the code at `6b20b57`, whose `gdrives/` tree is
+identical to `v0.11.0`, and against the live API on two temporary tabs of the test
+spreadsheet, both deleted afterwards (13 reads and 14 writes). Note
+[`004`](implementation-notes/004-notes-review-and-link-probe.md) records the verdict on
+each claim. In short:
+
+- Every reference to the code in R1 to R15, D1 to D11, and M1 to M9 holds.
+- The draft's item 8 was right that a `RAW` write links URL-like text. D12 says the
+  opposite and is overruled. D13 holds in part, and D14's failure was not reproduced.
+- One thing no note had: `updateCells` with `userEnteredFormat.textFormat.link` in its
+  `fields` mask writes a URL with no link, in the same request.
+
+The owner settled scope, structure, the three default changes, and the probe
+(decisions 1 to 4). Plans 008 and 009 were added for the notes that fall outside
+`gdrives.sheets` (`8fa364f`, `8531d3e`).
