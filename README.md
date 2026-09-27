@@ -1,12 +1,12 @@
-# gdrives v0.10.0
+# gdrives v0.11.0
 
 Command-line tools for Google Drive.
 
 Browse Google Drives, list folder contents by path or ID, export Google Docs,
 Sheets, and Slides to Office formats, download individual files or whole folder
 trees, rename and move files and folders, read and write Google Sheet cell
-ranges, read and edit Google Docs content in place, and generate hyperlinked
-folder maps — all from the terminal.
+ranges, keep a Sheet tab and a local file in step, read and edit Google Docs
+content in place, and generate hyperlinked folder maps — all from the terminal.
 Human-readable Drive paths (e.g. `My Drive/projects`) resolve against a local
 drive-name cache, with first-class support for shared drives and "Shared with
 me" items. Listings carry URL, type, modified-date, owner, and sharer columns,
@@ -37,7 +37,21 @@ gdrives/
 ├── download.py  # Download a single file, or recurse a folder, to local disk
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
-├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
+├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
+│   ├── values.py     # spreadsheets.values.* wrappers, render options, and tab lookups
+│   ├── retry.py      # Retry with exponential backoff and jitter
+│   ├── cells.py      # Canonical cell strings, column types, row keys, and schema checks
+│   ├── a1.py         # A1 notation and GridRange conversion
+│   ├── match.py      # Keyed row updates (find_rows, set_by_match)
+│   ├── rules.py      # Conditional format rules
+│   ├── files.py      # Local CSV/TSV grids, and CSV/TSV/JSON record files
+│   ├── table.py      # Read a whole tab as header-named, keyed records
+│   ├── merge.py      # The pure three-way merge by row key
+│   ├── apply.py      # Write a merge plan to a tab, guarded and read back
+│   ├── structure.py  # Add and delete columns, create tabs, set column widths
+│   ├── config.py     # The sync config file (gdrives-sheets.json)
+│   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
+│   └── commands.py   # run_* entry points for the sheets-* commands
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
 
@@ -150,6 +164,7 @@ Default Credentials.
 Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
 and the `sheets-*` and `docs-*` commands) resolves it against the cache.
+`gdrives --version` prints the installed version.
 
 ### List Drive contents
 
@@ -283,6 +298,56 @@ clamped to the tab's current size, so it lists back as `A2:AA1000`. Second,
 color-scale (gradient) rules show in `sheets-rules` and replay through
 `--rule-json`, but the builder only makes custom-formula rules. `sheets-rules`
 uses the read-only scope; the other two use the `spreadsheets` write scope.
+
+### Sync a Sheet with a local file
+
+Keep a tab of a Google Sheet and a local `.csv`, `.tsv`, or `.json` file in
+step. A `gdrives-sheets.json` config, found in the working directory or a
+parent, names **targets**: a spreadsheet and the tabs to keep in step, each
+with a local file, a mode, and for a keyed sync the key columns:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "tabs": {
+      "Members": {"local": "data/members.csv", "key": ["member_id"]},
+      "Summary": {"mode": "push", "local": "output/summary.csv"}
+    }
+  }
+}
+```
+
+```bash
+gdrives sheets-sync roster                         # Preview every sync tab of the target
+gdrives sheets-sync roster --tab Members           # Preview one tab
+gdrives sheets-sync roster --apply                 # Write sheet, local file, and base
+gdrives sheets-sync roster --apply --adopt         # First sync: the local file wins
+gdrives sheets-sync roster --apply --add-missing   # Add local columns the sheet lacks
+gdrives sheets-sync roster --apply --drop-extra    # Delete sheet columns outside the projection
+gdrives sheets-sync roster --apply --prefer local  # Resolve conflicts toward local
+gdrives sheets-pull roster --apply                 # Replace local files for the pull tabs
+gdrives sheets-push roster --apply                 # Replace the push tabs from local files
+gdrives sheets-pull <sheet-url> --all-tabs -o out/ --apply  # Dump every tab, no config
+```
+
+A `sync` tab is merged three ways by row key against a **base snapshot** (one
+CSV per tab under `sheets-base/<target>/`, meant to be committed with the
+local file): a cell edited on one side is written to the other, a cell edited
+on both is reported as a conflict and left alone, and a new row on either side
+is added to the other. Deleted rows are flagged, never deleted. A `pull` tab
+replaces the local file with the tab, and a `push` tab replaces the tab's
+values with the local file.
+
+Every command previews by default and writes only with `--apply`. The report
+goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
+error, and 2 when conflicts or row flags are left for a person. A preview uses
+the read-only scope; `--apply` first prints the credential it will use to
+stderr, and `sheets-sync` and `sheets-push` then request the `spreadsheets`
+write scope (`sheets-pull` writes only local files and stays read-only). Values
+are synced, never formulas or formatting, and are written as literal strings.
+See [docs/sheets-sync.md](docs/sheets-sync.md) for the config fields, the merge
+and ownership rules, the first sync, and the exit codes.
 
 ### Read and edit Google Docs content
 
@@ -427,10 +492,13 @@ rather than fail when those aren't configured. A run that skips them ends with a
    GDRIVES_TEST_DOCUMENT_ID=<doc id>
    ```
 
-5. Run `uv run pytest -m integration`.
+5. Run `uv run pytest -m integration`. The Sheets API allows 60 reads and 60
+   writes a minute, and the tests wait when it refuses a request, so a run takes
+   from half a minute to a few minutes.
 
-The tests leave your files as they found them. Each Sheets test adds its own
-temporary `itest_<hex>` tab and deletes it afterward. Each Docs test appends a
+The tests leave your files as they found them. The Sheets tests share one
+temporary `itest_<hex>` tab, which is added before the first test, emptied
+between tests, and deleted after the last. Each Docs test appends a
 uniquely tagged paragraph and removes it. The whole-body Docs writes, which would
 wipe a tab, run only on a temporary `itest_<hex>` tab that the test adds to the
 document and then deletes.
@@ -447,7 +515,7 @@ There are a few options out there, but most haven't been touched in years, and n
 
 ## Security & privacy
 
-- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope.
+- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`, and `sheets-sync` and `sheets-push` with `--apply`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope, as do `sheets-sync` and `sheets-push` without `--apply` and `sheets-pull` with or without it.
 - The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
 - Names of shared items are chosen by other people. `ls`, `download`, `mv`, and `show-drives` escape control characters in them before printing, so an embedded escape sequence can't rewrite the terminal, and `ls --save-as` CSVs prefix formula-like cells with `'` so a spreadsheet app won't run them.

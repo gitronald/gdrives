@@ -5,14 +5,40 @@ command is called directly with plain Python defaults; the lazily-imported
 delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
+from importlib.metadata import version
+
 import pytest
 from google.auth.exceptions import RefreshError, TransportError
+from helpers import plain
 from httplib2 import ServerNotFoundError
 from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
+from typer.testing import CliRunner
 
 from gdrives import cli
 from gdrives.files import IncompleteSearchError
 from gdrives.resolve import DrivePathError
+
+
+class TestVersion:
+    def test_prints_the_installed_version_and_exits_0(self):
+        result = CliRunner().invoke(cli.app, ["--version"])
+        assert result.exit_code == 0
+        assert result.output == f"gdrives {version('gdrives')}\n"
+
+    def test_needs_no_command_and_runs_none(self, monkeypatch):
+        def ran(*args, **kwargs):
+            raise AssertionError("a command ran")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", ran)
+        result = CliRunner().invoke(cli.app, ["--version", "show-drives"])
+        assert result.exit_code == 0
+        assert result.output == f"gdrives {version('gdrives')}\n"
+
+    def test_help_keeps_the_app_description_and_lists_the_option(self):
+        result = CliRunner().invoke(cli.app, ["--help"])
+        assert result.exit_code == 0
+        assert "Google Drive file management tools." in plain(result.output)
+        assert "--version" in plain(result.output)
 
 
 class TestExport:

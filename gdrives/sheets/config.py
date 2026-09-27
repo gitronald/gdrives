@@ -1,0 +1,579 @@
+"""The sync config file: which tabs of which spreadsheet sync with which files.
+
+``gdrives-sheets.json`` names one or more **targets**, each a spreadsheet with
+the tabs to keep in step with local files::
+
+    {
+      "roster": {
+        "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+        "base": "sheets-base/roster",
+        "tabs": {
+          "Members": {"mode": "sync", "local": "data/members.csv",
+                      "key": ["member_id"]},
+          "Summary": {"mode": "push", "local": "output/summary.csv"}
+        }
+      }
+    }
+
+:func:`load_config` finds the file from the working directory upward (or takes
+a path), resolves every relative path in it against the file's own
+directory, and checks all of it before anything touches the network. Every
+problem found is collected and raised together as one :class:`ConfigError`,
+each naming its target and tab, so a single run shows everything to fix. The
+``spreadsheet`` value is kept as written; the caller resolves it.
+"""
+
+import json
+import os
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from gdrives.local import safe_filename
+from gdrives.sheets.cells import COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.values import RAW, USER_ENTERED
+
+#: The config file's name, looked for in the working directory and its parents.
+CONFIG_NAME = "gdrives-sheets.json"
+
+#: The sync modes: ``sync`` merges both ways, ``pull`` and ``push`` replace.
+MODES = frozenset({"sync", "pull", "push"})
+
+#: How a sync tab with no base yet is started; ``--adopt`` is a flag instead.
+BOOTSTRAPS = frozenset({"local"})
+
+#: The ``valueInputOption`` a target writes with.
+INPUT_OPTIONS = frozenset({RAW, USER_ENTERED})
+
+#: The local file formats, by lower-cased extension.
+LOCAL_EXTENSIONS = frozenset({".csv", ".tsv", ".json"})
+
+# The cache directory gdrives already uses, commonly ignored by version
+# control; a base belongs where it is committed.
+_CACHE_DIR = ".gdrives"
+
+_TARGET_FIELDS = frozenset({"spreadsheet", "base", "input_option", "tabs"})
+_TAB_FIELDS = frozenset(
+    {
+        "mode",
+        "local",
+        "key",
+        "columns",
+        "local_owned",
+        "sheet_owned",
+        "owns_rows",
+        "schema",
+        "bootstrap",
+        "insert_above",
+        "widths",
+        "bom",
+    }
+)
+_SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
+# Fields that only mean something to a merge, so only to a sync tab.
+_SYNC_ONLY = ("local_owned", "sheet_owned", "owns_rows", "bootstrap", "insert_above")
+
+
+class ConfigError(ValueError):
+    """The config file is missing, unreadable, or invalid.
+
+    ``problems`` lists every problem found; the message lists them too.
+    """
+
+    def __init__(self, source: str, problems: Sequence[str]) -> None:
+        self.source = source
+        self.problems = list(problems)
+        lines = "\n".join(f"  - {problem}" for problem in self.problems)
+        count = len(self.problems)
+        super().__init__(
+            f"{source}: {count} problem{'s' if count != 1 else ''}:\n{lines}"
+        )
+
+
+@dataclass(frozen=True)
+class TabConfig:
+    """One tab of a target, and the local file it is kept in step with.
+
+    ``local`` is absolute (resolved against the config file's directory).
+    ``columns`` is the projection, or None for every column of the local
+    file. ``insert_above`` maps its one column to the values it matches.
+    """
+
+    title: str
+    local: Path
+    mode: str = "sync"
+    key: tuple[str, ...] = ()
+    columns: tuple[str, ...] | None = None
+    local_owned: tuple[str, ...] = ()
+    sheet_owned: tuple[str, ...] = ()
+    owns_rows: bool = False
+    schema: Mapping[str, ColumnSchema] = field(default_factory=dict)
+    bootstrap: str = "local"
+    insert_above: Mapping[str, tuple[Any, ...]] | None = None
+    widths: Mapping[str, int] = field(default_factory=dict)
+    bom: bool = False
+
+    @property
+    def types(self) -> dict[str, str]:
+        """Each schema column's declared type, for writing a JSON file."""
+        return {column: spec.type for column, spec in self.schema.items()}
+
+
+@dataclass(frozen=True)
+class Target:
+    """One spreadsheet and its tabs, in config order.
+
+    ``spreadsheet`` is the URL, file ID, or Drive path as written in the
+    config. ``base`` is the absolute directory holding the base snapshots.
+    """
+
+    name: str
+    spreadsheet: str
+    base: Path
+    tabs: tuple[TabConfig, ...]
+    input_option: str = RAW
+
+    def tab(self, title: str) -> TabConfig:
+        """The tab titled ``title``, raising ValueError naming the others."""
+        for tab in self.tabs:
+            if tab.title == title:
+                return tab
+        raise ValueError(
+            f"target {self.name!r} has no tab {title!r}; "
+            f"tabs: {[tab.title for tab in self.tabs]}"
+        )
+
+    def base_path(self, tab: TabConfig) -> Path:
+        """The base snapshot file of ``tab``: one CSV per tab, named by title."""
+        return self.base / f"{safe_filename(tab.title)}.csv"
+
+
+@dataclass(frozen=True)
+class Config:
+    """A loaded config file: its path and its targets, in file order."""
+
+    path: Path
+    targets: Mapping[str, Target]
+
+    def target(self, name: str) -> Target:
+        """The target called ``name``, raising ValueError naming the others."""
+        if name not in self.targets:
+            raise ValueError(
+                f"{self.path}: no target {name!r}; targets: {list(self.targets)}"
+            )
+        return self.targets[name]
+
+
+def find_config(start: Path | None = None) -> Path:
+    """Return the nearest ``gdrives-sheets.json`` in ``start`` or a parent.
+
+    ``start`` defaults to the working directory, as for the ``.env`` file.
+    Raises :class:`ConfigError` when no directory up to the root has one.
+    """
+    here = (start if start is not None else Path.cwd()).absolute()
+    for directory in (here, *here.parents):
+        candidate = directory / CONFIG_NAME
+        if candidate.is_file():
+            return candidate
+    raise ConfigError(str(here), [f"no {CONFIG_NAME} here or in any parent directory"])
+
+
+def load_config(path: str | Path | None = None) -> Config:
+    """Read and check a config file; ``path`` defaults to :func:`find_config`.
+
+    Relative paths inside the file resolve against the file's directory. Raises
+    :class:`ConfigError` listing every problem at once.
+    """
+    found = Path(path).absolute() if path is not None else find_config()
+    try:
+        data = json.loads(found.read_text(encoding="utf-8-sig"))
+    except OSError as e:
+        raise ConfigError(str(found), [f"cannot read the file: {e}"]) from None
+    except json.JSONDecodeError as e:
+        raise ConfigError(str(found), [f"not valid JSON: {e}"]) from None
+    return parse_config(data, found)
+
+
+def parse_config(data: Any, path: Path) -> Config:
+    """Check the parsed JSON ``data`` of the config file at ``path``.
+
+    Pure: nothing is read. Relative paths resolve against ``path``'s
+    directory. Raises :class:`ConfigError` listing every problem at once.
+    """
+    checker = _Checker(path.parent)
+    targets: dict[str, Target] = {}
+    if not isinstance(data, dict):
+        checker.problems.append("expected a JSON object of targets")
+    elif not data:
+        checker.problems.append("names no targets")
+    else:
+        for name, raw in data.items():
+            target = checker.target(name, raw)
+            if target is not None:
+                targets[name] = target
+        checker.collisions(targets.values())
+    if checker.problems:
+        raise ConfigError(str(path), checker.problems)
+    return Config(path=path, targets=targets)
+
+
+# -- checking --
+
+
+def _is_names(value: Any) -> bool:
+    """True for a list of non-blank strings."""
+    return isinstance(value, list) and all(
+        isinstance(item, str) and item.strip() for item in value
+    )
+
+
+def _is_scalar(value: Any) -> bool:
+    """True for a value that can be one cell: a string, number, or boolean."""
+    return isinstance(value, (str, int, float, bool))
+
+
+def _repeated(names: Sequence[str]) -> list[str]:
+    return sorted({name for name in names if list(names).count(name) > 1})
+
+
+class _Checker:
+    """Collects every problem in a config while building its dataclasses."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.problems: list[str] = []
+
+    def _path(self, text: str) -> Path:
+        """``text`` as an absolute path, relative ones against the config's folder.
+
+        Normalized (``..`` folded) without resolving links, so two spellings of
+        one file compare equal.
+        """
+        return Path(os.path.normpath(self.root / Path(text).expanduser()))
+
+    def target(self, name: str, raw: Any) -> Target | None:
+        where = f"target {name!r}"
+        problems = self.problems
+        start = len(problems)
+        if not name.strip():
+            problems.append("a target has a blank name")
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: expected an object")
+            return None
+        unknown = sorted(set(raw) - _TARGET_FIELDS)
+        if unknown:
+            problems.append(f"{where}: unknown field(s) {unknown}")
+
+        spreadsheet = raw.get("spreadsheet")
+        if not isinstance(spreadsheet, str) or not spreadsheet.strip():
+            problems.append(f"{where}: 'spreadsheet' must be a URL, file ID, or path")
+
+        base_text = raw.get("base", f"sheets-base/{safe_filename(name)}")
+        base = self.root
+        if not isinstance(base_text, str) or not base_text.strip():
+            problems.append(f"{where}: 'base' must be a directory path")
+        else:
+            base = self._path(base_text)
+            if _CACHE_DIR in base.parts:
+                problems.append(
+                    f"{where}: 'base' {base_text!r} is inside a {_CACHE_DIR} "
+                    "directory, which is a cache; keep the base where it is "
+                    "committed"
+                )
+
+        input_option = raw.get("input_option", RAW)
+        if input_option not in INPUT_OPTIONS:
+            problems.append(
+                f"{where}: 'input_option' must be one of {sorted(INPUT_OPTIONS)}, "
+                f"not {input_option!r}"
+            )
+
+        tabs: list[TabConfig] = []
+        raw_tabs = raw.get("tabs")
+        if not isinstance(raw_tabs, dict) or not raw_tabs:
+            problems.append(
+                f"{where}: 'tabs' must be an object naming one or more tabs"
+            )
+        else:
+            for title, raw_tab in raw_tabs.items():
+                tab = self.tab(where, title, raw_tab)
+                if tab is None:
+                    continue
+                tabs.append(tab)
+                if tab.mode == "sync" and input_option == USER_ENTERED:
+                    problems.append(
+                        f"{where}, tab {title!r}: a sync tab writes with RAW input; "
+                        f"USER_ENTERED rewrites values, so they would never "
+                        f"read back as written"
+                    )
+        if len(problems) > start:
+            return None
+        return Target(
+            name=name,
+            spreadsheet=str(spreadsheet),
+            base=base,
+            tabs=tuple(tabs),
+            input_option=str(input_option),
+        )
+
+    def collisions(self, targets: Iterable[Target]) -> None:
+        """Refuse a file that two tabs would write, across the whole config.
+
+        A sync or pull tab writes its local file, and a sync tab its base file;
+        a push tab only reads its local file, so push tabs may share one. Paths
+        are compared case-folded, since on a case-insensitive filesystem
+        ``Notes.csv`` and ``notes.csv`` are one file.
+        """
+        writers: dict[str, list[str]] = {}
+        paths: dict[str, Path] = {}
+        for target in targets:
+            for tab in target.tabs:
+                where = f"target {target.name!r}, tab {tab.title!r}"
+                files: list[tuple[Path, str]] = []
+                if tab.mode != "push":
+                    files.append((tab.local, f"{where} (local file)"))
+                if tab.mode == "sync":
+                    files.append((target.base_path(tab), f"{where} (base)"))
+                for path, role in files:
+                    folded = str(path).casefold()
+                    writers.setdefault(folded, []).append(role)
+                    paths.setdefault(folded, path)
+        for folded, roles in writers.items():
+            if len(roles) > 1:
+                self.problems.append(
+                    f"{paths[folded]} would be written by more than one tab: "
+                    + "; ".join(roles)
+                )
+
+    def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:
+        where = f"{target}, tab {title!r}"
+        problems = self.problems
+        start = len(problems)
+        if not title.strip():
+            problems.append(f"{target}: a tab has a blank title")
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: expected an object")
+            return None
+        unknown = sorted(set(raw) - _TAB_FIELDS)
+        if unknown:
+            problems.append(f"{where}: unknown field(s) {unknown}")
+
+        mode = raw.get("mode", "sync")
+        if mode not in MODES:
+            problems.append(
+                f"{where}: 'mode' must be one of {sorted(MODES)}, not {mode!r}"
+            )
+        elif mode != "sync":
+            given = [name for name in _SYNC_ONLY if name in raw]
+            if given:
+                problems.append(f"{where}: {given} apply only to a sync tab")
+            if mode == "pull" and "widths" in raw:
+                problems.append(f"{where}: 'widths' do not apply to a pull tab")
+
+        local = self._local(where, raw)
+        bom = raw.get("bom", False)
+        if not isinstance(bom, bool):
+            problems.append(f"{where}: 'bom' must be true or false")
+        elif bom and local is not None and local.suffix.lower() == ".json":
+            problems.append(f"{where}: 'bom' applies only to a .csv or .tsv file")
+
+        key = self._names(where, raw, "key")
+        if mode == "sync" and not key:
+            problems.append(f"{where}: a sync tab needs a 'key' of one or more columns")
+        columns = self._columns(where, raw)
+        local_owned = self._names(where, raw, "local_owned")
+        sheet_owned = self._names(where, raw, "sheet_owned")
+        self._ownership(where, key, columns, local_owned, sheet_owned)
+
+        owns_rows = raw.get("owns_rows", False)
+        if not isinstance(owns_rows, bool):
+            problems.append(f"{where}: 'owns_rows' must be true or false")
+        bootstrap = raw.get("bootstrap", "local")
+        if bootstrap not in BOOTSTRAPS:
+            problems.append(
+                f"{where}: 'bootstrap' must be one of {sorted(BOOTSTRAPS)}, not "
+                f"{bootstrap!r} (--adopt is a flag, not a config value)"
+            )
+        schema = self._schema(where, raw.get("schema", {}), columns)
+        insert_above = self._insert_above(where, raw.get("insert_above"), columns)
+        widths = self._widths(where, raw.get("widths", {}), columns)
+
+        if len(problems) > start or local is None:
+            return None
+        return TabConfig(
+            title=title,
+            local=local,
+            mode=str(mode),
+            key=tuple(key),
+            columns=tuple(columns) if columns is not None else None,
+            local_owned=tuple(local_owned),
+            sheet_owned=tuple(sheet_owned),
+            owns_rows=bool(owns_rows),
+            schema=schema,
+            bootstrap=str(bootstrap),
+            insert_above=insert_above,
+            widths=widths,
+            bom=bool(bom),
+        )
+
+    def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:
+        text = raw.get("local")
+        if not isinstance(text, str) or not text.strip():
+            self.problems.append(f"{where}: 'local' must be a file path")
+            return None
+        path = self._path(text)
+        if path.suffix.lower() not in LOCAL_EXTENSIONS:
+            self.problems.append(
+                f"{where}: 'local' {text!r} must end in one of "
+                f"{sorted(LOCAL_EXTENSIONS)}"
+            )
+            return None
+        return path
+
+    def _columns(self, where: str, raw: Mapping[str, Any]) -> list[str] | None:
+        """The projection, or None when absent (or too malformed to check against)."""
+        if "columns" not in raw:
+            return None
+        if raw["columns"] == [] or not _is_names(raw["columns"]):
+            self.problems.append(
+                f"{where}: 'columns' must be a list of one or more column names"
+            )
+            return None
+        return self._names(where, raw, "columns")
+
+    def _names(self, where: str, raw: Mapping[str, Any], name: str) -> list[str]:
+        """The list of column names in field ``name``, empty when absent or bad."""
+        value = raw.get(name, [])
+        if not _is_names(value):
+            self.problems.append(f"{where}: {name!r} must be a list of column names")
+            return []
+        repeated = _repeated(value)
+        if repeated:
+            self.problems.append(f"{where}: {name!r} repeats {repeated}")
+        return list(value)
+
+    def _ownership(
+        self,
+        where: str,
+        key: Sequence[str],
+        columns: Sequence[str] | None,
+        local_owned: Sequence[str],
+        sheet_owned: Sequence[str],
+    ) -> None:
+        """Refuse key or owned columns outside the projection, or overlapping."""
+        self._outside(where, "key", key, columns)
+        self._outside(where, "local_owned", local_owned, columns)
+        self._outside(where, "sheet_owned", sheet_owned, columns)
+        for name, names in (("local_owned", local_owned), ("sheet_owned", sheet_owned)):
+            keyed = [c for c in names if c in key]
+            if keyed:
+                self.problems.append(f"{where}: key column(s) {keyed} cannot be {name}")
+        both = sorted(set(local_owned) & set(sheet_owned))
+        if both:
+            self.problems.append(
+                f"{where}: column(s) {both} are both local_owned and sheet_owned"
+            )
+
+    def _outside(
+        self, where: str, what: str, names: Sequence[str], columns: Sequence[str] | None
+    ) -> None:
+        if columns is None:
+            return
+        outside = [c for c in names if c not in columns]
+        if outside:
+            self.problems.append(
+                f"{where}: {what} column(s) {outside} not in 'columns'"
+            )
+
+    def _schema(
+        self, where: str, raw: Any, columns: Sequence[str] | None
+    ) -> dict[str, ColumnSchema]:
+        problems = self.problems
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: 'schema' must be an object of columns")
+            return {}
+        schema: dict[str, ColumnSchema] = {}
+        for column, spec in raw.items():
+            at = f"{where}: schema {column!r}"
+            if not column.strip():
+                problems.append(f"{where}: 'schema' names a blank column")
+                continue
+            if not isinstance(spec, dict):
+                problems.append(f"{at}: expected an object")
+                continue
+            unknown = sorted(set(spec) - _SCHEMA_FIELDS)
+            if unknown:
+                problems.append(f"{at}: unknown field(s) {unknown}")
+            type_ = spec.get("type", "str")
+            required = spec.get("required", False)
+            allowed = spec.get("allowed")
+            ok = not unknown
+            if type_ not in COLUMN_TYPES:
+                problems.append(
+                    f"{at}: 'type' must be one of {sorted(COLUMN_TYPES)}, not {type_!r}"
+                )
+                ok = False
+            if not isinstance(required, bool):
+                problems.append(f"{at}: 'required' must be true or false")
+                ok = False
+            if allowed is not None and not (
+                isinstance(allowed, list)
+                and allowed
+                and all(_is_scalar(value) for value in allowed)
+            ):
+                problems.append(f"{at}: 'allowed' must be a list of one or more values")
+                ok = False
+            if ok:
+                schema[column] = ColumnSchema(
+                    type=str(type_),
+                    required=bool(required),
+                    allowed=tuple(allowed) if allowed is not None else None,
+                )
+        self._outside(where, "schema", list(raw), columns)
+        return schema
+
+    def _insert_above(
+        self, where: str, raw: Any, columns: Sequence[str] | None
+    ) -> dict[str, tuple[Any, ...]] | None:
+        if raw is None:
+            return None
+        bad = f"{where}: 'insert_above' must be one {{column: value or [values]}} pair"
+        if not isinstance(raw, dict) or len(raw) != 1:
+            self.problems.append(bad)
+            return None
+        ((column, given),) = raw.items()
+        values = given if isinstance(given, list) else [given]
+        if (
+            not column.strip()
+            or not values
+            or not all(_is_scalar(value) for value in values)
+        ):
+            self.problems.append(bad)
+            return None
+        self._outside(where, "insert_above", [column], columns)
+        return {column: tuple(values)}
+
+    def _widths(
+        self, where: str, raw: Any, columns: Sequence[str] | None
+    ) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            self.problems.append(f"{where}: 'widths' must be an object of columns")
+            return {}
+        widths: dict[str, int] = {}
+        for column, width in raw.items():
+            # bool is an int subclass, and True is not a width.
+            if (
+                not column.strip()
+                or isinstance(width, bool)
+                or not isinstance(width, int)
+                or width < 1
+            ):
+                self.problems.append(
+                    f"{where}: width of {column!r} must be a whole number of "
+                    f"pixels, at least 1, not {width!r}"
+                )
+                continue
+            widths[column] = width
+        self._outside(where, "widths", list(raw), columns)
+        return widths

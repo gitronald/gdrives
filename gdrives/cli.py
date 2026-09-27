@@ -4,11 +4,36 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, Literal, NoReturn
 
 import typer
 
 app = typer.Typer(help="Google Drive file management tools.")
+
+
+def _version(value: bool) -> None:
+    """Print the installed package's version and exit, for ``--version``."""
+    if value:
+        from importlib.metadata import version
+
+        print(f"gdrives {version('gdrives')}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the version and exit.",
+            callback=_version,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """The options of ``gdrives`` itself, given before any command."""
+
 
 # The "-y/--yes" flag shared by every command that confirms before writing.
 YesFlag = Annotated[
@@ -479,6 +504,151 @@ def sheets_delete_rule(
 
     with _cli_errors():
         run_delete_rule(source, index, tab=tab, yes=yes)
+
+
+# The options shared by sheets-sync, sheets-pull, and sheets-push.
+_TARGET_HELP = "Target name in the config file (gdrives-sheets.json)"
+ConfigOption = Annotated[
+    str | None,
+    typer.Option(
+        "--config",
+        help="Config file (default: gdrives-sheets.json in the working "
+        "directory or a parent)",
+    ),
+]
+TabsOption = Annotated[
+    list[str] | None,
+    typer.Option("--tab", help="Run only this tab; repeat for several"),
+]
+ApplyFlag = Annotated[
+    bool,
+    typer.Option("--apply", help="Write the changes (default: preview only)"),
+]
+
+
+@app.command(name="sheets-sync")
+def sheets_sync(
+    target: Annotated[str, typer.Argument(help=_TARGET_HELP)],
+    config: ConfigOption = None,
+    tab: TabsOption = None,
+    apply: ApplyFlag = False,
+    adopt: Annotated[
+        bool,
+        typer.Option(
+            "--adopt",
+            help="First sync only: the local file wins every difference on the "
+            "sheet, and local-only rows are written to it",
+        ),
+    ] = False,
+    add_missing: Annotated[
+        bool,
+        typer.Option("--add-missing", help="Add local columns the sheet lacks"),
+    ] = False,
+    drop_extra: Annotated[
+        bool,
+        typer.Option(
+            "--drop-extra",
+            help="Delete sheet columns outside the projection, with their data",
+        ),
+    ] = False,
+    prefer: Annotated[
+        Literal["local", "sheet"] | None,
+        typer.Option("--prefer", help="Resolve cell conflicts toward this side"),
+    ] = None,
+):
+    """Merge the sync tabs of a target with their local files, by row key.
+
+    Previews by default; --apply writes the sheet, the local file, and the
+    base snapshot. Exit code 0: in sync or applied; 1: an error; 2:
+    conflicts or row flags left for a person. See docs/sheets-sync.md.
+    """
+    from gdrives.sheets import run_sync
+
+    with _cli_errors():
+        code = run_sync(
+            target,
+            config=config,
+            tabs=tab or [],
+            apply=apply,
+            adopt=adopt,
+            add_missing=add_missing,
+            drop_extra=drop_extra,
+            prefer=prefer,
+        )
+    raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
+
+
+@app.command(name="sheets-pull")
+def sheets_pull(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help=f"{_TARGET_HELP}; with --all-tabs, a Sheet URL, file ID, or Drive path"
+        ),
+    ],
+    config: ConfigOption = None,
+    tab: TabsOption = None,
+    apply: ApplyFlag = False,
+    all_tabs: Annotated[
+        bool,
+        typer.Option(
+            "--all-tabs",
+            help="Dump every tab of a spreadsheet to -o DIR, with no config",
+        ),
+    ] = False,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="Directory for --all-tabs files"),
+    ] = None,
+    skip: Annotated[
+        list[str] | None,
+        typer.Option("--skip", help="With --all-tabs, leave this tab out; repeat"),
+    ] = None,
+    file_format: Annotated[
+        Literal["csv", "tsv", "json"] | None,
+        typer.Option("--format", help="With --all-tabs, the file format (csv)"),
+    ] = None,
+):
+    """Replace local files with the pull tabs of a target (or dump every tab).
+
+    Previews by default; --apply writes the local files, never the sheet.
+    With --all-tabs, SOURCE is a spreadsheet and one file per tab is written
+    to -o DIR, named from the tab title. Example:
+    gdrives sheets-pull <sheet> --all-tabs -o out/ --apply
+    """
+    from gdrives.sheets import run_pull
+
+    with _cli_errors():
+        code = run_pull(
+            source,
+            config=config,
+            tabs=tab or [],
+            apply=apply,
+            all_tabs=all_tabs,
+            output=output,
+            skip=skip or [],
+            file_format=file_format,
+        )
+    raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
+
+
+@app.command(name="sheets-push")
+def sheets_push(
+    target: Annotated[str, typer.Argument(help=_TARGET_HELP)],
+    config: ConfigOption = None,
+    tab: TabsOption = None,
+    apply: ApplyFlag = False,
+):
+    """Replace the push tabs of a target with their local files.
+
+    Previews by default, listing what the sheet holds that the local file
+    does not; --apply rewrites the tab's values (needs write access).
+    """
+    from gdrives.sheets import run_push
+
+    with _cli_errors():
+        code = run_push(target, config=config, tabs=tab or [], apply=apply)
+    raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
 
 
 # A document target accepted by every docs command: a Doc URL, a bare file ID,

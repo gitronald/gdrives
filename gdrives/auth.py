@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,44 @@ def _write_token(token_path: Path, creds: Any) -> None:
         logger.warning("could not persist OAuth token to %s", token_path)
 
 
+def _load_token(token_path: Path, scopes: list[str], *, warn: bool = True):
+    """The cached OAuth credentials at ``token_path``, or None when none can be used.
+
+    None when there is no token file, when its grant does not cover ``scopes``
+    (it would 403 on the first call), or when it cannot be loaded. Loading reads
+    the file only; nothing is refreshed. ``warn`` logs why a token present on
+    disk was passed over.
+    """
+    from google.oauth2.credentials import Credentials
+
+    if not token_path.exists():
+        return None
+    if not _token_covers(token_path, scopes):
+        if warn:
+            logger.warning(
+                "cached OAuth token %s does not cover the requested scopes; "
+                "re-authorizing",
+                token_path,
+            )
+        return None
+    try:
+        return Credentials.from_authorized_user_file(str(token_path), scopes)
+    except (OSError, ValueError, AttributeError, TypeError):
+        if warn:
+            logger.warning("could not load cached OAuth token %s", token_path)
+        return None
+
+
+def _needs_refresh(creds: Any) -> bool:
+    """True when cached credentials have expired but can be refreshed."""
+    return bool(creds.expired and creds.refresh_token)
+
+
+def _can_consent(credentials_path: Path) -> bool:
+    """True when an interactive OAuth consent can run: client secrets and a TTY."""
+    return credentials_path.exists() and _is_interactive()
+
+
 def authenticate_oauth(scopes: list[str] | None = None):
     """Authenticate with Google Drive via OAuth client secrets flow.
 
@@ -173,23 +212,10 @@ def authenticate_oauth(scopes: list[str] | None = None):
         return None
 
     from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    creds = None
-    if token_path.exists():
-        if _token_covers(token_path, scopes):
-            try:
-                creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-            except (OSError, ValueError, AttributeError, TypeError):
-                logger.warning("could not load cached OAuth token %s", token_path)
-        else:
-            logger.warning(
-                "cached OAuth token %s does not cover the requested scopes; "
-                "re-authorizing",
-                token_path,
-            )
-    if creds and creds.expired and creds.refresh_token:
+    creds = _load_token(token_path, scopes)
+    if creds and _needs_refresh(creds):
         try:
             creds.refresh(Request())
         except google.auth.exceptions.RefreshError:
@@ -203,7 +229,7 @@ def authenticate_oauth(scopes: list[str] | None = None):
     if not creds or not creds.valid:
         # Fall through to other auth methods rather than blocking on a browser
         # flow when there's no client secrets file or no interactive terminal.
-        if not credentials_path.exists() or not _is_interactive():
+        if not _can_consent(credentials_path):
             return None
         flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
         creds = flow.run_local_server(port=0, open_browser=False)
@@ -247,6 +273,82 @@ def authenticate(scopes: list[str] | None = None):
         return authenticate_adc(scopes)
     except google.auth.exceptions.GoogleAuthError:
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
+
+
+@dataclass(frozen=True)
+class CredentialInfo:
+    """Which credential a call will authenticate with, as far as is known locally.
+
+    ``kind`` is ``"oauth"``, ``"service_account"``, or ``"adc"``. ``consent``
+    is True when an interactive browser consent runs first. ``refresh`` is True
+    when a cached OAuth token has expired and is refreshed first (if the grant
+    was revoked, that refresh fails and a consent runs instead). ``identity``
+    is the account, when the credential names it without a network call (a
+    service account's ``client_email``). ``source`` is the file the
+    credential comes from. No token, key, or secret is ever held here.
+    """
+
+    kind: str
+    consent: bool = False
+    refresh: bool = False
+    identity: str | None = None
+    source: Path | None = None
+
+    def __str__(self) -> str:
+        if self.kind == "oauth":
+            if self.consent:
+                text = f"OAuth, after an interactive consent (client {self.source})"
+            else:
+                text = f"OAuth token {self.source}"
+                if self.refresh:
+                    text += ", refreshed first"
+        elif self.kind == "service_account":
+            who = self.identity or "(client_email unreadable)"
+            text = f"service account {who} (key {self.source})"
+        else:
+            text = "Application Default Credentials"
+        return text
+
+
+def _service_account_email(path: Path) -> str | None:
+    """The ``client_email`` of a service account key file, or None if unreadable."""
+    try:
+        email = json.loads(path.read_text()).get("client_email")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return email if isinstance(email, str) and email else None
+
+
+def describe_credentials(scopes: list[str] | None = None) -> CredentialInfo:
+    """Say which credential :func:`authenticate` will use for ``scopes``.
+
+    Follows authenticate()'s precedence through the same helpers: a cached
+    OAuth token that loads and is valid or refreshable, else an OAuth consent
+    when client secrets and a terminal allow one, else a service account key
+    that exists, else Application Default Credentials. Reads local files only:
+    no network call is made and no consent is started. Whether ADC is
+    configured is left to google-auth at the first call, since finding out
+    can take a network probe.
+    """
+    scopes = scopes or SCOPES
+    token_path = _token_path(scopes)
+    credentials_path = _credentials_path()
+    if token_path is not None and credentials_path is not None:
+        creds = _load_token(token_path, scopes, warn=False)
+        if creds and _needs_refresh(creds):
+            return CredentialInfo(kind="oauth", refresh=True, source=token_path)
+        if creds and creds.valid:
+            return CredentialInfo(kind="oauth", source=token_path)
+        if _can_consent(credentials_path):
+            return CredentialInfo(kind="oauth", consent=True, source=credentials_path)
+    sa_path = _service_account_path()
+    if sa_path is not None and sa_path.exists():
+        return CredentialInfo(
+            kind="service_account",
+            identity=_service_account_email(sa_path),
+            source=sa_path,
+        )
+    return CredentialInfo(kind="adc")
 
 
 @functools.cache

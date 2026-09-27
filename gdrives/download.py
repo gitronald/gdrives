@@ -32,7 +32,6 @@ the path the first run gave it and skips the ones already there, so only what
 is missing is fetched again instead of being saved a second time as ' (1)'.
 """
 
-import re
 import sys
 from collections.abc import Callable
 from os.path import lexists
@@ -53,7 +52,7 @@ from gdrives.files import (
     is_native,
     walk_tree,
 )
-from gdrives.local import CONTROL_CHARACTERS, atomic_output, printable
+from gdrives.local import atomic_output, printable, safe_filename
 
 # Map Google-native type label -> local extension, derived from the canonical
 # export table (export.NATIVE_EXPORTS) so download and `gdrives export` never drift.
@@ -62,23 +61,6 @@ NATIVE_EXPORT_EXT = {label: ext for label, (ext, _mime) in NATIVE_EXPORTS.items(
 
 class DownloadError(Exception):
     """Raised after a folder download in which some entries failed."""
-
-
-def safe_filename(name: str) -> str:
-    """Sanitize a Drive file name for use on the local filesystem.
-
-    Replaces both path separators (``/`` and ``\\``) and control characters
-    (NUL, newlines, and the ESC that starts a terminal escape sequence), then
-    neutralizes the ``.``/``..`` dot segments so a Drive entry named ``..`` can't
-    escape the target directory (``out / ".."`` would otherwise resolve to its
-    parent). Backslash is replaced too so a name like ``..\\..\\evil`` can't
-    traverse on Windows, where ``\\`` is a separator. Legitimate dotfiles like
-    ``.env`` are preserved.
-    """
-    cleaned = re.sub(r"[/\\]", "_", CONTROL_CHARACTERS.sub("_", name)).strip()
-    if cleaned in {".", ".."}:
-        cleaned = cleaned.replace(".", "_")  # "." -> "_", ".." -> "__"
-    return cleaned or "file"
 
 
 def _ensure_dir(out: Path) -> None:
