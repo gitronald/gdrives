@@ -838,6 +838,7 @@ def test_unreferenced_duplicate_headers_do_not_block_update():
 
 SUBMODULES = (
     "a1",
+    "apply",
     "cells",
     "commands",
     "files",
