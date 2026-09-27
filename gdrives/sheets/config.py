@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any
 
 from gdrives.local import safe_filename
-from gdrives.sheets.cells import COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.files import NEWLINES
+from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.values import RAW, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
@@ -42,6 +44,10 @@ MODES = frozenset({"sync", "pull", "push"})
 
 #: How a sync tab with no base yet is started; ``--adopt`` is a flag instead.
 BOOTSTRAPS = frozenset({"local"})
+
+#: What a sync does with a sheet value that fails the schema: ``refuse``
+#: writes nothing for the tab, and ``hold`` keeps that value out and goes on.
+ON_INVALID = frozenset({"refuse", "hold"})
 
 #: The ``valueInputOption`` a target writes with.
 INPUT_OPTIONS = frozenset({RAW, USER_ENTERED})
@@ -68,11 +74,23 @@ _TAB_FIELDS = frozenset(
         "insert_above",
         "widths",
         "bom",
+        "newline",
+        "blank_keys",
+        "on_invalid",
+        "clear_links",
+        "sheet_id",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
 # Fields that only mean something to a merge, so only to a sync tab.
-_SYNC_ONLY = ("local_owned", "sheet_owned", "owns_rows", "bootstrap", "insert_above")
+_SYNC_ONLY = (
+    "local_owned",
+    "sheet_owned",
+    "owns_rows",
+    "bootstrap",
+    "insert_above",
+    "on_invalid",
+)
 
 
 class ConfigError(ValueError):
@@ -93,15 +111,29 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TabConfig:
-    """One tab of a target, and the local file it is kept in step with.
+    """One tab of a target, and the local side it is kept in step with.
 
-    ``local`` is absolute (resolved against the config file's directory).
+    ``local`` is the local file, absolute (resolved against the config
+    file's directory). A tab loaded from a config always has one. A tab built
+    in code may give a ``store`` instead, and then ``local`` is None unless
+    given too; :attr:`local_store` is what a run reads and writes. A tab
+    with neither is refused.
     ``columns`` is the projection, or None for every column of the local
-    file. ``insert_above`` maps its one column to the values it matches.
+    side. ``insert_above`` maps its one column to the values it matches.
+    ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
+    local file is written with, and with it the tab's base. ``blank_keys``
+    is ``"refuse"`` or ``"partial"``, as for
+    :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
+    or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
+    ``clear_links`` leaves the cells a sync or a push writes with no link,
+    where the Sheets API links a URL when it is written. ``sheet_id`` names
+    the tab by its ``sheetId``, which a rename leaves as it is: the tab is
+    then found by it, and ``title`` is what reports and the base file call
+    the tab.
     """
 
     title: str
-    local: Path
+    local: Path | None = None
     mode: str = "sync"
     key: tuple[str, ...] = ()
     columns: tuple[str, ...] | None = None
@@ -113,11 +145,37 @@ class TabConfig:
     insert_above: Mapping[str, tuple[Any, ...]] | None = None
     widths: Mapping[str, int] = field(default_factory=dict)
     bom: bool = False
+    newline: str = "lf"
+    blank_keys: str = "refuse"
+    on_invalid: str = "refuse"
+    clear_links: bool = False
+    sheet_id: int | None = None
+    store: Store | None = None
+
+    def __post_init__(self) -> None:
+        if self.local is None and self.store is None:
+            raise ValueError(
+                f"tab {self.title!r}: give 'local', a file path, or 'store'"
+            )
 
     @property
     def types(self) -> dict[str, str]:
         """Each schema column's declared type, for writing a JSON file."""
         return {column: spec.type for column, spec in self.schema.items()}
+
+    @property
+    def local_store(self) -> Store:
+        """The store of the local side: ``store``, or the file at ``local``.
+
+        The file is read and written with the tab's ``types``, ``bom``, and
+        ``newline``.
+        """
+        if self.store is not None:
+            return self.store
+        assert self.local is not None  # __post_init__ refused a tab with neither
+        return FileStore(
+            self.local, types=self.types, bom=self.bom, newline=self.newline
+        )
 
 
 @dataclass(frozen=True)
@@ -125,7 +183,10 @@ class Target:
     """One spreadsheet and its tabs, in config order.
 
     ``spreadsheet`` is the URL, file ID, or Drive path as written in the
-    config. ``base`` is the absolute directory holding the base snapshots.
+    config. ``base`` is the absolute directory holding the base snapshots,
+    one CSV per tab. ``base_stores`` maps a tab's title to the store that
+    holds its base instead, for a base kept somewhere else; ``base`` is
+    unused for a tab it names.
     """
 
     name: str
@@ -133,6 +194,7 @@ class Target:
     base: Path
     tabs: tuple[TabConfig, ...]
     input_option: str = RAW
+    base_stores: Mapping[str, Store] = field(default_factory=dict)
 
     def tab(self, title: str) -> TabConfig:
         """The tab titled ``title``, raising ValueError naming the others."""
@@ -147,6 +209,16 @@ class Target:
     def base_path(self, tab: TabConfig) -> Path:
         """The base snapshot file of ``tab``: one CSV per tab, named by title."""
         return self.base / f"{safe_filename(tab.title)}.csv"
+
+    def base_store(self, tab: TabConfig) -> Store:
+        """The store of ``tab``'s base: its entry in ``base_stores``, or the file.
+
+        The file is the one at :meth:`base_path`, written with the tab's
+        ``newline``.
+        """
+        if tab.title in self.base_stores:
+            return self.base_stores[tab.title]
+        return FileStore(self.base_path(tab), newline=tab.newline)
 
 
 @dataclass(frozen=True)
@@ -300,6 +372,12 @@ class _Checker:
                 tab = self.tab(where, title, raw_tab)
                 if tab is None:
                     continue
+                named = [t.title for t in tabs if t.sheet_id == tab.sheet_id]
+                if tab.sheet_id is not None and named:
+                    problems.append(
+                        f"{where}, tab {title!r}: 'sheet_id' {tab.sheet_id} is "
+                        f"tab {named[0]!r} too"
+                    )
                 tabs.append(tab)
                 if tab.mode == "sync" and input_option == USER_ENTERED:
                     problems.append(
@@ -323,7 +401,8 @@ class _Checker:
         A sync or pull tab writes its local file, and a sync tab its base file;
         a push tab only reads its local file, so push tabs may share one. Paths
         are compared case-folded, since on a case-insensitive filesystem
-        ``Notes.csv`` and ``notes.csv`` are one file.
+        ``Notes.csv`` and ``notes.csv`` are one file. Only files are checked:
+        a caller that gives a tab a store of its own owns this check.
         """
         writers: dict[str, list[str]] = {}
         paths: dict[str, Path] = {}
@@ -331,7 +410,7 @@ class _Checker:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
                 files: list[tuple[Path, str]] = []
-                if tab.mode != "push":
+                if tab.mode != "push" and tab.local is not None:
                     files.append((tab.local, f"{where} (local file)"))
                 if tab.mode == "sync":
                     files.append((target.base_path(tab), f"{where} (base)"))
@@ -370,6 +449,8 @@ class _Checker:
                 problems.append(f"{where}: {given} apply only to a sync tab")
             if mode == "pull" and "widths" in raw:
                 problems.append(f"{where}: 'widths' do not apply to a pull tab")
+            if mode == "pull" and "clear_links" in raw:
+                problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
 
         local = self._local(where, raw)
         bom = raw.get("bom", False)
@@ -377,10 +458,23 @@ class _Checker:
             problems.append(f"{where}: 'bom' must be true or false")
         elif bom and local is not None and local.suffix.lower() == ".json":
             problems.append(f"{where}: 'bom' applies only to a .csv or .tsv file")
+        newline = raw.get("newline", "lf")
+        if not isinstance(newline, str) or newline not in NEWLINES:
+            problems.append(
+                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
+            )
+        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
+            problems.append(f"{where}: 'newline' applies only to a .csv or .tsv file")
 
         key = self._names(where, raw, "key")
         if mode == "sync" and not key:
             problems.append(f"{where}: a sync tab needs a 'key' of one or more columns")
+        blank_keys = raw.get("blank_keys", "refuse")
+        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
+            problems.append(
+                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
+                f"not {blank_keys!r}"
+            )
         columns = self._columns(where, raw)
         local_owned = self._names(where, raw, "local_owned")
         sheet_owned = self._names(where, raw, "sheet_owned")
@@ -394,6 +488,24 @@ class _Checker:
             problems.append(
                 f"{where}: 'bootstrap' must be one of {sorted(BOOTSTRAPS)}, not "
                 f"{bootstrap!r} (--adopt is a flag, not a config value)"
+            )
+        sheet_id = raw.get("sheet_id")
+        # bool is an int subclass, and True is not a sheetId.
+        if sheet_id is not None and (
+            isinstance(sheet_id, bool) or not isinstance(sheet_id, int) or sheet_id < 0
+        ):
+            problems.append(
+                f"{where}: 'sheet_id' must be a whole number, the tab's sheetId, "
+                f"not {sheet_id!r}"
+            )
+        clear_links = raw.get("clear_links", False)
+        if not isinstance(clear_links, bool):
+            problems.append(f"{where}: 'clear_links' must be true or false")
+        on_invalid = raw.get("on_invalid", "refuse")
+        if not isinstance(on_invalid, str) or on_invalid not in ON_INVALID:
+            problems.append(
+                f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
+                f"not {on_invalid!r}"
             )
         schema = self._schema(where, raw.get("schema", {}), columns)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
@@ -415,6 +527,11 @@ class _Checker:
             insert_above=insert_above,
             widths=widths,
             bom=bool(bom),
+            newline=str(newline),
+            blank_keys=str(blank_keys),
+            on_invalid=str(on_invalid),
+            clear_links=bool(clear_links),
+            sheet_id=sheet_id,
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:

@@ -7,6 +7,8 @@ The table a plan was computed from is read from a separate fake holding the
 same cells, so the working fake's call log starts at the apply.
 """
 
+from datetime import date
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
@@ -20,6 +22,7 @@ from gdrives.sheets import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
     read_tab,
     verify,
 )
@@ -256,7 +259,8 @@ class TestPushes:
             ["a", "n1", "Al", "", "1"],
             ["b", "", "Bo", "", "01"],  # the literal string, not the number 1
         ]
-        assert result == ApplyResult(2, 0, [2, 3], [])
+        # The cells are in the plan's order, not the sheet's.
+        assert result == ApplyResult(2, 0, [2, 3], [], [(3, "amt"), (2, "name")], [])
         assert grid.methods == [READ, PUSH, READ]
 
     def test_columns_past_z(self):
@@ -296,7 +300,8 @@ class TestNewRows:
             ["c", "", "Cy"],
             ["d", "", "", "", "4"],
         ]
-        assert result == ApplyResult(0, 2, [], [5, 6])
+        # The columns written in each new row, in header order.
+        assert result == ApplyResult(0, 2, [], [5, 6], [], ["id", "name", "amt"])
         assert grid.methods == [READ, GRID, STRUCTURE, READ]
 
     def test_only_projection_columns_are_written(self):
@@ -414,7 +419,9 @@ class TestInsertAbove:
                     "startIndex": 2,
                     "endIndex": 4,
                 },
-                "inheritFromBefore": False,
+                # The new rows take the formatting of the row above them, not
+                # of the block they are kept out of.
+                "inheritFromBefore": True,
             },
         )
         assert {body["start"]["rowIndex"] for _, body in kinds[1:]} == {2}
@@ -424,6 +431,53 @@ class TestInsertAbove:
         grid, table = sheet(*ROWS)
         apply_plan(grid, "S", table, plan(appends=[new("c")]), insert_above={"id": "a"})
         assert [row[0] for row in grid.values("T")] == ["id", "c", "a", "b"]
+        kind, body = requests_of(grid)[0]
+        assert kind == "insertDimension" and body["range"]["startIndex"] == 1
+        # The row above is the header, so the rows inherit from below.
+        assert body["inheritFromBefore"] is False
+
+    def test_a_push_to_a_match_moves_the_insert_point_up(self):
+        # Rows b and c are open and row d is closed; the run closes row b and
+        # adds a row, which belongs above b, the first closed row once it is
+        # done. 0.11.0 placed it above d, below a closed row.
+        header = ["id", "status"]
+        rows = [["a", "open"], ["b", "open"], ["c", "open"], ["d", "closed"]]
+        grid, table = sheet(*rows, header=header, project=header)
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [Cell(("b",), "status", "open", "closed", "open")],
+                [NewRow(("n",), {"id": "n", "status": "open"})],
+            ),
+            insert_above={"status": "closed"},
+        )
+        assert grid.values("T") == [
+            header,
+            ["a", "open"],
+            ["n", "open"],
+            ["b", "closed"],
+            ["c", "open"],
+            ["d", "closed"],
+        ]
+        assert result == ApplyResult(1, 1, [4], [3], [(4, "status")], ["id", "status"])
+
+    def test_a_push_away_from_a_match_moves_the_insert_point_down(self):
+        header = ["id", "status"]
+        rows = [["a", "closed"], ["b", "open"], ["c", "closed"]]
+        grid, table = sheet(*rows, header=header, project=header)
+        apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [Cell(("a",), "status", "closed", "open", "closed")],
+                [NewRow(("n",), {"id": "n", "status": "open"})],
+            ),
+            insert_above={"status": "closed"},
+        )
+        assert [row[0] for row in grid.values("T")] == ["id", "a", "b", "n", "c"]
 
     def test_any_of_several_values_compared_as_canonical_strings(self):
         header = ["id", "year"]
@@ -451,7 +505,8 @@ class TestInsertAbove:
         result = apply_plan(
             grid, "S", table, plan(appends=[new("c")]), insert_above={"note": "none"}
         )
-        assert [kind for kind, _ in requests_of(grid)][0] == "appendDimension"
+        kinds = [kind for kind, _ in requests_of(grid)]
+        assert kinds[0] == "appendDimension" and "insertDimension" not in kinds
         assert [row[0] for row in grid.values("T")] == ["id", "a", "b", "c"]
         assert result.appended_rows == [4]
 
@@ -473,7 +528,15 @@ class TestInsertAbove:
         # Addressed by the rows before the insert ...
         assert [d["range"] for d in kwargs["body"]["data"]] == ["'T'!C2", "'T'!C4"]
         # ... and reported where they sit after it.
-        assert result == ApplyResult(2, 2, [2, 6], [3, 4])
+        assert result == ApplyResult(
+            2,
+            2,
+            [2, 6],
+            [3, 4],
+            # Row c was read in row 4, and sits in row 6 after the insert.
+            [(2, "name"), (6, "name")],
+            ["id", "name", "amt"],
+        )
         assert grid.values("T") == [
             HEADER,
             ["a", "", "Al"],
@@ -482,6 +545,331 @@ class TestInsertAbove:
             ["b", "old", "Bo"],
             ["c", "", "Cyd"],
         ]
+
+
+class TestWrittenCells:
+    def test_the_columns_of_new_rows_follow_the_header_not_the_projection(self):
+        grid, table = sheet(*ROWS, project=["amt", "id", "name"])
+        added = NewRow(("c",), {"amt": "3", "id": "c", "name": "Cy"})
+        result = apply_plan(grid, "S", table, plan(appends=[added]))
+        assert result.appended_columns == ["id", "name", "amt"]
+        assert result.appended_rows == [4] and result.pushed_cells == []
+
+    def test_a_cell_pushed_twice_over_is_listed_once_per_push(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan([push("b", "name", "Bea"), push("b", "amt", "9")]),
+        )
+        assert result.pushed_cells == [(3, "name"), (3, "amt")]
+        assert result.pushed_rows == [3] and result.appended_columns == []
+
+    def test_nothing_written_names_no_cell(self):
+        grid, table = sheet(*ROWS)
+        result = apply_plan(grid, "S", table, plan())
+        assert result == ApplyResult(0, 0, [], [])
+        assert (result.pushed_cells, result.appended_columns) == ([], [])
+
+
+class TestClearLinks:
+    HEADER = ["id", "note", "site", "", "name"]
+    ROWS = [["a", "n1", "plain", "", "Ada"], ["b", "old", "example.org", "", "Bo"]]
+    PROJECT = ["id", "site", "name"]
+    LINK = "userEnteredFormat.textFormat.link"
+
+    def sheet(self):
+        return sheet(*self.ROWS, header=self.HEADER, project=self.PROJECT)
+
+    def new_row(self, key, site):
+        return NewRow((key,), {"id": key, "site": site, "name": "New"})
+
+    def test_new_rows_are_written_with_no_link_in_the_requests_of_today(self):
+        grid, table = self.sheet()
+        the_plan = plan(appends=[self.new_row("c", "https://example.com/c")])
+        apply_plan(grid, "S", table, the_plan, clear_links=True)
+        # The one read more is the read-back of the links.
+        assert grid.methods == [READ, GRID, STRUCTURE, READ, GRID]
+        kinds = requests_of(grid)
+        assert [kind for kind, _ in kinds] == ["updateCells"] * 3
+        assert {body["fields"] for _, body in kinds} == {
+            f"userEnteredValue,{self.LINK}"
+        }
+        assert grid.values("T")[3] == ["c", "", "https://example.com/c", "", "New"]
+        # The link row b held before the run is not the run's to clear.
+        assert grid.links("T") == {(3, 3): "http://example.org"}
+
+    def test_without_clear_links_a_new_row_is_linked_as_the_api_links_it(self):
+        grid, table = self.sheet()
+        the_plan = plan(appends=[self.new_row("c", "https://example.com/c")])
+        apply_plan(grid, "S", table, the_plan)
+        assert grid.methods == [READ, GRID, STRUCTURE, READ]
+        assert grid.links("T")[(4, 3)] == "https://example.com/c"
+
+    def test_pushed_cells_cost_one_request_more(self):
+        grid, table = self.sheet()
+        the_plan = plan(
+            [push("a", "site", "example.com"), push("b", "name", "Bea")],
+        )
+        apply_plan(grid, "S", table, the_plan, clear_links=True)
+        assert grid.methods == [READ, GRID, PUSH, STRUCTURE, READ, GRID]
+        assert requests_of(grid) == [
+            (
+                "repeatCell",
+                {
+                    "range": {
+                        "sheetId": 0,
+                        "startRowIndex": row,
+                        "endRowIndex": row + 1,
+                        "startColumnIndex": column,
+                        "endColumnIndex": column + 1,
+                    },
+                    "cell": {},
+                    "fields": f"{self.LINK},textFormatRuns",
+                },
+            )
+            for row, column in [(1, 2), (2, 4)]
+        ]
+        assert grid.values("T")[1][2] == "example.com"
+        assert grid.links("T") == {(3, 3): "http://example.org"}
+
+    def test_the_clears_use_the_rows_as_they_are_after_the_insert(self):
+        grid, table = self.sheet()
+        grid.tab("T").formats[(2, 2)]["runs"] = [
+            {"startIndex": 0, "format": {"link": {"uri": "https://old.example"}}}
+        ]
+        the_plan = plan(
+            [push("b", "site", "https://example.com/b")],
+            [self.new_row("c", "example.com"), self.new_row("d", "plain")],
+        )
+        result = apply_plan(
+            grid, "S", table, the_plan, insert_above={"note": "old"}, clear_links=True
+        )
+        assert result.pushed_cells == [(5, "site")]
+        assert grid.values("T") == [
+            self.HEADER,
+            self.ROWS[0],
+            ["c", "", "example.com", "", "New"],
+            ["d", "", "plain", "", "New"],
+            ["b", "old", "https://example.com/b", "", "Bo"],
+        ]
+        assert grid.links("T") == {}
+        assert grid.format("T", 5, 3) == {}
+        kinds = [kind for kind, _ in requests_of(grid)]
+        assert kinds == ["insertDimension", "updateCells", "updateCells", "repeatCell"]
+        assert requests_of(grid)[-1][1]["range"]["startRowIndex"] == 4
+
+    def test_a_link_that_remains_fails_the_read_back(self):
+        grid, table = self.sheet()
+        # The link comes back between the write and the read-back.
+        grid.edit_externally(
+            lambda g: (
+                g.write("T", [["example.com"]], row=2)
+                or g.tab("T").formats.update({(1, 2): {"link": "http://example.com"}})
+            ),
+            before=GRID,
+            occurrence=2,
+        )
+        with pytest.raises(ReadBackError) as raised:
+            apply_plan(
+                grid,
+                "S",
+                table,
+                plan([push("a", "site", "example.com")]),
+                clear_links=True,
+            )
+        assert str(raised.value) == (
+            "tab 'T': the read-back found links the run did not clear: row 2, "
+            "column 'site' still holds a link to ['http://example.com']"
+        )
+
+    def test_nothing_to_write_asks_nothing(self):
+        grid, table = self.sheet()
+        apply_plan(grid, "S", table, plan(), clear_links=True)
+        assert grid.calls == []
+
+
+class TestPartialKeys:
+    HEADER = ["y", "id", "v"]
+    ROWS = [["2026", "", "a"], ["", "1", "b"]]
+
+    def sheet(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        table = read_tab(
+            FakeSheetGrid(tabs),
+            "S",
+            "T",
+            self.HEADER,
+            ["y", "id"],
+            blank_keys="partial",
+        )
+        return FakeSheetGrid(tabs), table
+
+    def test_the_re_read_and_the_read_back_index_rows_as_the_table_did(self):
+        grid, table = self.sheet()
+        the_plan = plan(
+            [Cell(("2026", ""), "v", "a", "A", "a")],
+            [NewRow(("2027", ""), {"y": "2027", "id": "", "v": "c"})],
+        )
+        result = apply_plan(grid, "S", table, the_plan)
+        assert result == ApplyResult(1, 1, [2], [4], [(2, "v")], ["y", "id", "v"])
+        assert grid.values("T") == [
+            self.HEADER,
+            ["2026", "", "A"],
+            ["", "1", "b"],
+            ["2027", "", "c"],
+        ]
+
+
+class TestTypedDates:
+    """The re-read guard and the read-back read a typed table as it was read."""
+
+    HEADER = ["id", "on", "name"]
+    ROWS = [["a", date(2026, 9, 27), "Ada"], ["b", "2026-09-28", "Bo"]]
+    SERIALS = "values.batchGet"
+
+    def sheet(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        table = read_tab(
+            FakeSheetGrid(tabs), "S", "T", self.HEADER, ["id"], types={"on": "date"}
+        )
+        return FakeSheetGrid(tabs), table
+
+    def test_a_date_cell_does_not_read_as_a_change(self):
+        grid, table = self.sheet()
+        assert [row["on"] for row in table.rows] == ["2026-09-27", "2026-09-28"]
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [push("a", "name", "Al"), push("b", "on", "2026-10-01")],
+                [NewRow(("c",), {"id": "c", "on": "2026-09-29", "name": "Cy"})],
+            ),
+        )
+        assert result == ApplyResult(
+            2, 1, [2, 3], [4], [(2, "name"), (3, "on")], ["id", "on", "name"]
+        )
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", date(2026, 9, 27), "Al"],
+            ["b", "2026-10-01", "Bo"],
+            ["c", "2026-09-29", "Cy"],
+        ]
+        assert grid.methods == [
+            READ,
+            self.SERIALS,
+            GRID,
+            PUSH,
+            STRUCTURE,
+            READ,
+            self.SERIALS,
+        ]
+
+    def test_a_date_changed_on_the_sheet_is_a_change(self):
+        grid, table = self.sheet()
+        grid.write("T", [[date(2026, 9, 26)]], row=2)
+        grid.tab("T").cells[1][:2] = ["a", date(2026, 9, 26)]
+        with pytest.raises(SheetChangedError, match=r"rows edited: \[\('a',\)\]"):
+            apply_plan(grid, "S", table, plan([push("a", "name", "Al")]))
+        assert PUSH not in grid.methods
+
+    def test_verify_reads_the_dates_the_same_way(self):
+        grid, table = self.sheet()
+        verify(grid, "S", table, plan([push("a", "on", "2026-09-27")]))
+        assert grid.methods == [READ, self.SERIALS]
+
+
+class TestInsertPoint:
+    HEADER = ["id", "status", "name"]
+    ROWS = [
+        ["a", "open", "Ada"],
+        ["b", "open", "Bo"],
+        [],
+        ["c", "closed", "Cy"],
+        ["d", "closed", "Di"],
+    ]
+
+    def table(self, project=("id", "status", "name")):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        return read_tab(FakeSheetGrid(tabs), "S", "T", list(project), ["id"])
+
+    def closes(self, key):
+        return Cell((key,), "status", "open", "closed", "open")
+
+    def test_the_first_matching_row_as_read(self):
+        # Row 4 is blank, so c sits in spreadsheet row 5.
+        assert insert_point(self.table(), plan(), {"status": "closed"}) == 5
+
+    def test_a_push_to_a_match_counts_as_the_value_the_row_will_hold(self):
+        the_plan = plan([self.closes("b")], [new("n")])
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 3
+
+    def test_a_push_away_from_a_match_no_longer_matches(self):
+        the_plan = plan(
+            [
+                Cell(("c",), "status", "closed", "open", "closed"),
+                Cell(("d",), "status", "closed", "open", "closed"),
+            ]
+        )
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) is None
+
+    def test_several_pushes_to_the_column(self):
+        the_plan = plan(
+            [
+                self.closes("b"),
+                self.closes("a"),
+                Cell(("c",), "status", "closed", "open", "closed"),
+            ]
+        )
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 2
+
+    def test_a_push_to_another_column_changes_nothing(self):
+        the_plan = plan([push("a", "name", "closed")])
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 5
+
+    def test_any_of_several_values(self):
+        the_plan = plan([Cell(("b",), "status", "open", "held", "open")])
+        point = insert_point(self.table(), the_plan, {"status": ["closed", "held"]})
+        assert point == 3
+
+    def test_no_match(self):
+        assert insert_point(self.table(), plan(), {"status": "gone"}) is None
+
+    def test_a_column_outside_the_projection_is_as_read(self):
+        # The plan cannot push to a column it does not carry.
+        table = self.table(project=("id", "name", "status"))
+        the_plan = plan([push("a", "name", "closed")], [new("n")])
+        assert insert_point(table, the_plan, {"status": "closed"}) == 5
+
+    def test_a_plan_with_no_new_rows_still_has_a_point(self):
+        assert (
+            insert_point(self.table(), plan([self.closes("a")]), {"status": "closed"})
+            == 2
+        )
+
+    def test_a_column_the_table_did_not_read_is_refused(self):
+        table = self.table(project=("id", "name"))
+        with pytest.raises(
+            ValueError, match="insert_above column 'status' was not read"
+        ):
+            insert_point(table, plan(), {"status": "closed"})
+
+    def test_a_column_the_header_lacks_is_refused(self):
+        with pytest.raises(ValueError, match="'nope' is not in the header"):
+            insert_point(self.table(), plan(), {"nope": "x"})
+
+    def test_apply_inserts_at_the_point_a_preview_computed(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        grid, table = FakeSheetGrid(tabs), self.table()
+        added = NewRow(("n",), {"id": "n", "status": "open", "name": ""})
+        the_plan = plan([self.closes("b")], [added])
+        point = insert_point(table, the_plan, {"status": "closed"})
+        result = apply_plan(
+            grid, "S", table, the_plan, insert_above={"status": "closed"}
+        )
+        assert result.appended_rows == [point]
 
 
 class TestFailureOrder:

@@ -5,10 +5,17 @@ Drive API response shapes based on docs/drive-api.md.
 
 import re
 import tempfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+def local_file(tab: Any) -> Path:
+    """A tab's local file, which a tab loaded from a config always has."""
+    assert tab.local is not None
+    return tab.local
 
 
 def plain(text: str) -> str:
@@ -573,8 +580,38 @@ def _split_range(range_: str) -> tuple[str, str]:
 _SPAN_RE = re.compile(r"([A-Za-z]*)(\d*)(?::([A-Za-z]*)(\d*))?")
 
 
+def _as_moment(value: date) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime(value.year, value.month, value.day)
+
+
+def _serial(value: date) -> int | float:
+    """A date cell's serial number: days since 1899-12-30, whole for a date.
+
+    Worked out here, independently of ``gdrives.sheets.cells``, for the same
+    reason the fake parses A1 itself.
+    """
+    days = (_as_moment(value) - datetime(1899, 12, 30)) / timedelta(days=1)
+    return int(days) if days == int(days) else days
+
+
+def _shown_date(value: date) -> str:
+    """A date cell as displayed: ``m/d/yyyy``, and whole seconds for a date-time.
+
+    The display rounds to what its format shows, as the Sheets UI does, so
+    ``23:59:59.999`` shows as midnight of the next day.
+    """
+    if not isinstance(value, datetime):
+        return f"{value.month}/{value.day}/{value.year}"
+    shown = (value + timedelta(milliseconds=500)).replace(microsecond=0)
+    return f"{shown.month}/{shown.day}/{shown.year} {shown.hour}:{shown:%M:%S}"
+
+
 def _displayed(value: Any) -> str:
     """How the Sheets UI shows a stored value (the FORMATTED_VALUE render)."""
+    if isinstance(value, date):
+        return _shown_date(value)
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, float) and value.is_integer():
@@ -582,18 +619,83 @@ def _displayed(value: Any) -> str:
     return str(value)
 
 
+# A cell's whole text as a URL, or as a bare domain with an optional path.
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_DOMAIN_RE = re.compile(r"([a-z0-9-]+\.)+[a-z]{2,}(/\S*)?", re.IGNORECASE)
+
+# The format fields the fake models, by the name a ``fields`` mask gives them.
+_LINK = "userEnteredFormat.textFormat.link"
+_BOLD = "userEnteredFormat.textFormat.bold"
+_RUNS = "textFormatRuns"
+_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS)
+
+
+def _link_target(value: Any) -> str | None:
+    """The link the Sheets API gives a value when it is written, if any.
+
+    A cell whose whole text is a URL or a bare domain is linked, under ``RAW``
+    input too; a bare domain's target is ``http://`` and the domain. A URL
+    inside a sentence, an email address, and anything that is not text are
+    not linked. Pinned against the API by one live test.
+    """
+    if not isinstance(value, str):
+        return None
+    if _URL_RE.fullmatch(value):
+        return value
+    if _DOMAIN_RE.fullmatch(value):
+        return f"http://{value}"
+    return None
+
+
 class _GridTab:
     """One tab of a :class:`FakeSheetGrid`: a dense grid of stored values.
 
     ``cells[r][c]`` is the value at 0-based row ``r`` and column ``c``, None
-    when the cell is empty. ``widths`` holds each column's pixel width.
+    when the cell is empty. ``formats[(r, c)]`` is the format of a cell that
+    has one, a dict that may hold ``link`` (the target of a link on the whole
+    cell), ``bold``, and ``runs`` (its ``textFormatRuns``). ``widths`` holds
+    each column's pixel width.
     """
 
     def __init__(self, sheet_id: int, title: str, rows: int, columns: int) -> None:
         self.sheet_id = sheet_id
         self.title = title
         self.cells: list[list[Any]] = [[None] * columns for _ in range(rows)]
+        self.formats: dict[tuple[int, int], dict[str, Any]] = {}
         self.widths: list[int] = [FakeSheetGrid.DEFAULT_WIDTH] * columns
+
+    def held(self, r: int, c: int) -> dict[str, Any]:
+        """The format of a cell, made empty when it has none yet."""
+        return self.formats.setdefault((r, c), {})
+
+    def shift(self, rows: bool, start: int, by: int) -> None:
+        """Move the formats at or past ``start`` by ``by`` rows or columns.
+
+        A negative ``by`` is a delete: the formats of the rows or columns
+        deleted go, and the ones past them move up.
+        """
+        moved: dict[tuple[int, int], dict[str, Any]] = {}
+        for (r, c), held in self.formats.items():
+            at = r if rows else c
+            if at >= start:
+                at += by
+                if at < start:
+                    continue
+            moved[(at, c) if rows else (r, at)] = held
+        self.formats = moved
+
+    def put(self, r: int, c: int, value: Any, *, link: bool = True) -> None:
+        """Store a value, and with ``link`` the link the API gives it on a write.
+
+        A value write replaces the link of the cell: set for a URL or a
+        domain, and gone for anything else.
+        """
+        self.cells[r][c] = None if value == "" else value
+        if link:
+            self.held(r, c).pop("link", None)
+            target = _link_target(value)
+            if target is not None:
+                self.held(r, c)["link"] = target
 
     @property
     def row_count(self) -> int:
@@ -606,6 +708,7 @@ class _GridTab:
     def copy(self) -> "_GridTab":
         clone = _GridTab(self.sheet_id, self.title, 0, 0)
         clone.cells = [list(row) for row in self.cells]
+        clone.formats = {at: dict(held) for at, held in self.formats.items()}
         clone.widths = list(self.widths)
         return clone
 
@@ -676,6 +779,11 @@ class FakeSheetGrid:
       dropped. ``UNFORMATTED_VALUE`` returns what was stored (a number seeded
       as a number, a RAW-written string as that string); the default
       ``FORMATTED_VALUE`` returns the displayed string.
+    - A cell seeded with a ``date`` or a ``datetime`` is a date cell. It reads
+      as its display text (``m/d/yyyy``, to the whole second), or under
+      ``UNFORMATTED_VALUE`` with ``SERIAL_NUMBER``, which is the API's default
+      ``dateTimeRenderOption``, as its serial number. A string that looks like
+      a date is a string under every option.
     - ``values.update`` / ``values.batchUpdate`` store each value as given (an
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
@@ -684,6 +792,16 @@ class FakeSheetGrid:
       ``start``, honouring the ``fields`` mask), ``updateDimensionProperties``
       (``pixelSize``), ``addSheet`` (a 1000 x 26 grid), and ``deleteSheet``,
       all or nothing.
+    - A value written as text that is a URL or a bare domain gains a link on
+      the whole cell, by every write path. ``repeatCell`` and ``updateCells``
+      honour a ``fields`` mask over the cell link, ``bold``, and
+      ``textFormatRuns``: a field the mask names and the cell omits is
+      cleared, and ``updateCells`` with the link in its mask writes a URL with
+      no link. ``spreadsheets.get`` with ``includeGridData`` returns
+      ``hyperlink`` for a link on the whole cell, the runs, and
+      ``userEnteredFormat`` under its ``fields`` mask, for the one range
+      asked. Inserted rows and columns take ``bold`` from the side they
+      inherit from, and nothing else.
     - Any read or write outside a tab's grid raises the 400 ``HttpError`` the
       API returns; so do an unknown tab, a duplicate tab title, inheriting
       from before row or column 0, and deleting every row or column.
@@ -724,10 +842,22 @@ class FakeSheetGrid:
 
     def write(self, title: str, grid: list[list[Any]], row: int = 1) -> None:
         """Store ``grid`` from spreadsheet row ``row``, column A, as typed."""
-        cells = self.tab(title).cells
+        tab = self.tab(title)
         for r, values in enumerate(grid, start=row - 1):
             for c, value in enumerate(values):
-                cells[r][c] = None if value == "" else value
+                tab.put(r, c, value)
+
+    def format(self, title: str, row: int, column: int) -> dict[str, Any]:
+        """The format of the cell at spreadsheet ``row`` and 1-based ``column``."""
+        return self.tab(title).held(row - 1, column - 1)
+
+    def links(self, title: str) -> dict[tuple[int, int], str]:
+        """Every link on a whole cell: ``{(row, column): target}``, both 1-based."""
+        return {
+            (r + 1, c + 1): held["link"]
+            for (r, c), held in sorted(self.tab(title).formats.items())
+            if "link" in held
+        }
 
     def values(self, title: str) -> list[list[Any]]:
         """The tab's stored values as the API would return them (truncated)."""
@@ -740,6 +870,11 @@ class FakeSheetGrid:
             (row + [None] * columns)[:columns]
             for row in (tab.cells + [[] for _ in range(rows)])[:rows]
         ]
+        tab.formats = {
+            (r, c): held
+            for (r, c), held in tab.formats.items()
+            if r < rows and c < columns
+        }
         tab.widths = (tab.widths + [self.DEFAULT_WIDTH] * columns)[:columns]
 
     def edit_externally(self, edit: Any, *, before: str, occurrence: int = 1) -> None:
@@ -831,11 +966,18 @@ class FakeSheetGrid:
             )
         return tab, start_row, end_row, start_col, end_col
 
-    def _read(self, range_: str, render: str | None) -> dict[str, Any]:
+    def _read(
+        self, range_: str, render: str | None, date_time: str | None = None
+    ) -> dict[str, Any]:
         tab, r1, r2, c1, c2 = self._span(range_)
         rows = self._truncated([row[c1:c2] for row in tab.cells[r1:r2]])
         if render != "UNFORMATTED_VALUE":
             rows = [[_displayed(v) for v in row] for row in rows]
+        else:
+            shown = _shown_date if date_time == "FORMATTED_STRING" else _serial
+            rows = [
+                [shown(v) if isinstance(v, date) else v for v in row] for row in rows
+            ]
         result: dict[str, Any] = {"range": range_, "majorDimension": "ROWS"}
         if rows:  # the API omits "values" for an empty range
             result["values"] = rows
@@ -844,11 +986,18 @@ class FakeSheetGrid:
     # -- handlers --
 
     def _values_get(self, **kwargs: Any) -> dict[str, Any]:
-        return self._read(kwargs["range"], kwargs.get("valueRenderOption"))
+        return self._read(
+            kwargs["range"],
+            kwargs.get("valueRenderOption"),
+            kwargs.get("dateTimeRenderOption"),
+        )
 
     def _values_batch_get(self, **kwargs: Any) -> dict[str, Any]:
         render = kwargs.get("valueRenderOption")
-        return {"valueRanges": [self._read(r, render) for r in kwargs["ranges"]]}
+        date_time = kwargs.get("dateTimeRenderOption")
+        return {
+            "valueRanges": [self._read(r, render, date_time) for r in kwargs["ranges"]]
+        }
 
     def _store(self, range_: str, values: list[list[Any]]) -> int:
         tab, r1, r2, c1, c2 = self._span(range_)
@@ -863,7 +1012,7 @@ class FakeSheetGrid:
             )
         for r, row in enumerate(values, start=r1):
             for c, value in enumerate(row, start=c1):
-                tab.cells[r][c] = None if value == "" else value
+                tab.put(r, c, value)
         return sum(len(row) for row in values)
 
     def _atomically(self, apply: Any) -> Any:
@@ -887,7 +1036,68 @@ class FakeSheetGrid:
         )
         return {"totalUpdatedCells": updated}
 
+    def _grid_data(self, **kwargs: Any) -> dict[str, Any]:
+        """``spreadsheets.get`` with ``includeGridData``, for one range, masked.
+
+        Rows run from the range's first row to the last row holding anything
+        the mask names, and each row's cells to its last such cell.
+        """
+        fields = kwargs.get("fields")
+        if not fields:
+            raise http_error(400, "the fake models no grid read without fields")
+        (range_,) = kwargs["ranges"]
+        tab, r1, r2, c1, c2 = self._span(range_)
+        rows = []
+        for r in range(r1, r2):
+            cells = [self._cell_data(tab, r, c, fields) for c in range(c1, c2)]
+            while cells and not cells[-1]:
+                cells.pop()
+            rows.append({"values": cells} if cells else {})
+        while rows and not rows[-1]:
+            rows.pop()
+        data: dict[str, Any] = {"rowData": rows} if rows else {}
+        if "columnMetadata" in fields:
+            data["columnMetadata"] = [
+                {"pixelSize": width} for width in tab.widths[c1:c2]
+            ]
+        return {"sheets": [{"data": [data]}]}
+
+    @staticmethod
+    def _cell_data(tab: _GridTab, r: int, c: int, fields: str) -> dict[str, Any]:
+        """One cell of a grid read: the fields of ``fields`` that it holds."""
+        held = tab.formats.get((r, c), {})
+        cell: dict[str, Any] = {}
+        if "hyperlink" in fields and "link" in held:
+            cell["hyperlink"] = held["link"]
+        if _RUNS in fields and held.get("runs"):
+            cell[_RUNS] = [dict(run) for run in held["runs"]]
+        entered: dict[str, Any] = {}
+        if "userEnteredFormat" in fields:
+            if "link" in held:
+                entered["link"] = {"uri": held["link"]}
+            if held.get("bold"):
+                entered["bold"] = True
+        if entered:
+            cell["userEnteredFormat"] = {"textFormat": entered}
+        value = tab.cells[r][c]
+        if "formattedValue" in fields and value is not None:
+            cell["formattedValue"] = _displayed(value)
+        if "effectiveValue" in fields and value is not None:
+            if isinstance(value, date):
+                value = _serial(value)
+            kind = (
+                "boolValue"
+                if isinstance(value, bool)
+                else "stringValue"
+                if isinstance(value, str)
+                else "numberValue"
+            )
+            cell["effectiveValue"] = {kind: value}
+        return cell
+
     def _meta(self, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("includeGridData"):
+            return self._grid_data(**kwargs)
         sheets = []
         for index, tab in enumerate(self.tabs):
             props: dict[str, Any] = {
@@ -935,14 +1145,25 @@ class FakeSheetGrid:
         if inherit and start == 0:
             raise http_error(400, "Cannot inherit from before the first index")
         count = end - start
+        source = start - 1 if inherit else start
+
+        # Bold is the one format the fake hands on to what is inserted.
+        bold = [
+            c if rows else r
+            for (r, c), held in tab.formats.items()
+            if (r if rows else c) == source and held.get("bold")
+        ]
+        tab.shift(rows, start, count)
+        for at in range(start, end):
+            for other in bold:
+                tab.formats[(at, other) if rows else (other, at)] = {"bold": True}
         if rows:
             width = tab.column_count
             tab.cells[start:start] = [[None] * width for _ in range(count)]
         else:
-            source = tab.widths[start - 1 if inherit else start]
             for row in tab.cells:
                 row[start:start] = [None] * count
-            tab.widths[start:start] = [source] * count
+            tab.widths[start:start] = [tab.widths[source]] * count
         return {}
 
     def _req_appendDimension(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -966,6 +1187,7 @@ class FakeSheetGrid:
         if end - start == size:
             which = "rows" if rows else "columns"
             raise http_error(400, f"You can't delete all the {which} on the sheet.")
+        tab.shift(rows, start, start - end)
         if rows:
             del tab.cells[start:end]
         else:
@@ -980,9 +1202,9 @@ class FakeSheetGrid:
         start = body["start"]
         tab = self._find_id(start.get("sheetId", 0))
         r0, c0 = start.get("rowIndex", 0), start.get("columnIndex", 0)
-        fields = body["fields"]
-        if fields not in ("userEnteredValue", "*"):
-            raise http_error(400, f"the fake models no fields mask {fields!r}")
+        named = self._mask(body["fields"], ("userEnteredValue", "*", *_FORMAT_FIELDS))
+        if "userEnteredValue" not in named and "*" not in named:
+            raise http_error(400, "the fake models updateCells of a value only")
         for r, row in enumerate(body.get("rows", []), start=r0):
             for c, cell in enumerate(row.get("values", []), start=c0):
                 if r >= tab.row_count or c >= tab.column_count:
@@ -992,14 +1214,70 @@ class FakeSheetGrid:
                         f"({tab.row_count} x {tab.column_count})",
                     )
                 value = cell.get("userEnteredValue")
-                if value is None:
-                    tab.cells[r][c] = None  # the mask names it, so it is cleared
-                    continue
-                (value_kind,) = value
-                if value_kind not in ("stringValue", "numberValue", "boolValue"):
-                    raise http_error(400, f"the fake models no {value_kind}")
-                stored = value[value_kind]
-                tab.cells[r][c] = None if stored == "" else stored
+                stored = None  # the mask names the value, so a cell without is cleared
+                if value is not None:
+                    (value_kind,) = value
+                    if value_kind not in ("stringValue", "numberValue", "boolValue"):
+                        raise http_error(400, f"the fake models no {value_kind}")
+                    stored = value[value_kind]
+                # With the link in the mask the request says what the link
+                # is, so the write gives the value none of its own.
+                tab.put(r, c, stored, link=_LINK not in named)
+                self._format(tab.held(r, c), cell, named)
+        return {}
+
+    @staticmethod
+    def _mask(fields: str, known: tuple[str, ...]) -> list[str]:
+        """The fields a mask names, refusing one the fake does not model."""
+        named = [name.strip() for name in fields.split(",")]
+        unknown = [name for name in named if name not in known]
+        if unknown:
+            raise http_error(400, f"the fake models no fields mask {unknown}")
+        return named
+
+    @staticmethod
+    def _format(held: dict[str, Any], cell: dict[str, Any], named: list[str]) -> bool:
+        """Set each format field the mask names from ``cell``, or clear it.
+
+        Returns whether any field was set.
+        """
+        text = cell.get("userEnteredFormat", {}).get("textFormat", {})
+        given = {
+            _LINK: ("link", text.get("link", {}).get("uri")),
+            _BOLD: ("bold", text.get("bold")),
+            _RUNS: ("runs", cell.get(_RUNS)),
+        }
+        was_set = False
+        for name in named:
+            if name not in given:
+                continue
+            key, value = given[name]
+            held.pop(key, None)
+            if value:
+                held[key] = value
+                was_set = True
+        return was_set
+
+    def _req_repeatCell(self, body: dict[str, Any]) -> dict[str, Any]:
+        span = body["range"]
+        tab = self._find_id(span.get("sheetId", 0))
+        named = self._mask(body["fields"], _FORMAT_FIELDS)
+        r1, r2 = span.get("startRowIndex", 0), span.get("endRowIndex", tab.row_count)
+        c1 = span.get("startColumnIndex", 0)
+        c2 = span.get("endColumnIndex", tab.column_count)
+        if not (0 <= r1 < r2 <= tab.row_count and 0 <= c1 < c2 <= tab.column_count):
+            raise http_error(400, f"repeatCell: range {span} is outside the grid")
+        cell = body.get("cell", {})
+        if self._format({}, cell, named):
+            # Something is set, so every cell of the range takes it.
+            for r in range(r1, r2):
+                for c in range(c1, c2):
+                    self._format(tab.held(r, c), cell, named)
+        else:
+            # Only cleared, so the cells that hold no format have nothing to lose.
+            for (r, c), held in tab.formats.items():
+                if r1 <= r < r2 and c1 <= c < c2:
+                    self._format(held, cell, named)
         return {}
 
     def _req_updateDimensionProperties(self, body: dict[str, Any]) -> dict[str, Any]:
