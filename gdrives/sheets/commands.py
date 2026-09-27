@@ -380,17 +380,6 @@ def _config_tabs(target: Target, mode: str, tabs: Sequence[str]) -> list[str]:
     return wanted
 
 
-def _announce_credentials(scopes: list[str] | None) -> None:
-    """Say on stderr which credential the run's requests will use.
-
-    Printed before the first request, so a run waiting on a browser consent
-    does not look hung, and a write is not made as an unexpected identity.
-    """
-    from gdrives.auth import describe_credentials
-
-    print(f"Credential: {describe_credentials(scopes)}", file=sys.stderr)
-
-
 def _run_config(
     mode: str,
     name: str,
@@ -407,13 +396,17 @@ def _run_config(
     needs the Sheets write scope, and announces the credential first (as does
     a pull, which writes only local files and stays read-only).
     """
-    from gdrives.auth import SHEETS_WRITE_SCOPES, build_sheets_service
+    from gdrives.auth import (
+        SHEETS_WRITE_SCOPES,
+        announce_credentials,
+        build_sheets_service,
+    )
 
     target = load_config(config).target(name)
     wanted = _config_tabs(target, mode, tabs)
     scopes = SHEETS_WRITE_SCOPES if apply and mode != "pull" else None
     if apply:
-        _announce_credentials(scopes)
+        announce_credentials(scopes, always=True)
     spreadsheet_id = _resolve_and_report(target.spreadsheet)
     service = build_sheets_service(scopes)
     report = run_target(
@@ -535,10 +528,10 @@ def _run_all_tabs(
     apply: bool,
 ) -> int:
     """Dump every tab of ``source`` to ``output`` with no config; the exit code."""
-    from gdrives.auth import build_sheets_service
+    from gdrives.auth import announce_credentials, build_sheets_service
 
     if apply:
-        _announce_credentials(None)
+        announce_credentials(always=True)
     spreadsheet_id = _resolve_and_report(source)
     service = build_sheets_service()
     report = pull_all_tabs(
