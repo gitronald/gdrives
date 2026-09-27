@@ -17,12 +17,16 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
-- ``table``: ``read_tab``, a whole tab as header-named, keyed records
+- ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
+- ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
+  records
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back
 - ``structure``: add and delete columns by header name, create missing tabs,
   and set column widths
+- ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
+  ``pull_tab``, ``push_tab``, ``pull_all_tabs``, ``run_target``) and report it
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -64,6 +68,20 @@ from gdrives.sheets.commands import (
     run_set,
     run_update,
 )
+from gdrives.sheets.config import (
+    BOOTSTRAPS,
+    CONFIG_NAME,
+    INPUT_OPTIONS,
+    LOCAL_EXTENSIONS,
+    MODES,
+    Config,
+    ConfigError,
+    TabConfig,
+    Target,
+    find_config,
+    load_config,
+    parse_config,
+)
 from gdrives.sheets.files import (
     Records,
     read_records,
@@ -101,7 +119,21 @@ from gdrives.sheets.structure import (
     ensure_tabs,
     set_column_widths,
 )
-from gdrives.sheets.table import Table, read_tab
+from gdrives.sheets.sync import (
+    Replacement,
+    SyncReport,
+    TabPlan,
+    TabReport,
+    apply_tab,
+    format_report,
+    plan_tab,
+    pull_all_tabs,
+    pull_tab,
+    push_tab,
+    run_target,
+    sync_tab,
+)
+from gdrives.sheets.table import EmptyTabError, Table, parse_tab, read_tab
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -127,13 +159,21 @@ from gdrives.sheets.values import (
 __all__ = [
     "ApplyError",
     "ApplyResult",
+    "BOOTSTRAPS",
     "COLUMN_TYPES",
+    "CONFIG_NAME",
     "Cell",
     "ColumnSchema",
+    "Config",
+    "ConfigError",
+    "EmptyTabError",
     "FORMATTED_STRING",
     "FORMATTED_VALUE",
     "FORMULA",
     "IDEMPOTENT_STATUSES",
+    "INPUT_OPTIONS",
+    "LOCAL_EXTENSIONS",
+    "MODES",
     "MergePlan",
     "NewRow",
     "OVERRIDE_REASONS",
@@ -144,12 +184,18 @@ __all__ = [
     "ROW_FLAGS",
     "ReadBackError",
     "Records",
+    "Replacement",
     "RowFlag",
     "SERIAL_NUMBER",
     "SIDES",
     "SheetChangedError",
+    "SyncReport",
+    "TabConfig",
     "TabGrid",
+    "TabPlan",
+    "TabReport",
     "Table",
+    "Target",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
     "a1_quote",
@@ -158,6 +204,7 @@ __all__ = [
     "add_conditional_rule",
     "append_values",
     "apply_plan",
+    "apply_tab",
     "batch_update_spreadsheet",
     "batch_update_values",
     "build_formula_rule",
@@ -169,8 +216,10 @@ __all__ = [
     "delete_conditional_rule",
     "describe_rule",
     "ensure_tabs",
+    "find_config",
     "find_rows",
     "first_tab",
+    "format_report",
     "format_rules",
     "format_values",
     "from_cell",
@@ -179,12 +228,19 @@ __all__ = [
     "index_rows",
     "list_conditional_rules",
     "list_tabs",
+    "load_config",
     "merge",
     "normalize_key",
+    "parse_config",
     "parse_pairs",
+    "parse_tab",
+    "plan_tab",
     "problems",
+    "pull_all_tabs",
     "pull_many",
+    "pull_tab",
     "pull_values",
+    "push_tab",
     "read_records",
     "read_rule_json",
     "read_tab",
@@ -197,10 +253,12 @@ __all__ = [
     "run_get",
     "run_rules",
     "run_set",
+    "run_target",
     "run_update",
     "set_by_match",
     "set_column_widths",
     "split_a1",
+    "sync_tab",
     "tab_grid",
     "tab_sheet_ids",
     "to_cell",
