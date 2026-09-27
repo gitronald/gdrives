@@ -11,6 +11,7 @@ ID, so resolving it makes no request.
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr("gdrives.auth.build_sheets_service", build)
     monkeypatch.setattr("gdrives.auth.describe_credentials", describe)
     return project
+
+
+def plain(text: str) -> str:
+    """``text`` without terminal styling, which Typer forces on GitHub Actions."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def assert_no_request(env: Env, result) -> None:
@@ -215,7 +221,7 @@ class TestSheetsSync:
     def test_a_bad_prefer_is_a_usage_error_before_any_request(self, env):
         result = env.invoke("sheets-sync", "roster", "--prefer", "both")
         assert result.exit_code == 2
-        assert "Invalid value for '--prefer'" in result.stderr
+        assert "Invalid value for '--prefer'" in plain(result.stderr)
         assert_no_request(env, result)
 
 
