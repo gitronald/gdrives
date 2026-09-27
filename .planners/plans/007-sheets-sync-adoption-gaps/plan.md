@@ -5,7 +5,7 @@ status: active
 branch: feature/sheets-sync-adoption-gaps
 created: 2026-09-27T10:24:14-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/44
 ---
 
 # Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets
