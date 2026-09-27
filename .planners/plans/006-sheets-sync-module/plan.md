@@ -1,10 +1,10 @@
 ---
 id: 6
 slug: sheets-sync-module
-status: active
+status: done
 branch: feature/sheets-sync-module
 created: 2026-09-27T00:16:35-07:00
-concluded:
+concluded: 2026-09-27T08:23:53-07:00
 pr: https://github.com/gitronald/gdrives/pull/36
 ---
 
@@ -82,12 +82,12 @@ not check them. The table below is the status of record for the pieces.
 
 | Subplan | Scope | Step | Status |
 |---|---|---|---|
-| [`a-package-split.md`](subplans/a-package-split.md) | Move `sheets.py` into the `gdrives/sheets/` package, with the import surface unchanged | 1 | active, [#37](https://github.com/gitronald/gdrives/pull/37) |
-| [`b-read-layer.md`](subplans/b-read-layer.md) | Canonical cells and column types, local record files, reading a tab as keyed records, row keys, and retry | 2 | active, [#38](https://github.com/gitronald/gdrives/pull/38) |
-| [`c-merge-engine.md`](subplans/c-merge-engine.md) | The pure three-way merge, column ownership, and `MergePlan` | 3 | active, [#39](https://github.com/gitronald/gdrives/pull/39) |
-| [`d-apply-and-structure.md`](subplans/d-apply-and-structure.md) | Applying a plan with its guards, row writes, and the column, tab, and width helpers | 4 | active, [#40](https://github.com/gitronald/gdrives/pull/40) |
-| [`e-config-and-orchestration.md`](subplans/e-config-and-orchestration.md) | The config file, base snapshots, whole-tab pull and push, the library API, and the credential announcement | 5 | active, [#41](https://github.com/gitronald/gdrives/pull/41) |
-| [`f-cli-and-docs.md`](subplans/f-cli-and-docs.md) | The `sheets-sync`, `sheets-pull`, and `sheets-push` commands, and the docs | 6 | active, [#42](https://github.com/gitronald/gdrives/pull/42) |
+| [`a-package-split.md`](subplans/a-package-split.md) | Move `sheets.py` into the `gdrives/sheets/` package, with the import surface unchanged | 1 | done, [#37](https://github.com/gitronald/gdrives/pull/37) |
+| [`b-read-layer.md`](subplans/b-read-layer.md) | Canonical cells and column types, local record files, reading a tab as keyed records, row keys, and retry | 2 | done, [#38](https://github.com/gitronald/gdrives/pull/38) |
+| [`c-merge-engine.md`](subplans/c-merge-engine.md) | The pure three-way merge, column ownership, and `MergePlan` | 3 | done, [#39](https://github.com/gitronald/gdrives/pull/39) |
+| [`d-apply-and-structure.md`](subplans/d-apply-and-structure.md) | Applying a plan with its guards, row writes, and the column, tab, and width helpers | 4 | done, [#40](https://github.com/gitronald/gdrives/pull/40) |
+| [`e-config-and-orchestration.md`](subplans/e-config-and-orchestration.md) | The config file, base snapshots, whole-tab pull and push, the library API, and the credential announcement | 5 | done, [#41](https://github.com/gitronald/gdrives/pull/41) |
+| [`f-cli-and-docs.md`](subplans/f-cli-and-docs.md) | The `sheets-sync`, `sheets-pull`, and `sheets-push` commands, and the docs | 6 | done, [#42](https://github.com/gitronald/gdrives/pull/42) |
 
 ```
 a (package) -> b (read) -> c (merge) -> d (apply) -> e (config, sync) -> f (CLI, docs)
@@ -213,3 +213,83 @@ Raised during the work, for a decision before or after merge:
 - **Live test quota.** The live suite now exceeds 60 writes per minute, so a full run
   waits on the quota and takes about two minutes. One temporary tab shared by the module,
   cleared between tests, would cut the writes.
+
+### 2026-09-27 — close: review of the whole stack, and the merge
+
+The six step PRs were reviewed once more as one diff against `dev` (50 files, about
+13,400 added lines) before anything merged. Five finders read it: two for correctness,
+split by module, and one each for reuse and efficiency, test coverage and edge cases, and
+docs and rule consistency. They raised 10 candidates. Verifiers confirmed 5, rejected 4 as
+documented design, and one more came from a final read of the guide. The review is posted
+on [#36](https://github.com/gitronald/gdrives/pull/36#issuecomment-5857168631).
+
+**Review follow-up.**
+
+Fixed:
+
+- **Local file header names were not stripped.** `read_records` used a file's column names
+  as written, while a tab's header cells are read stripped, so a CSV headed `id ,name` was
+  refused with `lacks column(s) ['id']`. Column names are now stripped in all three
+  formats, and names that are equal once stripped, or blank, stop the run. Tests: eight
+  cases in `tests/test_sheets_records.py`, and a sync with a padded local header in
+  `tests/test_sheets_sync.py` (`30cfb03`).
+- **The guide overstated `local_owned`.** It said the local value always wins. A row added
+  on the sheet is folded in with the sheet's values in every column, as
+  [`c-merge-engine.md`](subplans/c-merge-engine.md) records. The code is unchanged and the
+  guide now states the exception (`29e5b7c`).
+
+Conscious no-ops, all measured against `FakeSheetGrid`, none of which changes what a run
+writes:
+
+- `run_target` lists the spreadsheet's tabs once per tab: a preview of a 5-tab target
+  makes 5 `spreadsheets.get` and 5 `values.get` requests where 1 and 5 would do.
+- Creating a missing tab lists the tabs three times in a sync, and twice in a push.
+- `delete_columns` fetches the `sheetId` again directly after `add_columns` did.
+- A push preview converts the grid to canonical strings about four times, which is about
+  0.15 seconds for a 10,000 by 20 tab.
+
+A shared tab listing has to be refreshed after a tab is created, and the larger saving is
+reading every tab's values in one `values.batchGet`, as `pull_all_tabs` does. Both change
+how the per-tab functions read, so they are left for a follow-up plan.
+
+Rejected as documented design: the `bootstrap` key with one allowed value, key comparison
+that normalizes whitespace only, and the `local_owned` fold as a code defect. The row
+lists on `ApplyResult` (`pushed_rows` and `appended_rows`) were rejected as dead code
+because they are part of the library result, but nothing in this repo reads them.
+
+Checks after the fixes: ruff and pyrefly clean, 1552 tests pass with the live suite, and
+coverage is 100%.
+
+**Merge.** The stack landed on the umbrella branch bottom-up, as merge commits. #37 merged
+as it stood. Each later PR was retargeted from the branch below it to the umbrella branch
+and then merged (#38 to #42), so each step is one merge commit in order. The umbrella PR,
+#36, carries the result into `dev`.
+
+## Retrospective
+
+- **A stack keeps each step reviewable, and costs a retarget per PR at the end.** Six
+  PRs of one step each were easier to review than one PR of 13,400 lines. CI did not run
+  on them, since it triggers on PRs into `dev` and `main` only, so the checks were run by
+  hand before each push, and the first CI run on the code was the umbrella PR's, after
+  the stack had merged. Adding the umbrella branch to the workflow's `pull_request`
+  branches for the life of a stack would give every step a CI run.
+- **Reviewing a step against its subplan cannot find what the subplan leaves out.** Step
+  b built both readers, the tab's and the local file's, and its subplan gave the header
+  rule for the tab only. Each per-step review checked the code against that text and
+  passed. The mismatch showed when a reviewer followed a local file through to the sync
+  in step e. A design section that names a rule for one side of a comparison should name
+  it for the other side too.
+- **The guide was written from the design, and the design had moved.** The `local_owned`
+  wording matched the subplan's design section, and the decision that refined it was in
+  the Log. Docs written at the end of a plan should be checked against the Logs, not the
+  design sections alone.
+- **Request counts were never a stated goal, so nothing measured them.** Every step met
+  its subplan, and the run still lists the tabs once per tab. A request budget per
+  command in the plan (requests for a preview of N tabs) would have made it a test.
+- **Splitting the plan before work started paid for itself.** The umbrella file stayed
+  under 300 lines with a full Log, and each subplan's Log holds the decisions for its own
+  module, which is where a reader of that module looks.
+- **A stateful fake was the right investment.** The guard, the read-back, and the
+  failure-order tests all need a sheet that changes between calls. The live tests then
+  only had to pin the fake's assumptions, which kept the live suite small enough to fit
+  the write quota, if slowly.
