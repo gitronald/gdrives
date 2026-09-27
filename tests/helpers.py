@@ -12,6 +12,12 @@ from typing import Any
 import pytest
 
 
+def local_file(tab: Any) -> Path:
+    """A tab's local file, which a tab loaded from a config always has."""
+    assert tab.local is not None
+    return tab.local
+
+
 def plain(text: str) -> str:
     """``text`` without terminal styling, which Typer forces on GitHub Actions."""
     return re.sub(r"\x1b\[[0-9;]*m", "", text)

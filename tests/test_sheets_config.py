@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -196,7 +197,10 @@ class TestValidConfig:
 
     def test_extensions_are_matched_in_any_case(self):
         data = config({"T": members(local="data/T.CSV")})
-        assert parse_config(data, PATH).target("roster").tabs[0].local.name == "T.CSV"
+        assert (
+            local_file(parse_config(data, PATH).target("roster").tabs[0]).name
+            == "T.CSV"
+        )
 
 
 class TestLookups:

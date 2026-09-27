@@ -24,6 +24,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back, and ``insert_point``, the row its new rows go above
+- ``stores``: where a tab's local side and its base are kept (``Store``,
+  ``FileStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, and set column widths
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
@@ -130,6 +132,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     add_columns,
     delete_columns,
@@ -196,6 +199,7 @@ __all__ = [
     "ConfigError",
     "EmptyTabError",
     "FORMATTED_STRING",
+    "FileStore",
     "FORMATTED_VALUE",
     "FORMULA",
     "IDEMPOTENT_STATUSES",
@@ -203,6 +207,7 @@ __all__ = [
     "INPUT_OPTIONS",
     "LOCAL_EXTENSIONS",
     "MODES",
+    "MemoryStore",
     "MergePlan",
     "NEWLINES",
     "NewRow",
@@ -222,6 +227,7 @@ __all__ = [
     "SIDES",
     "STAGES",
     "SheetChangedError",
+    "Store",
     "SyncReport",
     "TabConfig",
     "TabGrid",

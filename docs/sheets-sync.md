@@ -625,6 +625,92 @@ its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
 The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
 `verify`, `read_records`, and `write_records`.
 
+### Stores
+
+A run reads and writes the local side of a tab, and its base, through a
+**store**. A config names files, and each becomes a `FileStore`. A caller
+whose local side is not one flat file per tab gives the tab a store of its
+own: one tab of a file that holds several, typed rows, rows written back in
+an order of its choosing, or a local side that is computed.
+
+A store has a `label`, which reports and errors show where a path was shown,
+and three methods:
+
+| Method | Does |
+|---|---|
+| `exists()` | Says whether there is anything to read. False on the local side is refused for a sync or a push, and a pull creates it. False on the base means a first sync |
+| `read()` | Returns `Records(columns, rows)`: the columns in order, and the rows as dicts of canonical cell strings |
+| `write(columns, rows)` | Replaces what the store holds. Every row holds every column of `columns` |
+
+`TabConfig(store=...)` gives a tab its local store, and
+`Target(base_stores={title: store})` gives a tab's base one. A tab needs
+`local` or `store`; `TabConfig.local` is None for a tab with a store and no
+file. `MemoryStore` holds records in memory, for tests and for a caller that
+saves them itself after the run.
+
+This store is one tab of a JSON file that holds several, as
+`{"Members": [...], "Summary": [...]}`:
+
+```python
+import json
+from pathlib import Path
+
+from gdrives.sheets import Records, TabConfig, Target, encode_rows, run_target
+
+
+class WorkbookTab:
+    """One tab of a JSON workbook, as a store."""
+
+    def __init__(self, path, name, columns):
+        self.path, self.name, self.columns = Path(path), name, list(columns)
+        self.label = f"{path}#{name}"
+
+    def _tabs(self):
+        return json.loads(self.path.read_text()) if self.path.exists() else {}
+
+    def exists(self):
+        return self.name in self._tabs()
+
+    def read(self):
+        return Records(self.columns, encode_rows(self._tabs()[self.name], self.columns))
+
+    def write(self, columns, rows):
+        tabs = self._tabs() | {self.name: [dict(row) for row in rows]}
+        self.path.write_text(json.dumps(tabs, indent=2) + "\n")
+
+
+columns = ["member_id", "name", "status"]
+tab = TabConfig(
+    title="Members",
+    key=("member_id",),
+    store=WorkbookTab("data/workbook.json", "Members", columns),
+)
+target = Target(
+    name="roster",
+    spreadsheet="<spreadsheet-id>",
+    base=Path("sheets-base/roster"),
+    tabs=(tab,),
+)
+report = run_target(service, "<spreadsheet-id>", target, "sync", apply=True)
+```
+
+What a store has to keep to:
+
+- **`read()` returns the same records each time within a run.** After a run
+  changes the tab's structure, the local side is read again, and the run
+  stops unless the second read equals the first. A store that computes its
+  rows has to be deterministic between the two.
+- **A store that parses cells when it writes declares its types in the tab's
+  `schema`.** The merged rows are then checked before anything is written. A
+  cell that fails such a store's `write` fails after the sheet was written.
+  That is safe, since the local store is written before the base, the base
+  has not advanced, and the next run sees the sheet as already in sync; the
+  schema avoids it.
+- **`write` may raise `ValueError` or `OSError`.** Both are reported for the
+  tab, as a file error is.
+- The config loader refuses two tabs that would write one file. It checks
+  files only, so a caller that gives tabs stores of its own owns that check.
+
 ### Hooks
 
 `plan_tab`, `sync_tab`, `pull_tab`, `push_tab`, and `run_target` take three

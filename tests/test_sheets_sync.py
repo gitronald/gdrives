@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
+from helpers import FakeSheetGrid, http_error, local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -104,7 +104,7 @@ def synced(tmp_path):
 class TestPreview:
     def test_a_preview_writes_nothing_and_creates_no_directory(self, tmp_path):
         target = make_target(tmp_path, local="data/local.csv")
-        target.tabs[0].local.parent.mkdir()
+        local_file(target.tabs[0]).parent.mkdir()
         write_local(target, ["a", "Ada", "9"], ["c", "Cy", "3"])
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = run(grid, target)
@@ -333,7 +333,7 @@ class TestHooks:
         grid.write("T", [[*HEADER, "memo"], ["a", "Ada", "9", "m"]])
         write_local(target, *[[*row, "t"] for row in ROWS], header=[*HEADER, "tag"])
         check = Recorder()
-        target = make_target(target.tabs[0].local.parent, columns=HEADER)
+        target = make_target(local_file(target.tabs[0]).parent, columns=HEADER)
         report = run(grid, target, check=check)
         assert check.stages == ["local", "merged"]
         local, merged = check.seen
@@ -637,7 +637,7 @@ class TestCarriedColumns:
             dict(zip([*HEADER, "memo", "tag"], [*row, "", ""], strict=True))
             for row in ROWS
         ]
-        assert target.tabs[0].local.read_bytes() == (
+        assert local_file(target.tabs[0]).read_bytes() == (
             b"id,name,amt,memo,tag\na,Ada,1,,\nb,Bo,2,,\n"
         )
 
@@ -917,7 +917,7 @@ class TestInsertRow:
         target = make_target(
             tmp_path, local="local.json", schema={"amt": {"type": "int"}}
         )
-        local = target.tabs[0].local
+        local = local_file(target.tabs[0])
         local.write_text('[{"id": "a", "name": "Ada", "amt": 1}]\n', encoding="utf-8")
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
         run(grid, target, apply=True)
@@ -931,7 +931,7 @@ class TestInsertRow:
         write_local(target, ["a", "Ada", "1"])
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
         run(grid, target, apply=True)
-        assert target.tabs[0].local.read_bytes().startswith(b"\xef\xbb\xbfid,")
+        assert local_file(target.tabs[0]).read_bytes().startswith(b"\xef\xbb\xbfid,")
 
     def test_the_local_file_and_the_base_are_written_with_lf(self, tmp_path):
         target = make_target(tmp_path)
@@ -1135,16 +1135,16 @@ class TestFailureOrder:
     def test_a_failed_local_write_leaves_the_base(self, tmp_path, monkeypatch):
         grid, target = self.scene(tmp_path)
         files = snapshot(target)
-        import gdrives.sheets.sync as sync
+        import gdrives.sheets.stores as stores
 
-        real = sync.write_records
+        real = stores.write_records
 
         def fail_local(path, *args, **kwargs):
             if path == target.tabs[0].local:
                 raise OSError("disk full")
             real(path, *args, **kwargs)
 
-        monkeypatch.setattr(sync, "write_records", fail_local)
+        monkeypatch.setattr(stores, "write_records", fail_local)
         planned = plan_tab(grid, "S", target, target.tabs[0])
         with pytest.raises(OSError, match="disk full"):
             apply_tab(grid, "S", planned)
@@ -1154,16 +1154,16 @@ class TestFailureOrder:
 
     def test_a_failed_base_write_leaves_the_widths(self, tmp_path, monkeypatch):
         grid, target = self.scene(tmp_path)
-        import gdrives.sheets.sync as sync
+        import gdrives.sheets.stores as stores
 
-        real = sync.write_records
+        real = stores.write_records
 
         def fail_base(path, *args, **kwargs):
             if path == target.base_path(target.tabs[0]):
                 raise OSError("read-only")
             real(path, *args, **kwargs)
 
-        monkeypatch.setattr(sync, "write_records", fail_base)
+        monkeypatch.setattr(stores, "write_records", fail_base)
         planned = plan_tab(grid, "S", target, target.tabs[0])
         with pytest.raises(OSError, match="read-only"):
             apply_tab(grid, "S", planned)
@@ -1550,7 +1550,7 @@ class TestRefusals:
 
     def test_a_local_file_with_no_columns(self, tmp_path):
         target = make_target(tmp_path, local="local.json")
-        target.tabs[0].local.write_text("[]", encoding="utf-8")
+        local_file(target.tabs[0]).write_text("[]", encoding="utf-8")
         with pytest.raises(ValueError, match="has no columns"):
             run(FakeSheetGrid({"T": [HEADER]}), target)
 
@@ -1572,7 +1572,7 @@ class TestPaths:
         }
         target = parse_config(data, tmp_path / "cfg" / CONFIG_NAME).target("t")
         tab = target.tabs[0]
-        tab.local.parent.mkdir(parents=True)
+        local_file(tab).parent.mkdir(parents=True)
         write_values_csv(str(tab.local), [HEADER, *ROWS])
         grid = FakeSheetGrid({"../a/b": [HEADER, *ROWS]})
         sync_tab(grid, "S", target, tab, apply=True)

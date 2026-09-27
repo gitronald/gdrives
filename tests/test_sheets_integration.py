@@ -39,6 +39,7 @@ from dataclasses import dataclass
 
 import pytest
 from googleapiclient.http import HttpRequest
+from helpers import local_file
 
 import gdrives.auth  # import loads .env (python-dotenv), so a .env-set id is visible
 from gdrives import sheets
@@ -594,7 +595,7 @@ def test_sync_adopts_merges_and_then_writes_nothing(tab, tmp_path):
     target = _target(
         tmp_path, sid, name, {"local": "members.csv", "key": ["member_id"]}
     )
-    local = target.tabs[0].local
+    local = local_file(target.tabs[0])
     base = target.base_path(target.tabs[0])
     header = ["member_id", "name", "status"]
     sheets.write_values_csv(
@@ -650,7 +651,7 @@ def test_sync_of_a_tab_whose_keys_have_a_blank_component(seeded, tmp_path):
     ]
     sheets.write_records(target.base_path(tab), header, rows)
     sheets.write_records(
-        tab.local,
+        local_file(tab),
         header,
         [rows[0] | {"v": "A"}, rows[1], {"year": "2026", "id": "1", "v": "c"}],
     )
