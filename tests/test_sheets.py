@@ -16,6 +16,7 @@ from gdrives.sheets import (
     FORMULA,
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
+    GridTooLargeError,
     a1_quote,
     append_values,
     batch_update_values,
@@ -25,6 +26,7 @@ from gdrives.sheets import (
     format_values,
     list_tabs,
     parse_pairs,
+    pull_grid,
     pull_many,
     pull_values,
     read_values_csv,
@@ -150,6 +152,81 @@ class TestPullMany:
 
 
 # -- update_values --
+
+
+class TestPullGrid:
+    MASK = "sheets(data(rowData(values(hyperlink))))"
+    DATA = {"rowData": [{"values": [{"hyperlink": "https://example.com"}]}]}
+
+    def test_one_masked_read_of_one_range(self):
+        svc = FakeSheetsService(meta={"sheets": [{"data": [self.DATA]}]})
+        assert pull_grid(svc, "sid", "'My Tab'!A:C", self.MASK) == self.DATA
+        assert svc.calls == [
+            (
+                "spreadsheets.get",
+                {
+                    "spreadsheetId": "sid",
+                    "ranges": ["'My Tab'!A:C"],
+                    "includeGridData": True,
+                    "fields": self.MASK,
+                },
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "response", [{}, {"sheets": []}, {"sheets": [{}]}, {"sheets": [{"data": []}]}]
+    )
+    def test_a_range_that_holds_nothing_of_the_mask_is_empty(self, response):
+        assert pull_grid(FakeSheetsService(meta=response), "sid", "T", self.MASK) == {}
+
+    @pytest.mark.parametrize("fields", ["", "  "])
+    def test_a_mask_is_required(self, fields):
+        svc = FakeSheetsService()
+        with pytest.raises(ValueError, match="pull_grid: a fields mask is required"):
+            pull_grid(svc, "sid", "T", fields)
+        assert svc.calls == []
+
+    @pytest.mark.parametrize("name", ["DecodeRatioError", "DecodeLimitError"])
+    def test_a_response_too_large_to_decode_is_a_value_error(self, name):
+        import httplib2.decode
+
+        error = getattr(httplib2.decode, name)("too much")
+        svc = FakeSheetsService(meta=error)
+        with pytest.raises(GridTooLargeError) as raised:
+            pull_grid(svc, "sid", "'T'!A:C", self.MASK)
+        assert isinstance(raised.value, ValueError)
+        assert str(raised.value) == (
+            "the grid read of \"'T'!A:C\" came back too large to decode (too "
+            "much); narrow the range or the fields mask"
+        )
+
+    def test_another_error_is_not_caught(self):
+        svc = FakeSheetsService(meta=RuntimeError("boom"))
+        with pytest.raises(RuntimeError, match="boom"):
+            pull_grid(svc, "sid", "T", self.MASK)
+
+    def test_an_http_error_is_retried_as_a_read_is(self, monkeypatch):
+        from helpers import http_error
+
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        svc = FakeSheetsService(
+            meta=[http_error(503, "unavailable"), {"sheets": [{"data": [self.DATA]}]}]
+        )
+        assert pull_grid(svc, "sid", "T", self.MASK) == self.DATA
+        assert [method for method, _ in svc.calls] == ["spreadsheets.get"] * 2
+
+    def test_the_errors_are_looked_up_where_the_client_has_them(self):
+        import httplib2.decode
+
+        from gdrives.sheets.values import decode_errors
+
+        assert decode_errors() == (
+            httplib2.decode.DecodeRatioError,
+            httplib2.decode.DecodeLimitError,
+        )
+        # An older release has no such module, or a module without them.
+        assert decode_errors("httplib2.no_such_module") == ()
+        assert decode_errors("httplib2.error") == ()
 
 
 class TestUpdateValues:
