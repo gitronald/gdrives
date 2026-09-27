@@ -117,7 +117,7 @@ not check them. The table below is the status of record for the pieces.
 | [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | active |
 | [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5, P9 to P12 | active |
 | [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | active |
-| [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | draft |
+| [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | active |
 | [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | draft |
 | [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | draft |
 | [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | draft |
