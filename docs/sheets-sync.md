@@ -183,7 +183,10 @@ key on either side stops the run with every such row listed.
 Ownership overrides the cell rule for whole columns:
 
 - A `local_owned` column always pushes the local value. When the sheet value
-  had changed too, the discarded sheet value is reported as an override.
+  had changed too, the discarded sheet value is reported as an override. The
+  one exception is a row added on the sheet: it is folded in with the sheet's
+  values in every column, local-owned ones included, since the local file has
+  no value for it yet. From the next run on, the local value wins there too.
 - A `sheet_owned` column always folds the sheet value. A new local row is
   appended with its sheet-owned cells blank, since those values are assigned
   on the sheet; a non-blank local value discarded that way is reported as an
@@ -333,8 +336,11 @@ position, and a header that repeats a name stops the run.
 zeros, booleans, and dates stay exactly as written. A `.json` file is an array
 of objects with typed values, written with a fixed key order, a two-space
 indent, and a final newline, so a run that changes nothing leaves it
-byte-for-byte the same. Every local write goes through a temporary file and a
-rename, so an interrupted run never leaves a partial file.
+byte-for-byte the same. Column names are read with surrounding whitespace
+stripped, as the tab's header cells are, so `id ` in a file's header is the
+column `id`; two names that are equal once stripped stop the run. Every local
+write goes through a temporary file and a rename, so an interrupted run never
+leaves a partial file.
 
 **Writing.** A sync writes every value as a **literal string** (`RAW`), and a
 push does too unless the target sets `input_option: USER_ENTERED`. Literal
