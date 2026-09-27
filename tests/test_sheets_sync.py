@@ -921,7 +921,7 @@ class TestTypedDates:
         grid.tab("T").cells[1][2] = datetime(2026, 9, 27, 10, 30, 15, 123000)
         report = run(grid, target, apply=True)
         assert [(c.key, c.column, c.sheet) for c in plan_of(report).fold_cells] == [
-            (("a",), "at", "2026-09-27 10:30:15.123000")
+            (("a",), "at", "2026-09-27 10:30:15.123")
         ]
         assert report.wrote_local and report.wrote_base and not report.wrote_sheet
         again = run(grid, target, apply=True)
@@ -943,6 +943,36 @@ class TestTypedDates:
             ["c", "2026-09-29"],
         ]
         assert base_rows(target) == local
+        again = run(grid, target, apply=True)
+        assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
+
+    def test_a_base_in_the_old_datetime_form_is_in_sync_with_the_new(self, tmp_path):
+        # Bases saved by earlier versions hold str(datetime): no fraction when it is
+        # zero. The sheet now reads as .000, and that is the same value.
+        grid, target = self.scene(tmp_path)
+        grid.tab("T").cells[1][2] = datetime(2026, 9, 27, 10, 30, 15)
+        preview = plan_tab(grid, "S", target, target.tabs[0])
+        assert preview.table is not None
+        assert preview.table.rows[0]["at"] == "2026-09-27 10:30:15.000"
+        plan = plan_of(preview.report)
+        assert not (plan.pushes or plan.fold_cells or plan.conflicts)
+        before = snapshot(target)
+        report = run(grid, target, apply=True)
+        assert not (report.wrote_sheet or report.wrote_local or report.wrote_base)
+        assert snapshot(target) == before
+
+    def test_an_old_form_datetime_is_pushed_and_verified_as_written(self, tmp_path):
+        # verify compares raw strings: a pushed cell is text on the sheet, the
+        # serial read passes text through, so it reads back as it was sent.
+        local = [
+            ["a", "2026-09-27", "2026-10-02 08:00:00"],
+            ["b", "2026-09-28", "2026-09-28 01:02:03"],
+        ]
+        grid, target = self.scene(tmp_path, local=local)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert applied_of(report).pushed == 1
+        assert grid.values("T")[1][2] == "2026-10-02 08:00:00"
         again = run(grid, target, apply=True)
         assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
 

@@ -502,7 +502,7 @@ def test_read_tab_reads_declared_dates_from_their_serials(seeded):
         service, sid, name, None, ["id"], types={"on": "date", "at": "datetime"}
     )
     assert table.rows == [
-        {"id": "a", "on": "2026-09-27", "at": "2026-09-27 10:30:15"},
+        {"id": "a", "on": "2026-09-27", "at": "2026-09-27 10:30:15.000"},
         {"id": "b", "on": "2026-09-28", "at": "2026-09-28T01:02:03"},
     ]
 

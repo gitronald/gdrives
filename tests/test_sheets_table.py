@@ -305,14 +305,19 @@ class TestSerials:
     def test_serials_and_text_both_arrive_as_iso(self):
         table = self.parse()
         assert table.rows == [
-            {"id": "a", "on": "2026-09-27", "note": "x", "at": "2026-09-27 10:30:15"},
+            {
+                "id": "a",
+                "on": "2026-09-27",
+                "note": "x",
+                "at": "2026-09-27 10:30:15.000",
+            },
             {"id": "b", "on": "2026-09-27", "note": "", "at": "2026-09-27T10:30:15"},
             # The display text named the next day; the serial has the moment.
             {
                 "id": "c",
                 "on": "2026-09-28",
                 "note": "",
-                "at": "2026-09-27 23:59:59.999000",
+                "at": "2026-09-27 23:59:59.999",
             },
         ]
         assert table.row_numbers == {("a",): 2, ("b",): 3, ("c",): 5}
@@ -425,7 +430,7 @@ class TestReadTabTypes:
                 "id": "a",
                 "note": "x",
                 "on": "2026-09-27",
-                "at": "2026-09-27 23:59:59.999000",
+                "at": "2026-09-27 23:59:59.999",
             },
             {"id": "b", "note": "", "on": "2026-09-28", "at": "2026-09-28T01:02:03"},
         ]

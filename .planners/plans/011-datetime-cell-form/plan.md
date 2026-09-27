@@ -1,11 +1,11 @@
 ---
 id: 11
 slug: datetime-cell-form
-status: active
+status: done
 branch: feature/datetime-cell-form
 created: 2026-09-27T16:46:14-07:00
-concluded:
-pr:
+concluded: 2026-09-27T16:51:34-07:00
+pr: https://github.com/gitronald/gdrives/pull/56
 ---
 
 # Read datetime serials in one fixed-width form
@@ -92,3 +92,39 @@ path does with them:
 
 - Rewriting text cells in a datetime column (see the decision above).
 - Any change to `to_cell`, `normalize_cell`, or `encode_rows`.
+
+## Log
+
+### 2026-09-27
+
+- `a8c3fa8` read datetime serials in one fixed-width form. `serial_to_cell` writes a
+  datetime as `isoformat(sep=" ", timespec="milliseconds")`, and `to_cell` is
+  unchanged. Existing expectations moved to the `.mmm` form. New tests cover:
+  - one width across whole and fractional seconds
+  - the round trip through `from_cell` and `normalize_cell`
+  - an old-form base and local file staying in sync with a new-form sheet read, with
+    no writes
+  - an old-form datetime being pushed and passing `verify`
+- The existing `test_date_cells_are_in_sync_with_iso_text` already passed unchanged
+  after the code change. That confirmed the merge compatibility claim before the
+  dedicated test was written.
+- The live test `test_read_tab_reads_declared_dates_from_their_serials` passed against
+  the API with the new form, and a RAW-pushed text cell still reads back as its text.
+- `4a0a64b` updated the guide (date section, and the one-time pull respelling) and
+  added a `### Changed` changelog entry. The README shows no datetime form, so it is
+  unchanged.
+- Review follow-up: a `/code-review` at `low` (correctness finder, sonnet) raised no
+  findings. It checked `_reread`, `verify`, `insert_point`, the merge normalization,
+  and extreme serials.
+
+## Retrospective
+
+- The decision to leave `to_cell` alone held up. The only caller of `serial_to_cell`
+  is `_dated`, so the change reached exactly the serial-read path and nothing a caller
+  builds in code.
+- Most of the compatibility work was already done by plan 007's typed comparison. The
+  risk was only in raw-string paths (pull and `verify`), and both turned out to be
+  safe or intended.
+- Leaving text cells as they are keeps a mixed serial and text column mixed in width.
+  That is documented. A caller that needs full uniformity would need an opt-in rewrite
+  of text, which is not planned.

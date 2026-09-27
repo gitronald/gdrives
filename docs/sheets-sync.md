@@ -640,14 +640,23 @@ depends on the format and the spreadsheet's locale: `9/27/2026` on one sheet
 and `27.09.2026` on another. A column the `schema` declares `date` or
 `datetime` is read a second time, as the serial numbers the sheet holds, and
 each date cell arrives as ISO 8601 whatever the sheet displays: `2026-09-27`,
-or `2026-09-27 10:30:15` for a date-time, to the millisecond.
+or `2026-09-27 10:30:15.000` for a date-time. A date-time read from a serial
+always carries three digits of milliseconds, a whole second included, so every
+such cell of a column has one width.
 
 - Conversion is by declaration, never by guess. A number in an undeclared
   column cannot be told from a date's serial, and is left alone. A plain
   number in a declared column is read as a serial.
 - A cell holding text stays as it is. A sync writes literal strings, so a date
   it pushed is text on the sheet, and reads back as written. A column can
-  hold date cells and ISO text, and both arrive as ISO 8601.
+  hold date cells and ISO text, and both arrive as ISO 8601. The text is
+  not respelled: a date-time pushed as `2026-09-27 10:30:15` reads back as
+  that, not with `.000`.
+- Date-times read by earlier versions were written without a fraction when it was
+  zero (`2026-09-27 10:30:15`). A sync compares a typed column by value, so a
+  base or local file in that form is in sync with the new read, and nothing
+  is rewritten. A pull compares text, so the first pull after upgrading
+  rewrites those cells once, adding `.000`.
 - A date-time in a `date` column is not cut to its day. It keeps its display
   text, and the schema check reports it.
 - The serial is also the more exact read. Display text rounds to what its
