@@ -5,6 +5,10 @@ is nothing to do, and refuses a bad request before sending anything. Columns
 are named by their header cell, never by position, so a helper still hits the
 right column after someone moves it. Header cells are read the way
 :func:`~gdrives.sheets.table.read_tab` reads them: canonical strings, stripped.
+
+:func:`add_columns` adds one group of columns at one place, and
+:func:`place_columns` puts each column a header lacks at its place in a wanted
+order.
 """
 
 from collections.abc import Mapping, Sequence
@@ -16,6 +20,7 @@ from gdrives.sheets.cells import to_cell
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     UNFORMATTED_VALUE,
+    TabGrid,
     batch_update_spreadsheet,
     list_tabs,
     pull_values,
@@ -65,6 +70,52 @@ def _columns(sheet_id: int, start: int, end: int) -> dict[str, Any]:
     }
 
 
+def _open_columns(
+    grid: TabGrid, start: int, names: Sequence[str], inherit: bool
+) -> list[dict[str, Any]]:
+    """The requests that open columns at 0-based ``start`` and name them.
+
+    The columns are inserted, taking the formatting of the column to their
+    left with ``inherit`` and to their right without, or appended when
+    ``start`` is past the grid's last column.
+    """
+    count = len(names)
+    if start < grid.column_count:
+        opened: dict[str, Any] = {
+            "insertDimension": {
+                "range": _columns(grid.sheet_id, start, start + count),
+                "inheritFromBefore": inherit,
+            }
+        }
+    else:
+        # Nothing lies past the grid's last column, so appending is inserting.
+        opened = {
+            "appendDimension": {
+                "sheetId": grid.sheet_id,
+                "dimension": "COLUMNS",
+                "length": start + count - grid.column_count,
+            }
+        }
+    named = {
+        "updateCells": {
+            "start": {
+                "sheetId": grid.sheet_id,
+                "rowIndex": 0,
+                "columnIndex": start,
+            },
+            "rows": [
+                {
+                    "values": [
+                        {"userEnteredValue": {"stringValue": name}} for name in names
+                    ]
+                }
+            ],
+            "fields": "userEnteredValue",
+        }
+    }
+    return [opened, named]
+
+
 def add_columns(
     service: Service,
     spreadsheet_id: str,
@@ -72,19 +123,26 @@ def add_columns(
     names: Sequence[str],
     *,
     before: str | None = None,
+    after: str | None = None,
 ) -> None:
     """Add a column for each of ``names``, in order, with its header cell.
 
     By default the columns go directly after the header's last named column
     (anything to their right moves over, never under a new header); with
-    ``before`` they go directly before that header column. One request opens
-    the columns, growing the grid when needed, and writes the header cells, so
-    no edit lands between the two. The new columns take the formatting of the
-    column beside them: the one to their left by default, ``before`` otherwise.
+    ``before`` they go directly before that header column, and with ``after``
+    directly after it. One request opens the columns, growing the grid when
+    needed, and writes the header cells, so no edit lands between the two.
+    The new columns take the formatting of the column beside them: the one to
+    their right with ``before``, to their left otherwise.
 
     Raises ValueError, with nothing written, for a blank or repeated name, a
-    name the header already has, or a ``before`` the header lacks or repeats.
+    name the header already has, both ``before`` and ``after``, or one of
+    them the header lacks or repeats.
     """
+    if before is not None and after is not None:
+        raise ValueError(
+            f"columns go before or after, not both: {before!r} and {after!r}"
+        )
     if not names:
         return
     _check_names(names, "column")
@@ -92,55 +150,63 @@ def add_columns(
     present = [name for name in names if name in header]
     if present:
         raise ValueError(f"tab {tab!r} already has column(s) {present}")
-    if before is None:
-        start = max((i + 1 for i, name in enumerate(header) if name), default=0)
-    else:
+    if before is not None:
         start = _positions(header, [before], tab)[before]
-    grid = tab_grid(service, spreadsheet_id, tab)
-    count = len(names)
-    requests: list[dict[str, Any]] = []
-    if start < grid.column_count:
-        requests.append(
-            {
-                "insertDimension": {
-                    "range": _columns(grid.sheet_id, start, start + count),
-                    # Inherit from the left, except before the first column.
-                    "inheritFromBefore": before is None and start > 0,
-                }
-            }
-        )
+    elif after is not None:
+        start = _positions(header, [after], tab)[after] + 1
     else:
-        # Nothing lies past the grid's last column, so appending is inserting.
-        requests.append(
-            {
-                "appendDimension": {
-                    "sheetId": grid.sheet_id,
-                    "dimension": "COLUMNS",
-                    "length": start + count - grid.column_count,
-                }
-            }
-        )
-    requests.append(
-        {
-            "updateCells": {
-                "start": {
-                    "sheetId": grid.sheet_id,
-                    "rowIndex": 0,
-                    "columnIndex": start,
-                },
-                "rows": [
-                    {
-                        "values": [
-                            {"userEnteredValue": {"stringValue": name}}
-                            for name in names
-                        ]
-                    }
-                ],
-                "fields": "userEnteredValue",
-            }
-        }
-    )
+        start = max((i + 1 for i, name in enumerate(header) if name), default=0)
+    grid = tab_grid(service, spreadsheet_id, tab)
+    # Inherit from the left, except before a named or the first column.
+    requests = _open_columns(grid, start, names, before is None and start > 0)
     batch_update_spreadsheet(service, spreadsheet_id, requests)
+
+
+def place_columns(
+    service: Service, spreadsheet_id: str, tab: str, columns: Sequence[str]
+) -> list[str]:
+    """Add each of ``columns`` the header lacks, at its place in that order.
+
+    ``columns`` is the wanted order. A column the header lacks goes directly
+    after the nearest column before it in ``columns`` that the header has, or
+    that this call has just placed, and at the front when there is none.
+    Columns the header has are never moved: where its order differs from
+    ``columns``, a new column still follows its nearest earlier one, wherever
+    that sits. Columns outside ``columns`` stay where they are, as does
+    anything past the header.
+
+    One request opens every group of columns and writes its header cells,
+    growing the grid when needed. The groups are opened right to left, so
+    each position is still true when its turn comes. New columns take the
+    formatting of the column to their left, and of the one to their right at
+    the front. Returns the columns added, in ``columns`` order; with none to
+    add, nothing is sent.
+
+    Raises ValueError, with nothing written, for a blank or repeated name, or
+    a name the header repeats.
+    """
+    _check_names(columns, "column")
+    if not columns:
+        return []
+    header = _header(service, spreadsheet_id, tab)
+    repeated = [name for name in columns if header.count(name) > 1]
+    if repeated:
+        raise ValueError(f"tab {tab!r}: header repeats {repeated}")
+    groups: dict[int, list[str]] = {}
+    start = 0
+    for name in columns:
+        if name in header:
+            start = header.index(name) + 1
+        else:
+            groups.setdefault(start, []).append(name)
+    if not groups:
+        return []
+    grid = tab_grid(service, spreadsheet_id, tab)
+    requests: list[dict[str, Any]] = []
+    for start in sorted(groups, reverse=True):
+        requests.extend(_open_columns(grid, start, groups[start], start > 0))
+    batch_update_spreadsheet(service, spreadsheet_id, requests)
+    return [name for name in columns if name not in header]
 
 
 def delete_columns(

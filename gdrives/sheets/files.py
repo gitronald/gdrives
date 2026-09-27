@@ -29,15 +29,17 @@ from gdrives.sheets.cells import from_cell, to_cell
 # for a delimited format, None for JSON.
 _FORMATS: dict[str, str | None] = {".csv": ",", ".tsv": "\t", ".json": None}
 
-#: The line endings a delimited file is written with, by name.
-NEWLINES: dict[str, str] = {"lf": "\n", "crlf": "\r\n"}
+#: The names of the line endings a delimited file can be written with.
+NEWLINES = frozenset({"lf", "crlf"})
+
+_TERMINATORS = {"lf": "\n", "crlf": "\r\n"}
 
 
 def _terminator(newline: str) -> str:
     """The line ending called ``newline``, refusing a name that is not one."""
     if newline not in NEWLINES:
         raise ValueError(f"newline must be one of {sorted(NEWLINES)}, not {newline!r}")
-    return NEWLINES[newline]
+    return _TERMINATORS[newline]
 
 
 def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:

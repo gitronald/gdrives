@@ -23,8 +23,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back, and ``insert_point``, the row its new rows go above
-- ``structure``: add and delete columns by header name, create missing tabs,
-  and set column widths
+- ``structure``: add, place, and delete columns by header name, create
+  missing tabs, and set column widths
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``push_tab``, ``pull_all_tabs``, ``run_target``) and report it
 - ``commands``: the ``run_*`` CLI entry points
@@ -87,6 +87,7 @@ from gdrives.sheets.config import (
     parse_config,
 )
 from gdrives.sheets.files import (
+    NEWLINES,
     Records,
     read_records,
     read_values_csv,
@@ -121,6 +122,7 @@ from gdrives.sheets.structure import (
     add_columns,
     delete_columns,
     ensure_tabs,
+    place_columns,
     set_column_widths,
 )
 from gdrives.sheets.sync import (
@@ -179,6 +181,7 @@ __all__ = [
     "LOCAL_EXTENSIONS",
     "MODES",
     "MergePlan",
+    "NEWLINES",
     "NewRow",
     "OVERRIDE_REASONS",
     "Override",
@@ -239,6 +242,7 @@ __all__ = [
     "parse_config",
     "parse_pairs",
     "parse_tab",
+    "place_columns",
     "plan_tab",
     "problems",
     "pull_all_tabs",

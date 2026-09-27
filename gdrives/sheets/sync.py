@@ -64,6 +64,7 @@ from gdrives.sheets.structure import (
     add_columns,
     delete_columns,
     ensure_tabs,
+    place_columns,
     set_column_widths,
 )
 from gdrives.sheets.table import EmptyTabError, Table, parse_tab
@@ -343,8 +344,11 @@ def plan_tab(
     emptied after a sync, and that is refused for a person to look at.
 
     A projection column the tab lacks is refused unless ``add_missing``, in
-    which case it is planned as a blank column. ``drop_extra`` lists the tab's
-    columns outside the projection, with their non-blank cell counts.
+    which case it is planned as a blank column, to be added at its place in
+    the projection (:func:`~gdrives.sheets.structure.place_columns`).
+    ``drop_extra`` lists the tab's columns outside the projection, with their
+    non-blank cell counts. On a tab with ``insert_above``, the report names
+    the row the new rows go above.
     ``report`` is filled in place when given (a caller keeping a partial
     report on error), else created.
     """
@@ -670,7 +674,8 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         add_columns(service, spreadsheet_id, tab.title, planned.columns)
         report.wrote_sheet = True
     if added:
-        add_columns(service, spreadsheet_id, tab.title, added)
+        # Placed on the sheet's header as it is now: the deletes run after.
+        place_columns(service, spreadsheet_id, tab.title, planned.columns)
         report.wrote_sheet = True
     if dropped:
         delete_columns(service, spreadsheet_id, tab.title, list(dropped))

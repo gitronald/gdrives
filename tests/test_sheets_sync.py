@@ -64,6 +64,11 @@ def snapshot(target):
     )
 
 
+def _noted(rows):
+    """``rows`` of id, name, amt with a note column after the name."""
+    return [[row[0], row[1], "n", row[2]] for row in rows]
+
+
 def run(grid, target, **options):
     return sync_tab(grid, "S", target, target.tabs[0], **options)
 
@@ -773,6 +778,43 @@ class TestColumns:
         assert grid.values("T") == [HEADER, *ROWS]
         assert base_rows(target) == ROWS
         assert report.exit_code == 0
+
+    def test_added_columns_land_at_their_place_in_the_projection(self, tmp_path):
+        header = ["id", "email", "name", "amt", "city"]
+        target = make_target(tmp_path)
+        write_local(
+            target,
+            ["a", "a@x", "Ada", "1", "Oslo"],
+            ["b", "", "Bo", "2", ""],
+            header=header,
+        )
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid({"T": [["id", "name", "note", "amt"], *_noted(ROWS)]})
+        report = run(grid, target, apply=True, add_missing=True)
+        assert report.add_columns == ["email", "city"]
+        assert grid.values("T") == [
+            ["id", "email", "name", "note", "amt", "city"],
+            ["a", "a@x", "Ada", "n", "1", "Oslo"],
+            ["b", "", "Bo", "n", "2"],
+        ]
+        assert report.exit_code == 0
+
+    def test_a_column_is_placed_on_the_sheet_s_header_before_any_is_dropped(
+        self, tmp_path
+    ):
+        # "legacy" is dropped in the same run. It is still on the sheet when
+        # "city" is placed, so an index from the local header would land
+        # "city" one column short.
+        header = ["id", "name", "city"]
+        target = make_target(tmp_path, local_owned=["city"])
+        write_local(target, ["a", "Ada", "Oslo"], header=header)
+        write_base(target, ["a", "Ada"], header=["id", "name"])
+        grid = FakeSheetGrid({"T": [["id", "legacy", "name"], ["a", "old", "Ada"]]})
+        report = run(grid, target, apply=True, add_missing=True, drop_extra=True)
+        assert report.add_columns == ["city"] and list(report.drop_columns) == [
+            "legacy"
+        ]
+        assert grid.values("T") == [["id", "name", "city"], ["a", "Ada", "Oslo"]]
 
     def test_a_missing_key_column_is_refused(self, synced):
         grid, target = synced
