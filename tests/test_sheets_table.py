@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from helpers import FakeSheetsService
 
-from gdrives.sheets import Table, read_tab
+from gdrives.sheets import EmptyTabError, Table, parse_tab, read_tab
 
 
 def tab_of(*rows):
@@ -103,8 +103,11 @@ class TestHeader:
     @pytest.mark.parametrize("grid", [[], [[]], [["", " "]], [[], ["a", "b"]]])
     def test_no_header_row_raises(self, grid):
         svc = FakeSheetsService(get={"values": grid} if grid else {})
-        with pytest.raises(ValueError, match="tab 'T' has no header row"):
+        with pytest.raises(EmptyTabError, match="tab 'T' has no header row"):
             read_tab(svc, "sid", "T", ["id"], ["id"])
+
+    def test_empty_tab_error_is_a_value_error(self):
+        assert issubclass(EmptyTabError, ValueError)
 
     def test_extra_columns_are_recorded_and_not_read(self):
         svc = tab_of(["id", "internal", "name", "", "notes"], ["a", "x", "Alex"])
@@ -212,6 +215,24 @@ class TestRows:
         assert table.key == ()
         assert table.rows == [{"id": "a"}, {"id": "a"}, {"id": "b"}]
         assert table.row_numbers == {}
+
+
+class TestParseTab:
+    """``parse_tab`` is ``read_tab`` without the request, for a grid already read."""
+
+    def test_parses_a_grid_as_read_tab_would(self):
+        grid = [["id", "n"], ["a", 3], [], ["b", True]]
+        assert parse_tab("T", grid, None, ["id"]) == read_tab(
+            tab_of(*grid), "sid", "T", None, ["id"]
+        )
+
+    def test_refuses_a_malformed_request(self):
+        with pytest.raises(ValueError, match="asked for twice"):
+            parse_tab("T", [["id"]], ["id", "id"])
+
+    def test_an_empty_grid_has_no_header(self):
+        with pytest.raises(EmptyTabError):
+            parse_tab("T", [], None)
 
 
 class TestTable:

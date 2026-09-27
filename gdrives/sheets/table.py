@@ -15,6 +15,10 @@ from gdrives.sheets.cells import index_rows, to_cell
 from gdrives.sheets.values import FORMATTED_STRING, UNFORMATTED_VALUE, pull_values
 
 
+class EmptyTabError(ValueError):
+    """A tab has no header row: it is empty, or its first row is blank."""
+
+
 @dataclass(frozen=True)
 class Table:
     """One tab read as records.
@@ -68,14 +72,8 @@ def read_tab(
     ``columns=None`` reads every named header column. Cells are read unformatted
     (numbers and booleans as values, dates as the sheet displays them) and
     turned into canonical strings, so a number typed on the sheet reads as
-    ``"3"`` whatever its display format.
-
-    Raises ValueError, before any row is looked at, when the tab has no header
-    row, a header name repeats, or a wanted column is missing. Short rows are
-    padded (the API truncates each row at its last non-empty cell), and rows
-    that are entirely blank are skipped. With a ``key``, a row that has data
-    but a blank key cell, or that repeats another row's key, raises with every
-    such spreadsheet row listed (see :func:`~gdrives.sheets.cells.index_rows`).
+    ``"3"`` whatever its display format. The grid is parsed by
+    :func:`parse_tab`, which says what is refused.
     """
     _check_request(tab, columns, key)
     grid = pull_values(
@@ -85,10 +83,34 @@ def read_tab(
         render=UNFORMATTED_VALUE,
         date_time_render=FORMATTED_STRING,
     )
-    first: list[Any] = grid[0] if grid else []
+    return parse_tab(tab, grid, columns, key)
+
+
+def parse_tab(
+    tab: str,
+    grid: Sequence[Sequence[Any]],
+    columns: Sequence[str] | None,
+    key: Sequence[str] = (),
+) -> Table:
+    """Parse ``grid``, a whole tab's rows as read, into ``columns`` as keyed records.
+
+    The parsing half of :func:`read_tab`, for a grid already read (one
+    :func:`~gdrives.sheets.values.pull_many` request can fetch several tabs).
+    ``grid`` holds the values an unformatted read returns.
+
+    Raises :class:`EmptyTabError` when the tab has no header row, and
+    ValueError, before any row is looked at, when a header name repeats or a
+    wanted column is missing. Short rows are padded (the API truncates each
+    row at its last non-empty cell), and rows that are entirely blank are
+    skipped. With a ``key``, a row that has data but a blank key cell, or that
+    repeats another row's key, raises with every such spreadsheet row listed
+    (see :func:`~gdrives.sheets.cells.index_rows`).
+    """
+    _check_request(tab, columns, key)
+    first: Sequence[Any] = grid[0] if grid else []
     header = [to_cell(cell).strip() for cell in first]
     if not any(header):
-        raise ValueError(f"tab {tab!r} has no header row")
+        raise EmptyTabError(f"tab {tab!r} has no header row")
     repeated = sorted({name for name in header if name and header.count(name) > 1})
     if repeated:
         raise ValueError(f"tab {tab!r}: header repeats {repeated}")

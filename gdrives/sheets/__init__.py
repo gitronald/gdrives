@@ -17,7 +17,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
-- ``table``: ``read_tab``, a whole tab as header-named, keyed records
+- ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
+  records
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back
@@ -101,7 +102,7 @@ from gdrives.sheets.structure import (
     ensure_tabs,
     set_column_widths,
 )
-from gdrives.sheets.table import Table, read_tab
+from gdrives.sheets.table import EmptyTabError, Table, parse_tab, read_tab
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -130,6 +131,7 @@ __all__ = [
     "COLUMN_TYPES",
     "Cell",
     "ColumnSchema",
+    "EmptyTabError",
     "FORMATTED_STRING",
     "FORMATTED_VALUE",
     "FORMULA",
@@ -182,6 +184,7 @@ __all__ = [
     "merge",
     "normalize_key",
     "parse_pairs",
+    "parse_tab",
     "problems",
     "pull_many",
     "pull_values",
