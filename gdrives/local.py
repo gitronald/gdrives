@@ -2,8 +2,9 @@
 
 Everything gdrives writes on this machine goes through here. Files (downloads,
 exports, saved listings, the drive cache, the OAuth token) are replaced
-atomically, cells bound for a CSV can be kept from running as formulas, and
-Drive names bound for a terminal have their control characters escaped.
+atomically, cells bound for a CSV can be kept from running as formulas, Drive
+names bound for a terminal have their control characters escaped, and names
+that become local file names are made safe to join onto a directory.
 """
 
 import os
@@ -100,8 +101,8 @@ def escape_formula(cell: str) -> str:
 
 #: C0 and C1 control characters and DEL: ESC starts ANSI and OSC sequences, and
 #: C1 holds single-character forms of the same introducers (CSI, OSC). Escaped
-#: for the terminal by :func:`printable`; download's ``safe_filename`` replaces
-#: them in local file names.
+#: for the terminal by :func:`printable`; :func:`safe_filename` replaces them
+#: in local file names.
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
@@ -117,3 +118,20 @@ def printable(text: str) -> str:
     the clipboard (OSC 52). Each control character is shown as ``\\xNN``.
     """
     return CONTROL_CHARACTERS.sub(_escape_control, text)
+
+
+def safe_filename(name: str) -> str:
+    """Sanitize a Drive file name for use on the local filesystem.
+
+    Replaces both path separators (``/`` and ``\\``) and control characters
+    (NUL, newlines, and the ESC that starts a terminal escape sequence), then
+    neutralizes the ``.``/``..`` dot segments so a Drive entry named ``..`` can't
+    escape the target directory (``out / ".."`` would otherwise resolve to its
+    parent). Backslash is replaced too so a name like ``..\\..\\evil`` can't
+    traverse on Windows, where ``\\`` is a separator. Legitimate dotfiles like
+    ``.env`` are preserved.
+    """
+    cleaned = re.sub(r"[/\\]", "_", CONTROL_CHARACTERS.sub("_", name)).strip()
+    if cleaned in {".", ".."}:
+        cleaned = cleaned.replace(".", "_")  # "." -> "_", ".." -> "__"
+    return cleaned or "file"

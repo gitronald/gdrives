@@ -11,6 +11,11 @@ import pytest
 from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
+    FORMATTED_STRING,
+    FORMATTED_VALUE,
+    FORMULA,
+    SERIAL_NUMBER,
+    UNFORMATTED_VALUE,
     a1_quote,
     append_values,
     batch_update_values,
@@ -20,6 +25,7 @@ from gdrives.sheets import (
     format_values,
     list_tabs,
     parse_pairs,
+    pull_many,
     pull_values,
     read_values_csv,
     run_append,
@@ -47,6 +53,100 @@ class TestPullValues:
         # Sheets omits "values" entirely for an empty range.
         svc = FakeSheetsService(get={})
         assert pull_values(svc, "sid", "Sheet1!Z1:Z9") == []
+
+    def test_render_options_are_sent_when_given(self):
+        svc = FakeSheetsService(get={"values": [[3, True]]})
+        grid = pull_values(
+            svc,
+            "sid",
+            "A1:B1",
+            render=UNFORMATTED_VALUE,
+            date_time_render=FORMATTED_STRING,
+        )
+        assert grid == [[3, True]]
+        assert svc.calls == [
+            (
+                "values.get",
+                {
+                    "spreadsheetId": "sid",
+                    "range": "A1:B1",
+                    "valueRenderOption": "UNFORMATTED_VALUE",
+                    "dateTimeRenderOption": "FORMATTED_STRING",
+                },
+            )
+        ]
+
+    def test_render_alone_leaves_date_rendering_to_the_api(self):
+        svc = FakeSheetsService()
+        pull_values(svc, "sid", "A1", render=FORMULA)
+        assert svc.calls[0][1] == {
+            "spreadsheetId": "sid",
+            "range": "A1",
+            "valueRenderOption": "FORMULA",
+        }
+
+    def test_date_time_render_alone(self):
+        svc = FakeSheetsService()
+        pull_values(svc, "sid", "A1", date_time_render=SERIAL_NUMBER)
+        assert svc.calls[0][1] == {
+            "spreadsheetId": "sid",
+            "range": "A1",
+            "dateTimeRenderOption": "SERIAL_NUMBER",
+        }
+
+    def test_render_constants_are_the_api_names(self):
+        assert FORMATTED_VALUE == "FORMATTED_VALUE"
+        assert UNFORMATTED_VALUE == "UNFORMATTED_VALUE"
+        assert FORMULA == "FORMULA"
+        assert SERIAL_NUMBER == "SERIAL_NUMBER"
+        assert FORMATTED_STRING == "FORMATTED_STRING"
+
+
+# -- pull_many --
+
+
+class TestPullMany:
+    def test_one_request_one_grid_per_range_in_order(self):
+        svc = FakeSheetsService(
+            batchGet={
+                "spreadsheetId": "sid",
+                "valueRanges": [
+                    {"range": "'Tab A'!A1:B2", "values": [["a"], ["1"]]},
+                    {"range": "'Tab B'!A1:Z1000"},  # empty: no "values"
+                    {"range": "C!A1:A1", "values": [["c"]]},
+                ],
+            }
+        )
+        grids = pull_many(svc, "sid", ["'Tab A'", "'Tab B'", "C"])
+        assert grids == [[["a"], ["1"]], [], [["c"]]]
+        assert svc.calls == [
+            (
+                "values.batchGet",
+                {"spreadsheetId": "sid", "ranges": ["'Tab A'", "'Tab B'", "C"]},
+            )
+        ]
+
+    def test_render_options(self):
+        svc = FakeSheetsService(batchGet={"valueRanges": [{"values": [[1.5]]}]})
+        grids = pull_many(
+            svc, "sid", ["A"], render=UNFORMATTED_VALUE, date_time_render=SERIAL_NUMBER
+        )
+        assert grids == [[[1.5]]]
+        assert svc.calls[0][1] == {
+            "spreadsheetId": "sid",
+            "ranges": ["A"],
+            "valueRenderOption": "UNFORMATTED_VALUE",
+            "dateTimeRenderOption": "SERIAL_NUMBER",
+        }
+
+    def test_no_ranges_makes_no_request(self):
+        svc = FakeSheetsService()
+        assert pull_many(svc, "sid", []) == []
+        assert svc.calls == []
+
+    def test_response_without_value_ranges(self):
+        svc = FakeSheetsService(batchGet={"spreadsheetId": "sid"})
+        assert pull_many(svc, "sid", ["A"]) == []
 
 
 # -- update_values --
@@ -731,3 +831,59 @@ def test_unreferenced_duplicate_headers_do_not_block_update():
     svc = FakeSheetsService(get={"values": [["id", "unused", "unused"], ["X"]]})
     set_by_match(svc, "sid", "S", {"id": "X"}, {"id": "Y"})
     assert svc.calls[-1][1]["body"]["data"] == [{"range": "'S'!A2", "values": [["Y"]]}]
+
+
+# -- package surface --
+
+
+SUBMODULES = (
+    "a1",
+    "apply",
+    "cells",
+    "commands",
+    "config",
+    "files",
+    "match",
+    "merge",
+    "retry",
+    "rules",
+    "structure",
+    "sync",
+    "table",
+    "values",
+)
+
+
+def _defined_public(module):
+    """Public functions and constants a submodule defines (not ones it imports)."""
+    return {
+        name: obj
+        for name, obj in vars(module).items()
+        if not name.startswith("_")
+        and (
+            getattr(obj, "__module__", None) == module.__name__
+            or (name.isupper() and isinstance(obj, (str, frozenset)))
+        )
+    }
+
+
+class TestPackageSurface:
+    """``gdrives.sheets`` re-exports every public name its submodules define."""
+
+    def test_all_matches_submodule_definitions(self):
+        import importlib
+
+        import gdrives.sheets as pkg
+
+        defined = {}
+        for sub in SUBMODULES:
+            module = importlib.import_module(f"gdrives.sheets.{sub}")
+            defined.update(_defined_public(module))
+        assert sorted(pkg.__all__) == sorted(defined)
+        for name, obj in defined.items():
+            assert getattr(pkg, name) is obj
+
+    def test_all_has_no_duplicates(self):
+        import gdrives.sheets as pkg
+
+        assert len(pkg.__all__) == len(set(pkg.__all__))

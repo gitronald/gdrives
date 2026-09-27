@@ -570,3 +570,199 @@ def test_environment_wins_over_the_env_file(tmp_path, monkeypatch):
     monkeypatch.setenv("GDRIVES_DOTENV_PROBE", "from-environment")
     auth._load_env()
     assert os.environ["GDRIVES_DOTENV_PROBE"] == "from-environment"
+
+
+# -- describe_credentials --
+
+
+class TestDescribeCredentials:
+    """``describe_credentials`` names the credential authenticate() would pick."""
+
+    @pytest.fixture(autouse=True)
+    def no_credentials(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        # Describing must never start a consent or touch the network.
+        monkeypatch.setattr(
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+            lambda *args, **kwargs: pytest.fail("must not start a consent flow"),
+        )
+        monkeypatch.setattr(
+            "google.auth.default",
+            lambda *args, **kwargs: pytest.fail("must not probe ADC"),
+        )
+
+    @staticmethod
+    def cached_token(monkeypatch, tmp_path, creds, name="gdrives_token.json"):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        (tmp_path / name).write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+
+    @staticmethod
+    def service_account(monkeypatch, tmp_path, payload):
+        key = tmp_path / "sa.json"
+        key.write_text(payload)
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_PATH", str(key))
+        return key
+
+    def test_nothing_configured_is_adc(self):
+        info = auth.describe_credentials()
+        assert info == auth.CredentialInfo(kind="adc")
+        assert str(info) == "Application Default Credentials"
+
+    def test_valid_oauth_token(self, monkeypatch, tmp_path):
+        creds = MagicMock(valid=True, expired=False)
+        self.cached_token(monkeypatch, tmp_path, creds, "gdrives_token_rw.json")
+        info = auth.describe_credentials(auth.SHEETS_WRITE_SCOPES)
+        token = tmp_path / "gdrives_token_rw.json"
+        assert info == auth.CredentialInfo(kind="oauth", source=token)
+        assert str(info) == f"OAuth token {token}"
+        creds.refresh.assert_not_called()
+
+    def test_expired_oauth_token_is_refreshed_first(self, monkeypatch, tmp_path):
+        creds = MagicMock(valid=False, expired=True, refresh_token="rt")
+        self.cached_token(monkeypatch, tmp_path, creds)
+        info = auth.describe_credentials()
+        assert (info.kind, info.consent, info.refresh) == ("oauth", False, True)
+        assert str(info).endswith("gdrives_token.json, refreshed first")
+        creds.refresh.assert_not_called()
+
+    def test_no_token_with_a_terminal_needs_consent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        secrets = tmp_path / "gdrives_credentials.json"
+        secrets.write_text("{}")
+        info = auth.describe_credentials()
+        assert info == auth.CredentialInfo(kind="oauth", consent=True, source=secrets)
+        assert str(info) == f"OAuth, after an interactive consent (client {secrets})"
+
+    def test_unusable_token_with_a_terminal_needs_consent(self, monkeypatch, tmp_path):
+        creds = MagicMock(valid=False, expired=True, refresh_token=None)
+        self.cached_token(monkeypatch, tmp_path, creds)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        assert auth.describe_credentials().consent is True
+
+    def test_token_for_other_scopes_is_passed_over_quietly(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        token = tmp_path / "gdrives_token_documents.json"
+        token.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        assert auth.describe_credentials(auth.DOCS_WRITE_SCOPES).consent is True
+        assert caplog.text == ""
+
+    def test_unloadable_token_is_passed_over_quietly(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "gdrives_token.json").write_text("not json")
+        assert auth.describe_credentials().kind == "adc"
+        assert caplog.text == ""
+
+    def test_headless_without_a_token_falls_to_the_service_account(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        key = self.service_account(
+            monkeypatch,
+            tmp_path,
+            json.dumps(
+                {
+                    "client_email": "robot@example.iam.gserviceaccount.com",
+                    "private_key": "-----BEGIN PRIVATE KEY-----secret",
+                    "private_key_id": "keyid123",
+                }
+            ),
+        )
+        info = auth.describe_credentials()
+        assert info == auth.CredentialInfo(
+            kind="service_account",
+            identity="robot@example.iam.gserviceaccount.com",
+            source=key,
+        )
+        text = f"{info} {info!r}"
+        assert "robot@example.iam.gserviceaccount.com" in text
+        assert "secret" not in text and "keyid123" not in text
+
+    def test_service_account_in_the_config_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "service_account.json").write_text(
+            json.dumps({"client_email": "sa@example.com"})
+        )
+        info = auth.describe_credentials()
+        assert (info.kind, info.identity) == ("service_account", "sa@example.com")
+
+    @pytest.mark.parametrize("payload", ["not json", "[]", '{"client_email": 3}', "{}"])
+    def test_unreadable_service_account_email(self, monkeypatch, tmp_path, payload):
+        key = self.service_account(monkeypatch, tmp_path, payload)
+        info = auth.describe_credentials()
+        assert (info.kind, info.identity) == ("service_account", None)
+        assert str(info) == f"service account (client_email unreadable) (key {key})"
+
+    def test_missing_service_account_file_is_adc(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_PATH", str(tmp_path / "gone.json"))
+        assert auth.describe_credentials().kind == "adc"
+
+    def test_valid_token_wins_over_a_service_account(self, monkeypatch, tmp_path):
+        self.cached_token(monkeypatch, tmp_path, MagicMock(valid=True, expired=False))
+        self.service_account(monkeypatch, tmp_path, "{}")
+        assert auth.describe_credentials().kind == "oauth"
+
+    @pytest.mark.parametrize(
+        ("token", "interactive", "service_account", "expected"),
+        [
+            ("valid", False, True, "oauth"),
+            ("expired", False, True, "oauth"),
+            ("dead", True, True, "oauth"),
+            ("dead", False, True, "service_account"),
+            (None, False, True, "service_account"),
+            (None, False, False, "adc"),
+        ],
+    )
+    def test_agrees_with_authenticate(
+        self, monkeypatch, tmp_path, token, interactive, service_account, expected
+    ):
+        """The described kind is the one authenticate() then returns."""
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: interactive)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        kinds = {"valid": (True, False, None), "expired": (False, True, "rt")}
+        valid, expired, refresh = kinds.get(token, (False, False, None))
+        creds = MagicMock(valid=valid, expired=expired, refresh_token=refresh)
+        creds.refresh.side_effect = lambda request: setattr(creds, "valid", True)
+        if token is not None:
+            (tmp_path / "gdrives_token.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        if service_account:
+            self.service_account(monkeypatch, tmp_path, "{}")
+        described = auth.describe_credentials().kind
+
+        consented = MagicMock()
+        consented.to_json.return_value = "{}"
+        creds.to_json.return_value = "{}"
+        flow = MagicMock()
+        flow.run_local_server.return_value = consented
+        monkeypatch.setattr(
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+            lambda path, scopes=None: flow,
+        )
+        monkeypatch.setattr("google.auth.transport.requests.Request", lambda: None)
+        monkeypatch.setattr(
+            "google.oauth2.service_account.Credentials.from_service_account_file",
+            lambda path, scopes=None: "service_account",
+        )
+        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: "adc")
+        used = auth.authenticate()
+        actual = used if isinstance(used, str) else "oauth"
+        assert described == expected == actual

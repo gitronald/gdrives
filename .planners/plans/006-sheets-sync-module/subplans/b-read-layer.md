@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: done
+branch: feature/sheets-sync-b-read-layer
 ---
 
 # 006b — Build the read layer: cells, local files, tables, and retry
@@ -85,3 +85,52 @@ rewritten. A duplicate key within one side raises, naming the key and the side.
   apply it twice.
 
 ## Log
+
+### 2026-09-27 — implementation
+
+New modules `retry.py`, `cells.py`, and `table.py`; `files.py` and `values.py` extended.
+Every new public name is exported from `gdrives.sheets`.
+
+Decisions on points the sections above leave open:
+
+- **How a tab is read.** `read_tab` reads with `UNFORMATTED_VALUE` and dates as
+  `FORMATTED_STRING`, then passes every cell through `to_cell`. The canonical table's
+  number and boolean rows only arise from unformatted values. The consequence: a number
+  typed on the sheet reads as its value (`"3"`, `"0.5"`), whatever its display format
+  (`3.00`, `50%`). A live test confirmed that a `RAW`-written `"3.0"` reads back as
+  `"3.0"`, and a `USER_ENTERED` `"3.0"` reads back as `"3"`.
+- **Blank cells** parse to `None` under every declared type.
+- **Strict parsing.** `from_cell` refuses surrounding whitespace and digit-group
+  underscores for every type but `str`. `int` takes digits with an optional minus, so
+  `"3.0"` is not an `int`. `bool` takes `TRUE` or `FALSE` in any case.
+- **Row keys** live in `cells.py` (`normalize_key`, `row_key`, and `index_rows`), so the
+  merge imports them without importing the API wrappers. A composite key counts as blank
+  when any of its parts is blank. `index_rows` lists every blank and duplicate key at
+  once.
+- **Optional arguments.** `read_tab` takes `columns=None` (every named header column) and
+  `key=()` (no index), because pull and push treat both as optional.
+- **Wide rows** are reported as `Table.wide_rows` (spreadsheet row numbers). They do not
+  raise, and the cells past the header are not read.
+- **A row with data only in columns that were not asked for** still needs a key, so it
+  raises instead of being skipped.
+- **Retry wiring.** Every wrapper in `values.py` goes through `with_retry`. Reads,
+  `update_values`, `clear_values`, and `batch_update_values` retry on 429 and 5xx.
+  `append_values` and `batch_update_spreadsheet` retry on 429 only. The
+  `spreadsheets.get` call inside `rules.py` is not wrapped. With the defaults (5 attempts,
+  1 second base, 32 second cap) a call that keeps failing gives up after about 15 to 19
+  seconds.
+- **Record files.** A delimited row wider than its header raises. `write_records` raises
+  on a row holding a column outside `columns`. In JSON, dates and datetimes are stored as
+  their canonical strings, blank cells as `null`, and `NaN` and `Infinity` are refused.
+  A byte-order mark on a `.json` file raises.
+- `pull_values` now returns `list[list[Any]]`, since an unformatted read returns numbers
+  and booleans. A default read sends the same request as before.
+
+`FakeSheetsService` in `tests/helpers.py` can now return an exception as a response and
+models `values.batchGet`. Two live tests were added, for `read_tab` and `pull_many`.
+
+Review: three reviewers (conformance, correctness, and test quality) reported no
+findings; the orchestrating session also read the new modules. Checks rerun after the
+workflow: ruff and pyrefly clean, 1016 tests pass, and coverage is 100%.
+
+Commits: `3b33726`, `f05a286`, `1d405d2`, `0dac1e1`, `42af2bd`.

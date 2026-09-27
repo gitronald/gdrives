@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: done
+branch: feature/sheets-sync-e-config-and-orchestration
 ---
 
 # 006e — Add the sync config and orchestration
@@ -123,3 +123,80 @@ API call, so a run waiting on a consent prompt does not look hung, and a write
 is not attributed to an identity the user did not expect.
 
 ## Log
+
+### 2026-09-27 — implementation
+
+New modules `config.py` and `sync.py`. `auth.py` gained `describe_credentials` and
+`CredentialInfo`. `safe_filename` moved to `gdrives/local.py` and is still importable from
+`gdrives.download`. `table.py` gained `parse_tab` and `EmptyTabError`, so a grid read once
+can be parsed more than once. No CLI command is added in this step.
+
+`sync.py` provides `plan_tab`, `apply_tab`, and `sync_tab` (both in one call), `pull_tab`,
+`push_tab`, `pull_all_tabs`, `run_target`, `TabReport` and `SyncReport` (with `exit_code`
+0, 1, or 2), and a pure `format_report`.
+
+Two readings that depart from the wording above:
+
+- **`--adopt` is a merge, not a rewrite of the tab.** The local file is merged against an
+  empty base with every non-key column local-owned and the row set local-owned. The local
+  file wins every differing cell, including `sheet_owned` columns, and local-only rows are
+  appended. Sheet columns outside the projection survive, and a sheet row the local file
+  lacks is flagged `remote_added` and left in place.
+- **`push_tab` writes once.** One `values.update` covers the old and new extents of the
+  tab, padded with blanks, in place of a clear followed by a write, so a failure cannot
+  leave the tab empty. The guard compares the grid read at apply time with the preview
+  read.
+
+Other decisions:
+
+- **Order of `apply_tab`:** the schema and `validate` checks, the structure steps, a
+  second read and merge, `apply_plan`, the local file, the base, and then the column
+  widths. The local file and the base are written only when they change.
+- **Bootstrap writes nothing to the sheet,** even for `local_owned` columns. Those pushes
+  are held back (`TabReport.deferred`), and their base cells take the sheet value, so the
+  next run pushes them as local edits.
+- **Bootstrap and `--adopt` do not combine after the fact.** A bootstrap run with
+  `--apply` saves a base, local rows the sheet lacks are then flagged `remote_deleted` on
+  every run, and `--adopt` is refused once a base exists. The way out is to delete the
+  base and run with `--adopt`; the refusal says so.
+- **A missing or header-less tab with no base** is merged against an empty base, so on
+  apply the tab is created, its header written, and the local rows appended. A header-only
+  tab is bootstrapped instead. A missing or empty tab that has a base is refused.
+- **A key column the sheet lacks** is refused even with `add_missing`, since an added key
+  column would hold blank keys.
+- **A missing local file** is refused for sync and push, and created by pull.
+- **Column widths** are set only on a run that wrote to the sheet, so a no-op run makes
+  no write.
+- **Config.** Collisions between files that tabs write (local files and base files,
+  compared case-folded) are checked across the whole config. Ownership, `owns_rows`,
+  `bootstrap`, and `insert_above` on a pull or push tab are refused, as is a base
+  directory inside `.gdrives/`. An `insert_above` column must be in the projection.
+- **A preview's exit code** is 0 when the run can go ahead, whether or not it found
+  changes to make, and 2 when conflicts or row flags remain.
+- **`push_tab` under `USER_ENTERED`** checks only the header and the row count on
+  read-back, and the report says so.
+- **`describe_credentials`** follows the precedence of `authenticate()` through shared
+  helpers (`_load_token`, `_needs_refresh`, and `_can_consent`), reads local files only,
+  and holds no token, key, or secret. `authenticate_oauth` was split into those helpers
+  with the same behavior.
+
+Review: the conformance and test-quality reviewers reported no findings. The correctness
+reviewer found one high-severity defect, confirmed by a verifier: `apply_tab` ran the
+structure steps and only then re-ran the schema and `validate` checks on the second
+merge, so a problem found there left a structure write on the sheet beside a report
+saying nothing was written. The fix (`89c507a`): the checks on the first plan are the
+only checks, and the second merge must equal the checked one, with the same local file.
+A sheet or local edit made during the restructure raises `SheetChangedError`.
+
+The orchestrating session also read `sync.py` and the `auth.py` changes, and extended the
+adopt refusal to say how to start over.
+
+Not verified against the real API: that a blank string in the padded `values.update` of
+`push_tab` clears the old cell. The fake treats it that way, and step f's live tests
+cover it.
+
+Checks rerun after the workflow: ruff and pyrefly clean, 1510 tests pass, and coverage is
+100%.
+
+Commits: `62c3706`, `146a34c`, `37d6021`, `e1f0c41`, `f168b58`, `4c644cc`, `9c88727`,
+`0f07d43`, `89c507a`, and the refusal message.

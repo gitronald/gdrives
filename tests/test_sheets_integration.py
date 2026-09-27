@@ -1,7 +1,8 @@
 """Live integration tests for gdrives.sheets against the real Sheets API v4.
 
-These exercise every core value operation (list_tabs, pull/update/append/clear)
-and the conditional format rule round trip (add/list/delete) against a real
+These exercise every core value operation (list_tabs, pull/update/append/clear),
+the read layer (read_tab, pull_many and its render options), and the
+conditional format rule round trip (add/list/delete) against a real
 spreadsheet, so they catch anything the fake-service unit tests in
 test_sheets.py and test_sheets_rules.py can't — request-shape mismatches, scope
 problems, and how the API actually renders formulas, empty ranges, and stored
@@ -29,6 +30,7 @@ import pytest
 
 import gdrives.auth  # import loads .env (python-dotenv), so a .env-set id is visible
 from gdrives import sheets
+from gdrives.sheets.retry import RATE_LIMIT_STATUSES, with_retry
 
 pytestmark = pytest.mark.integration
 
@@ -62,6 +64,26 @@ def live_service():
     return service, sid
 
 
+def _patiently(requests, service, sid):
+    """Send structural ``requests``, waiting out the per-minute write quota.
+
+    The fixture's own calls must not give up while the quota is exhausted: a
+    ``deleteSheet`` that fails in teardown leaves its temporary tab behind on
+    the shared spreadsheet. The quota resets each minute, so the waits here
+    (5, 10, 20, 32, and 32 seconds) outlast it.
+    """
+    return with_retry(
+        lambda: (
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=sid, body={"requests": requests})
+            .execute()
+        ),
+        statuses=RATE_LIMIT_STATUSES,
+        attempts=6,
+        base_delay=5.0,
+    )
+
+
 @pytest.fixture
 def tab(live_service):
     """Yield (service, spreadsheet_id, tab_name) for a fresh, empty tab.
@@ -71,22 +93,12 @@ def tab(live_service):
     """
     service, sid = live_service
     name = "itest_" + uuid.uuid4().hex[:8]
-    added = (
-        service.spreadsheets()
-        .batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"addSheet": {"properties": {"title": name}}}]},
-        )
-        .execute()
-    )
+    added = _patiently([{"addSheet": {"properties": {"title": name}}}], service, sid)
     sheet_id = added["replies"][0]["addSheet"]["properties"]["sheetId"]
     try:
         yield service, sid, name
     finally:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=sid,
-            body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]},
-        ).execute()
+        _patiently([{"deleteSheet": {"sheetId": sheet_id}}], service, sid)
 
 
 def test_list_tabs_includes_new_tab(tab):
@@ -280,3 +292,205 @@ def test_conditional_rule_index_orders_and_json_replays(tab):
     listed = _rules_on(service, sid, name)[1]["rule"]
     sheets.add_conditional_rule(service, sid, listed, index=2)
     assert _rules_on(service, sid, name)[2]["rule"] == listed
+
+
+def test_read_tab_reads_canonical_cells_by_header_name(tab):
+    service, sid, name = tab
+    # A RAW write stores text as typed; a USER_ENTERED one parses numbers and
+    # booleans, which the unformatted read returns as values.
+    sheets.update_values(
+        service,
+        sid,
+        f"'{name}'!A1:E2",
+        [["note", "id", "text", "n", "flag"], ["", "a ", "007", "3.0", "TRUE"]],
+        input_option=sheets.RAW,
+    )
+    sheets.update_values(service, sid, f"'{name}'!B3:E3", [["b", "007", "3.0", "TRUE"]])
+    table = sheets.read_tab(service, sid, name, ["id", "text", "n", "flag"], ["id"])
+    assert table.rows == [
+        {"id": "a ", "text": "007", "n": "3.0", "flag": "TRUE"},
+        {"id": "b", "text": "7", "n": "3", "flag": "TRUE"},
+    ]
+    assert table.row_numbers == {("a",): 2, ("b",): 3}
+    assert table.extra_columns == ["note"]
+
+
+def test_pull_many_reads_ranges_in_order(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["h1", "h2"], ["1", "x"], ["2.5", "y"]])
+    grids = sheets.pull_many(
+        service,
+        sid,
+        [f"'{name}'!A2:A3", f"'{name}'!D1:D3", f"'{name}'!B1"],
+        render=sheets.UNFORMATTED_VALUE,
+    )
+    assert grids == [[[1], [2.5]], [], [["h2"]]]
+
+
+# -- apply and structure: pin FakeSheetGrid's assumptions against the API --
+
+
+def _table(service, sid, name):
+    return sheets.read_tab(service, sid, name, ["id", "name", "code"], ["id"])
+
+
+def test_apply_pushes_and_appends_past_the_grid_end(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "keep", "Ada", "1"], ["b", "", "Bo"]],
+    )
+    # Shrink the grid to the rows in use, so the new rows need grid rows added.
+    sheet_id = sheets.tab_grid(service, sid, name).sheet_id
+    sheets.batch_update_spreadsheet(
+        service,
+        sid,
+        [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {"rowCount": 3},
+                    },
+                    "fields": "gridProperties.rowCount",
+                }
+            }
+        ],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        pushes=[sheets.Cell(("b",), "code", "", "01", "")],
+        appends=[
+            sheets.NewRow(("c",), {"id": "c", "name": "TRUE", "code": "007"}),
+            sheets.NewRow(("d",), {"id": "d", "name": "=1+2", "code": ""}),
+        ],
+    )
+    # apply_plan reads the tab back itself: literal strings must survive.
+    result = sheets.apply_plan(service, sid, table, plan)
+    assert result == sheets.ApplyResult(1, 2, [3], [4, 5])
+    assert _row_count(service, sid, name) == 5
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "keep", "Ada", "1"],
+        ["b", "", "Bo", "01"],
+        ["c", "", "TRUE", "007"],
+        ["d", "", "=1+2"],
+    ]
+
+
+def test_apply_inserts_above_a_matching_row(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "", "Ada"], ["b", "old", "Bo"]],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        appends=[sheets.NewRow(("c",), {"id": "c", "name": "Cy", "code": "3"})]
+    )
+    result = sheets.apply_plan(service, sid, table, plan, insert_above={"note": "old"})
+    assert result.appended_rows == [3]
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "", "Ada"],
+        ["c", "", "Cy", "3"],
+        ["b", "old", "Bo"],
+    ]
+
+
+def test_add_then_delete_columns_by_name(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["id", "name"], ["a", "Ada"]])
+    sheets.add_columns(service, sid, name, ["x", "y"], before="name")
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "x", "y", "name"],
+        ["a", "", "", "Ada"],
+    ]
+    sheets.delete_columns(service, sid, name, ["x", "name"])
+    assert sheets.pull_values(service, sid, f"'{name}'") == [["id", "y"], ["a"]]
+
+
+# -- sync and push: a whole run against the API --
+
+
+def _target(tmp_path, sid, name, tab):
+    """A config target ``roster`` with one tab: the fresh one, as ``tab`` says."""
+    data = {"roster": {"spreadsheet": sid, "tabs": {name: tab}}}
+    return sheets.parse_config(data, tmp_path / sheets.CONFIG_NAME).target("roster")
+
+
+def _rows(path):
+    return [list(row.values()) for row in sheets.read_records(path).rows]
+
+
+def test_sync_adopts_merges_and_then_writes_nothing(tab, tmp_path):
+    service, sid, name = tab
+    target = _target(
+        tmp_path, sid, name, {"local": "members.csv", "key": ["member_id"]}
+    )
+    local = target.tabs[0].local
+    base = target.base_path(target.tabs[0])
+    header = ["member_id", "name", "status"]
+    sheets.write_values_csv(
+        str(local), [header, ["m1", "Ada", "active"], ["m2", "Bo", "007"]]
+    )
+
+    # First sync: the empty tab gets a header and every local row.
+    first = sheets.run_target(service, sid, target, "sync", apply=True, adopt=True)
+    assert first.exit_code == 0, sheets.format_report(first)
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        header,
+        ["m1", "Ada", "active"],
+        ["m2", "Bo", "007"],
+    ]
+    assert base.exists()
+
+    # A local edit and a sheet edit, on different cells, both land.
+    sheets.write_values_csv(
+        str(local), [header, ["m1", "Ada", "closed"], ["m2", "Bo", "007"]]
+    )
+    sheets.update_values(
+        service, sid, f"'{name}'!B3", [["Bea"]], input_option=sheets.RAW
+    )
+    second = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert second.exit_code == 0, sheets.format_report(second)
+    merged = [["m1", "Ada", "closed"], ["m2", "Bea", "007"]]
+    assert sheets.pull_values(service, sid, f"'{name}'") == [header, *merged]
+    assert _rows(local) == merged
+    assert _rows(base) == merged
+
+    # A run with nothing to do writes nothing anywhere.
+    stamps = [path.stat().st_mtime_ns for path in (local, base)]
+    third = sheets.run_target(service, sid, target, "sync", apply=True)
+    (report,) = third.tabs
+    assert third.exit_code == 0
+    assert not (report.wrote_sheet or report.wrote_local or report.wrote_base)
+    assert [path.stat().st_mtime_ns for path in (local, base)] == stamps
+
+
+def test_push_that_shrinks_the_tab_clears_the_old_cells(tab, tmp_path):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [
+            ["total", "count", "extra", "more"],
+            ["a", "1", "x", "y"],
+            ["b", "2", "x", "y"],
+            ["c", "3", "x", "y"],
+        ],
+    )
+    target = _target(tmp_path, sid, name, {"mode": "push", "local": "summary.csv"})
+    sheets.write_values_csv(str(target.tabs[0].local), [["total", "count"], ["a", "9"]])
+    report = sheets.run_target(service, sid, target, "push", apply=True)
+    assert report.exit_code == 0, sheets.format_report(report)
+    # The blanks padding the write cleared every cell the new data does not cover.
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["total", "count"],
+        ["a", "9"],
+    ]
