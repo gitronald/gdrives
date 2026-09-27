@@ -22,7 +22,7 @@ pull_values`` works regardless of which submodule defines a name:
   records
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
-  and read back
+  and read back, and ``insert_point``, the row its new rows go above
 - ``structure``: add and delete columns by header name, create missing tabs,
   and set column widths
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
@@ -44,6 +44,7 @@ from gdrives.sheets.apply import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
     verify,
 )
 from gdrives.sheets.cells import (
@@ -229,6 +230,7 @@ __all__ = [
     "grid_range_to_a1",
     "hex_to_color",
     "index_rows",
+    "insert_point",
     "list_conditional_rules",
     "list_tabs",
     "load_config",
