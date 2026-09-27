@@ -3,8 +3,11 @@ name: Tests
 on:
   push:
     branches: [dev, main]
+  # feature/sheets-sync-adoption-gaps is the umbrella branch of plan 007, listed
+  # so that the step PRs stacked onto it get a run. The plan's last commit
+  # removes it.
   pull_request:
-    branches: [dev, main]
+    branches: [dev, main, "feature/sheets-sync-adoption-*"]
 
 permissions:
   contents: read
