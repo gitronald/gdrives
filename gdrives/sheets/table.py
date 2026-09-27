@@ -27,6 +27,9 @@ class Table:
     header columns that were not asked for: never read into records, and never
     written. ``wide_rows`` lists the spreadsheet rows holding cells past the
     header's last column; those cells belong to no column and are not read.
+    ``last_row`` is the last spreadsheet row holding a value in any column,
+    columns outside ``columns`` and past the header included (1 when the tab
+    holds only its header): new rows go after it.
     """
 
     tab: str
@@ -37,6 +40,7 @@ class Table:
     row_numbers: dict[tuple[str, ...], int]
     extra_columns: list[str]
     wide_rows: list[int]
+    last_row: int
 
 
 def _check_request(tab: str, columns: Sequence[str] | None, key: Sequence[str]) -> None:
@@ -122,4 +126,7 @@ def read_tab(
         row_numbers=row_numbers,
         extra_columns=extra,
         wide_rows=wide,
+        # Only rows blank in every column are skipped, so the last row read is
+        # the last one holding anything.
+        last_row=numbers[-1] if numbers else 1,
     )

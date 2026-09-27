@@ -17,6 +17,7 @@ rate limit or a 5xx; ``append`` and the structural ``batchUpdate`` add rows,
 columns, or rules, so they retry on a rate limit only.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from gdrives.files import Service
@@ -263,6 +264,47 @@ def tab_sheet_ids(service: Service, spreadsheet_id: str) -> dict[str, int]:
         )
     )
     return _tab_ids(result.get("sheets", []))
+
+
+@dataclass(frozen=True)
+class TabGrid:
+    """A tab's ``sheetId`` and grid size, for structural requests.
+
+    ``row_count`` and ``column_count`` are the grid's size, not its data: a
+    fresh tab is 1000 rows by 26 columns whatever it holds. A write outside the
+    grid fails, so a request that adds rows or columns past it grows it first.
+    """
+
+    sheet_id: int
+    row_count: int
+    column_count: int
+
+
+def tab_grid(service: Service, spreadsheet_id: str, tab: str) -> TabGrid:
+    """Return ``tab``'s ``sheetId`` and grid size, in one ``spreadsheets.get``.
+
+    Raises ValueError when the spreadsheet has no tab named ``tab``.
+    """
+    result = with_retry(
+        lambda: (
+            service.spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets.properties(sheetId,title,gridProperties)",
+            )
+            .execute()
+        )
+    )
+    tabs = result.get("sheets", [])
+    _lookup_tab(_tab_ids(tabs), tab)
+    (props,) = [s["properties"] for s in tabs if s["properties"]["title"] == tab]
+    # The API omits zero-valued fields, as for sheetId in _tab_ids.
+    grid = props.get("gridProperties", {})
+    return TabGrid(
+        sheet_id=props.get("sheetId", 0),
+        row_count=grid.get("rowCount", 0),
+        column_count=grid.get("columnCount", 0),
+    )
 
 
 def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:

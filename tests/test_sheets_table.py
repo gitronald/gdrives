@@ -220,3 +220,28 @@ class TestTable:
         assert isinstance(table, Table)
         with pytest.raises(FrozenInstanceError):
             setattr(table, "tab", "other")
+
+
+class TestLastRow:
+    def test_header_only_tab_ends_at_row_one(self):
+        assert read_tab(tab_of(["id"]), "sid", "T", ["id"], ["id"]).last_row == 1
+
+    def test_trailing_blank_rows_do_not_count(self):
+        svc = tab_of(["id"], ["a"], [], ["b"], [""], [])
+        assert read_tab(svc, "sid", "T", ["id"], ["id"]).last_row == 4
+
+    def test_a_row_holding_only_an_extra_column_counts(self):
+        # "b" is the last keyed row, but row 4 holds a value outside the
+        # projection, so new rows must go after it.
+        svc = tab_of(["id", "note"], ["a"], ["b"], ["c", "only a note"])
+        table = read_tab(svc, "sid", "T", ["id"], ["id"])
+        assert table.last_row == 4
+
+    def test_a_cell_past_the_header_counts(self):
+        svc = tab_of(["id"], ["a"], [], ["b", "stray"])
+        table = read_tab(svc, "sid", "T", ["id"], ["id"])
+        assert (table.last_row, table.wide_rows) == (4, [4])
+
+    def test_counts_without_a_key(self):
+        svc = tab_of(["id"], ["a"], ["a"], [])
+        assert read_tab(svc, "sid", "T", ["id"]).last_row == 3
