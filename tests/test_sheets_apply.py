@@ -20,6 +20,7 @@ from gdrives.sheets import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
     read_tab,
     verify,
 )
@@ -414,7 +415,9 @@ class TestInsertAbove:
                     "startIndex": 2,
                     "endIndex": 4,
                 },
-                "inheritFromBefore": False,
+                # The new rows take the formatting of the row above them, not
+                # of the block they are kept out of.
+                "inheritFromBefore": True,
             },
         )
         assert {body["start"]["rowIndex"] for _, body in kinds[1:]} == {2}
@@ -424,6 +427,53 @@ class TestInsertAbove:
         grid, table = sheet(*ROWS)
         apply_plan(grid, "S", table, plan(appends=[new("c")]), insert_above={"id": "a"})
         assert [row[0] for row in grid.values("T")] == ["id", "c", "a", "b"]
+        kind, body = requests_of(grid)[0]
+        assert kind == "insertDimension" and body["range"]["startIndex"] == 1
+        # The row above is the header, so the rows inherit from below.
+        assert body["inheritFromBefore"] is False
+
+    def test_a_push_to_a_match_moves_the_insert_point_up(self):
+        # Rows b and c are open and row d is closed; the run closes row b and
+        # adds a row, which belongs above b, the first closed row once it is
+        # done. 0.11.0 placed it above d, below a closed row.
+        header = ["id", "status"]
+        rows = [["a", "open"], ["b", "open"], ["c", "open"], ["d", "closed"]]
+        grid, table = sheet(*rows, header=header, project=header)
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [Cell(("b",), "status", "open", "closed", "open")],
+                [NewRow(("n",), {"id": "n", "status": "open"})],
+            ),
+            insert_above={"status": "closed"},
+        )
+        assert grid.values("T") == [
+            header,
+            ["a", "open"],
+            ["n", "open"],
+            ["b", "closed"],
+            ["c", "open"],
+            ["d", "closed"],
+        ]
+        assert result == ApplyResult(1, 1, [4], [3])
+
+    def test_a_push_away_from_a_match_moves_the_insert_point_down(self):
+        header = ["id", "status"]
+        rows = [["a", "closed"], ["b", "open"], ["c", "closed"]]
+        grid, table = sheet(*rows, header=header, project=header)
+        apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [Cell(("a",), "status", "closed", "open", "closed")],
+                [NewRow(("n",), {"id": "n", "status": "open"})],
+            ),
+            insert_above={"status": "closed"},
+        )
+        assert [row[0] for row in grid.values("T")] == ["id", "a", "b", "n", "c"]
 
     def test_any_of_several_values_compared_as_canonical_strings(self):
         header = ["id", "year"]
@@ -451,7 +501,8 @@ class TestInsertAbove:
         result = apply_plan(
             grid, "S", table, plan(appends=[new("c")]), insert_above={"note": "none"}
         )
-        assert [kind for kind, _ in requests_of(grid)][0] == "appendDimension"
+        kinds = [kind for kind, _ in requests_of(grid)]
+        assert kinds[0] == "appendDimension" and "insertDimension" not in kinds
         assert [row[0] for row in grid.values("T")] == ["id", "a", "b", "c"]
         assert result.appended_rows == [4]
 
@@ -482,6 +533,97 @@ class TestInsertAbove:
             ["b", "old", "Bo"],
             ["c", "", "Cyd"],
         ]
+
+
+class TestInsertPoint:
+    HEADER = ["id", "status", "name"]
+    ROWS = [
+        ["a", "open", "Ada"],
+        ["b", "open", "Bo"],
+        [],
+        ["c", "closed", "Cy"],
+        ["d", "closed", "Di"],
+    ]
+
+    def table(self, project=("id", "status", "name")):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        return read_tab(FakeSheetGrid(tabs), "S", "T", list(project), ["id"])
+
+    def closes(self, key):
+        return Cell((key,), "status", "open", "closed", "open")
+
+    def test_the_first_matching_row_as_read(self):
+        # Row 4 is blank, so c sits in spreadsheet row 5.
+        assert insert_point(self.table(), plan(), {"status": "closed"}) == 5
+
+    def test_a_push_to_a_match_counts_as_the_value_the_row_will_hold(self):
+        the_plan = plan([self.closes("b")], [new("n")])
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 3
+
+    def test_a_push_away_from_a_match_no_longer_matches(self):
+        the_plan = plan(
+            [
+                Cell(("c",), "status", "closed", "open", "closed"),
+                Cell(("d",), "status", "closed", "open", "closed"),
+            ]
+        )
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) is None
+
+    def test_several_pushes_to_the_column(self):
+        the_plan = plan(
+            [
+                self.closes("b"),
+                self.closes("a"),
+                Cell(("c",), "status", "closed", "open", "closed"),
+            ]
+        )
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 2
+
+    def test_a_push_to_another_column_changes_nothing(self):
+        the_plan = plan([push("a", "name", "closed")])
+        assert insert_point(self.table(), the_plan, {"status": "closed"}) == 5
+
+    def test_any_of_several_values(self):
+        the_plan = plan([Cell(("b",), "status", "open", "held", "open")])
+        point = insert_point(self.table(), the_plan, {"status": ["closed", "held"]})
+        assert point == 3
+
+    def test_no_match(self):
+        assert insert_point(self.table(), plan(), {"status": "gone"}) is None
+
+    def test_a_column_outside_the_projection_is_as_read(self):
+        # The plan cannot push to a column it does not carry.
+        table = self.table(project=("id", "name", "status"))
+        the_plan = plan([push("a", "name", "closed")], [new("n")])
+        assert insert_point(table, the_plan, {"status": "closed"}) == 5
+
+    def test_a_plan_with_no_new_rows_still_has_a_point(self):
+        assert (
+            insert_point(self.table(), plan([self.closes("a")]), {"status": "closed"})
+            == 2
+        )
+
+    def test_a_column_the_table_did_not_read_is_refused(self):
+        table = self.table(project=("id", "name"))
+        with pytest.raises(
+            ValueError, match="insert_above column 'status' was not read"
+        ):
+            insert_point(table, plan(), {"status": "closed"})
+
+    def test_a_column_the_header_lacks_is_refused(self):
+        with pytest.raises(ValueError, match="'nope' is not in the header"):
+            insert_point(self.table(), plan(), {"nope": "x"})
+
+    def test_apply_inserts_at_the_point_a_preview_computed(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        grid, table = FakeSheetGrid(tabs), self.table()
+        added = NewRow(("n",), {"id": "n", "status": "open", "name": ""})
+        the_plan = plan([self.closes("b")], [added])
+        point = insert_point(table, the_plan, {"status": "closed"})
+        result = apply_plan(
+            grid, "S", table, the_plan, insert_above={"status": "closed"}
+        )
+        assert result.appended_rows == [point]
 
 
 class TestFailureOrder:

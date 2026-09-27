@@ -13,6 +13,7 @@ from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     CONFIG_NAME,
+    ApplyResult,
     Cell,
     MergePlan,
     NewRow,
@@ -366,7 +367,7 @@ class TestPull:
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", 5], ["b", "Bo", True]]})
         report = pull_tab(grid, "S", tab, apply=True)
         assert tab.local.read_bytes() == (
-            b"\xef\xbb\xbfid,name,amt\r\na,Ada,5\r\nb,Bo,TRUE\r\n"
+            b"\xef\xbb\xbfid,name,amt\na,Ada,5\nb,Bo,TRUE\n"
         )
         assert replacement_of(report).dropped_columns == {"memo": 1}
         assert report.wrote_local and writes(grid) == []
@@ -375,7 +376,17 @@ class TestPull:
         tab = one_tab(tmp_path, "pull", columns=["amt", "id"])
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         pull_tab(grid, "S", tab, apply=True)
-        assert tab.local.read_bytes() == b"amt,id\r\n1,a\r\n2,b\r\n"
+        assert tab.local.read_bytes() == b"amt,id\n1,a\n2,b\n"
+
+    @pytest.mark.parametrize("bom", [False, True])
+    def test_newline_crlf_is_written_on_request(self, tmp_path, bom):
+        tab = one_tab(tmp_path, "pull", newline="crlf", bom=bom)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        pull_tab(grid, "S", tab, apply=True)
+        mark = b"\xef\xbb\xbf" if bom else b""
+        assert tab.local.read_bytes() == (
+            mark + b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
+        )
 
     def test_a_missing_local_file_is_created(self, tmp_path):
         tab = one_tab(tmp_path, "pull", local="out/deep/t.json")
@@ -450,6 +461,7 @@ class TestPullAllTabs:
             "a_b.csv",
         ]
         assert rows_of(out / "Members.csv") == ROWS
+        assert (out / "Members.csv").read_bytes() == b"id,name,amt\na,Ada,1\nb,Bo,2\n"
         assert rows_of(out / "a_b.csv") == [["1"]]
         by_tab = {tab.tab: tab for tab in report.tabs}
         assert by_tab["Blank"].skipped and by_tab["Blank"].notes == [
@@ -704,6 +716,37 @@ class TestFormatReport:
             "    z: local_deleted",
             "  wrote: sheet, base",
         ]
+
+    @pytest.mark.parametrize(
+        ("fields", "where"),
+        [
+            ({"insert_row": 5, "last_row": 40}, ", above row 5"),
+            ({"last_row": 40}, ", after row 40"),
+            ({}, ""),
+            (
+                {
+                    "insert_row": 5,
+                    "last_row": 40,
+                    "apply": True,
+                    "applied": ApplyResult(0, 2, [], [5, 6]),
+                },
+                ", in rows 5 to 6",
+            ),
+            (
+                {"last_row": 40, "apply": True, "applied": ApplyResult(0, 1, [], [41])},
+                ", in row 41",
+            ),
+            ({"apply": True, "applied": ApplyResult(0, 2, [], [41, 42])}, ""),
+            # An apply that stopped before the rows went out still says where.
+            ({"insert_row": 5, "last_row": 40, "apply": True}, ", above row 5"),
+        ],
+    )
+    def test_new_rows_say_where_they_go(self, fields, where):
+        plan = MergePlan(appends=[NewRow(("n",), {}), NewRow(("m",), {})])
+        report = TabReport(tab="T", mode="sync", plan=plan, **fields)
+        assert format_report(SyncReport([report])).splitlines()[1] == (
+            f"  new rows for the sheet (2){where}: n; m"
+        )
 
     def test_a_preview_says_would(self, tmp_path):
         report = TabReport(

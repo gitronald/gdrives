@@ -64,6 +64,11 @@ def snapshot(target):
     )
 
 
+def _noted(rows):
+    """``rows`` of id, name, amt with a note column after the name."""
+    return [[row[0], row[1], "n", row[2]] for row in rows]
+
+
 def run(grid, target, **options):
     return sync_tab(grid, "S", target, target.tabs[0], **options)
 
@@ -289,6 +294,118 @@ class TestSync:
         run(grid, target, apply=True)
         assert grid.values("T") == [HEADER, ROWS[0], ["c", "Cy", "3"], ROWS[1]]
 
+
+class TestInsertRow:
+    """Where a preview says the new rows go, and where the apply puts them."""
+
+    HEADER = ["id", "status", "stage"]
+    ROWS = [["a", "open", "1"], ["b", "open", "1"], ["c", "closed", "2"]]
+
+    def arrange(self, tmp_path, *local, header=None, sheet_header=None, **fields):
+        target = make_target(tmp_path, **fields)
+        header = header or self.HEADER
+        write_local(target, *local, header=header)
+        write_base(target, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": [sheet_header or self.HEADER, *self.ROWS]})
+        return grid, target
+
+    def test_a_preview_names_the_row_the_apply_inserts_above(self, tmp_path):
+        # The run closes row b and adds row n, which belongs above b.
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+            ["n", "open", "1"],
+            insert_above={"status": "closed"},
+        )
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (3, 4)
+        assert writes(grid) == []
+        report = run(grid, target, apply=True)
+        assert applied_of(report).appended_rows == [3]
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", "open", "1"],
+            ["n", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+        ]
+
+    def test_no_matching_row_goes_after_the_last_row(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path, *self.ROWS, ["n", "open", "1"], insert_above={"status": "gone"}
+        )
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (None, 4)
+
+    def test_a_column_outside_the_projection_is_read_from_the_same_grid(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "1"],
+            ["b", "1"],
+            ["c", "2"],
+            ["n", "1"],
+            header=["id", "stage"],
+            insert_above={"status": "closed"},
+        )
+        write_base(target, ["a", "1"], ["b", "1"], ["c", "2"], header=["id", "stage"])
+        plain = make_target(tmp_path)
+        preview = run(grid, target)
+        assert (preview.insert_row, preview.last_row) == (4, 4)
+        other = FakeSheetGrid({"T": [self.HEADER, *self.ROWS]})
+        run(other, plain)
+        assert grid.methods == other.methods
+
+    def test_a_column_still_to_be_added_counts_as_blank_but_for_its_pushes(
+        self, tmp_path
+    ):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1", ""],
+            ["b", "open", "1", "yes"],
+            ["c", "closed", "2", ""],
+            ["n", "open", "1", ""],
+            header=[*self.HEADER, "held"],
+            insert_above={"held": "yes"},
+        )
+        preview = run(grid, target, add_missing=True)
+        assert preview.add_columns == ["held"]
+        assert (preview.insert_row, preview.last_row) == (3, 4)
+        report = run(grid, target, apply=True, add_missing=True)
+        assert applied_of(report).appended_rows == [3]
+        assert [row[0] for row in grid.values("T")] == ["id", "a", "n", "b", "c"]
+
+    def test_a_column_the_tab_lacks_is_refused_in_the_preview_too(self, tmp_path):
+        grid, target = self.arrange(tmp_path, *self.ROWS, insert_above={"nope": "x"})
+        with pytest.raises(ValueError, match="'nope' is not in the header"):
+            run(grid, target)
+
+    def test_no_new_rows_names_no_row(self, tmp_path):
+        grid, target = self.arrange(
+            tmp_path,
+            ["a", "open", "1"],
+            ["b", "closed", "1"],
+            ["c", "closed", "2"],
+            insert_above={"status": "closed"},
+        )
+        preview = run(grid, target)
+        assert plan_of(preview).pushes and not plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
+    def test_a_tab_without_insert_above_names_no_row(self, tmp_path):
+        grid, target = self.arrange(tmp_path, *self.ROWS, ["n", "open", "1"])
+        preview = run(grid, target)
+        assert plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
+    def test_a_missing_tab_names_no_row(self, tmp_path):
+        target = make_target(tmp_path, insert_above={"status": "closed"})
+        write_local(target, *self.ROWS, header=self.HEADER)
+        preview = run(FakeSheetGrid({"Other": []}), target)
+        assert plan_of(preview).appends
+        assert (preview.insert_row, preview.last_row) == (None, None)
+
     def test_json_local_file_is_written_with_its_types(self, tmp_path):
         target = make_target(
             tmp_path, local="local.json", schema={"amt": {"type": "int"}}
@@ -308,6 +425,41 @@ class TestSync:
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
         run(grid, target, apply=True)
         assert target.tabs[0].local.read_bytes().startswith(b"\xef\xbb\xbfid,")
+
+    def test_the_local_file_and_the_base_are_written_with_lf(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, ["a", "Ada", "1"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
+        run(grid, target, apply=True)
+        assert snapshot(target) == (
+            b"id,name,amt\na,Ada,1\nb,Bo,2\n",
+            b"id,name,amt\na,Ada,1\nb,Bo,2\n",
+        )
+
+    @pytest.mark.parametrize("bom", [False, True])
+    def test_newline_crlf_is_kept_on_the_local_file_and_the_base(self, tmp_path, bom):
+        target = make_target(tmp_path, newline="crlf", bom=bom)
+        write_local(target, ["a", "Ada", "1"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
+        run(grid, target, apply=True)
+        mark = b"\xef\xbb\xbf" if bom else b""
+        assert snapshot(target) == (
+            mark + b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n",
+            b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n",
+        )
+
+    def test_a_crlf_file_keeps_its_line_endings_until_it_changes(self, synced):
+        # write_local and write_base write CRLF, as 0.11.0 did.
+        grid, target = synced
+        before = snapshot(target)
+        run(grid, target, apply=True)
+        assert snapshot(target) == before
+        grid.write("T", [["a", "Ada", "9"]], row=2)
+        run(grid, target, apply=True)
+        assert snapshot(target) == (
+            b"id,name,amt\na,Ada,9\nb,Bo,2\n",
+            b"id,name,amt\na,Ada,9\nb,Bo,2\n",
+        )
 
     def test_widths_are_set_after_a_sheet_write_only(self, synced, tmp_path):
         _, plain = synced
@@ -627,6 +779,43 @@ class TestColumns:
         assert base_rows(target) == ROWS
         assert report.exit_code == 0
 
+    def test_added_columns_land_at_their_place_in_the_projection(self, tmp_path):
+        header = ["id", "email", "name", "amt", "city"]
+        target = make_target(tmp_path)
+        write_local(
+            target,
+            ["a", "a@x", "Ada", "1", "Oslo"],
+            ["b", "", "Bo", "2", ""],
+            header=header,
+        )
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid({"T": [["id", "name", "note", "amt"], *_noted(ROWS)]})
+        report = run(grid, target, apply=True, add_missing=True)
+        assert report.add_columns == ["email", "city"]
+        assert grid.values("T") == [
+            ["id", "email", "name", "note", "amt", "city"],
+            ["a", "a@x", "Ada", "n", "1", "Oslo"],
+            ["b", "", "Bo", "n", "2"],
+        ]
+        assert report.exit_code == 0
+
+    def test_a_column_is_placed_on_the_sheet_s_header_before_any_is_dropped(
+        self, tmp_path
+    ):
+        # "legacy" is dropped in the same run. It is still on the sheet when
+        # "city" is placed, so an index from the local header would land
+        # "city" one column short.
+        header = ["id", "name", "city"]
+        target = make_target(tmp_path, local_owned=["city"])
+        write_local(target, ["a", "Ada", "Oslo"], header=header)
+        write_base(target, ["a", "Ada"], header=["id", "name"])
+        grid = FakeSheetGrid({"T": [["id", "legacy", "name"], ["a", "old", "Ada"]]})
+        report = run(grid, target, apply=True, add_missing=True, drop_extra=True)
+        assert report.add_columns == ["city"] and list(report.drop_columns) == [
+            "legacy"
+        ]
+        assert grid.values("T") == [["id", "name", "city"], ["a", "Ada", "Oslo"]]
+
     def test_a_missing_key_column_is_refused(self, synced):
         grid, target = synced
         grid.write("T", [["ident", "name", "amt"]])
@@ -881,7 +1070,7 @@ class TestPaths:
         grid = FakeSheetGrid({"../a/b": [HEADER, *ROWS]})
         sync_tab(grid, "S", target, tab, apply=True)
         base = tmp_path / "cfg" / "snapshots" / ".._a_b.csv"
-        assert base.read_bytes() == b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
+        assert base.read_bytes() == b"id,name,amt\na,Ada,1\nb,Bo,2\n"
         assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
             ".._a_b.csv"
         ]

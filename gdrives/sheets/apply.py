@@ -12,7 +12,8 @@ plan's pushed cells and new rows to the tab, in this order:
    input, each cell addressed by its header position and its row number in
    the fresh read.
 3. **Write new rows** in one ``spreadsheets.batchUpdate`` call. They are sent
-   after the pushes, so the row numbers the pushes use are still true.
+   after the pushes, so the row numbers the pushes use are still true, and
+   placed (:func:`insert_point`) by the values the pushes leave behind.
 4. **Read the tab back** (:func:`verify`) and check every pushed cell and
    every new row, raising :class:`ReadBackError` on any mismatch.
 
@@ -23,8 +24,9 @@ and push again, on every run.
 New rows never go through ``values.append``, which takes the first blank row
 it finds as the table's end and so writes over rows below a cleared gap. They
 go to explicit rows: after the last row holding anything, or with
-``insert_above`` into rows opened above a named row. Only the projection's
-columns are written; other columns of the new rows are left alone.
+``insert_above`` into rows opened above a named row, which take the
+formatting of the row above them. Only the projection's columns are written;
+other columns of the new rows are left alone.
 """
 
 from collections.abc import Mapping, Sequence
@@ -95,6 +97,38 @@ def _insert_target(
     if not values:
         raise ValueError(f"insert_above column {column!r} lists no values")
     return column, {to_cell(value) for value in values}
+
+
+def insert_point(
+    table: Table, plan: MergePlan, insert_above: Mapping[str, Any]
+) -> int | None:
+    """The spreadsheet row ``plan``'s new rows go above, as the tab will be.
+
+    ``insert_above`` is ``{column: value or [values]}``. Returns the 1-based
+    row of the first row of ``table`` whose ``column`` will hold one of the
+    values once the plan's pushes are in: a row's value is the plan's push to
+    that cell when there is one, else the value read. Returns None when no row
+    will, and the new rows go after ``table.last_row``. Pushes move no rows,
+    so the row numbers of ``table`` hold until the rows are inserted.
+
+    A column outside the projection gets no pushes, so its rows count as
+    read. Folds change the local file only, and are not applied. Pure: the
+    preview and the apply both call it, so a preview names the row the apply
+    inserts at. Raises ValueError for an ``insert_above`` that does not name
+    one header column with its values, or a column ``table`` did not read.
+    """
+    column, values = _insert_target(insert_above, table.header)
+    if column not in table.columns:
+        raise ValueError(
+            f"tab {table.tab!r}: insert_above column {column!r} was not read; "
+            f"columns read: {table.columns}"
+        )
+    pushed = {cell.key: cell.local for cell in plan.pushes if cell.column == column}
+    for row in table.rows:
+        found = row_key(row, table.key)
+        if pushed.get(found, row[column]) in values:
+            return table.row_numbers[found]
+    return None
 
 
 def _check_plan(table: Table, plan: MergePlan) -> None:
@@ -224,8 +258,10 @@ def _row_requests(
                         "startIndex": at,
                         "endIndex": at + count,
                     },
-                    # Take the formatting of the row the new ones sit above.
-                    "inheritFromBefore": False,
+                    # Take the formatting of the row above, which is outside
+                    # the block the new rows are kept out of. Directly below
+                    # the header that row is the header, so inherit from below.
+                    "inheritFromBefore": at > 1,
                 }
             }
         )
@@ -285,8 +321,10 @@ def apply_plan(
     growing the grid in the same request when they would not fit. With
     ``insert_above={column: value or [values]}`` they are inserted directly
     above the first row whose ``column`` holds one of the values (compared as
-    canonical strings), or go after the last row when no row does. ``column``
-    may be any header column, in the projection or not.
+    canonical strings) once the plan's pushes are in, or go after the last
+    row when no row does (:func:`insert_point`). ``column`` may be any header
+    column, in the projection or not. Inserted rows take the formatting of
+    the row above them, or of the row below when that row is the header.
 
     A plan with nothing to push or add makes no request at all. Raises
     ValueError, before any request, when the plan does not fit ``table`` (a
@@ -294,30 +332,22 @@ def apply_plan(
     already has) or ``insert_above`` names a column the header lacks.
     """
     _check_plan(table, plan)
-    target = (
-        _insert_target(insert_above, table.header) if insert_above is not None else None
+    column = (
+        _insert_target(insert_above, table.header)[0]
+        if insert_above is not None
+        else None
     )
     if not plan.pushes and not plan.appends:
         return ApplyResult(pushed=0, appended=0, pushed_rows=[], appended_rows=[])
 
-    fresh = _reread(
-        service, spreadsheet_id, table, target[0] if target is not None else None
-    )
+    fresh = _reread(service, spreadsheet_id, table, column)
     count = len(plan.appends)
     requests: list[dict[str, Any]] = []
     at = fresh.last_row  # 0-based: the row after the last one holding anything
     inserted = False
     if count:
-        if target is not None:
-            column, values = target
-            above = next(
-                (
-                    fresh.row_numbers[row_key(row, fresh.key)]
-                    for row in fresh.rows
-                    if row[column] in values
-                ),
-                None,
-            )
+        if insert_above is not None:
+            above = insert_point(fresh, plan, insert_above)
             if above is not None:
                 at, inserted = above - 1, True
         # Read before any write, so a failed read leaves the tab untouched.

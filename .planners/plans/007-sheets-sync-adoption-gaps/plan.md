@@ -114,7 +114,7 @@ not check them. The table below is the status of record for the pieces.
 
 | Subplan | Scope | Items | Notes applied | Status |
 |---|---|---|---|---|
-| [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | draft |
+| [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | active |
 | [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5, P9 to P12 | draft |
 | [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | draft |
 | [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | draft |

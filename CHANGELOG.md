@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `insert_point` in `gdrives.sheets` returns the spreadsheet row a merge plan's new rows go above, for a table and an `insert_above` pair. It is pure, and `apply_plan` and the sync preview both use it. `TabReport.insert_row` and `TabReport.last_row` hold the result for a sync tab with `insert_above` and new rows, and the text report says where the rows go: `above row 5` or `after row 40` in a preview, and the rows written after an apply.
+- `place_columns` adds each column a header lacks at its place in a wanted order, in one request, and returns the columns added. `add_columns` takes `after=` to add columns directly after a named column.
+- A `newline` tab field in `gdrives-sheets.json`, `lf` (the default) or `crlf`, sets the line ending of a tab's `.csv` or `.tsv` local file and of its base. `write_records` and `write_values_csv` take `newline=`.
+
+### Changed
+
+- Record files are written with LF line endings. `write_records` now defaults to LF, so the local file and the base of a sync, the file of a pull, and the files of `sheets-pull --all-tabs` end their lines with LF, not CRLF. A file is rewritten only when its records change, so a file that 0.11.0 wrote keeps its CRLF until the next run that changes it, and changes once then. Set `newline: "crlf"` on a tab to keep CRLF. `write_values_csv` and `sheets-get -o` still write CRLF.
+- New rows of a sync are placed by the `insert_above` column as it will be after the run's pushes. A run that pushes a matching value to a row and adds a row now inserts the new row above the pushed row, where 0.11.0 looked at the column as read and could place it below. A tab whose `insert_above` column is outside the projection is unaffected.
+- Rows inserted with `insert_above` take the formatting of the row above them, not of the row they sit above. Directly below the header they still take the formatting of the row below.
+- Columns added by `--add-missing` (`add_missing`) land at their place in the projection, directly after the nearest earlier projection column the sheet has, not after the header's last column. Columns the sheet already has are not moved.
+- A sync preview refuses an `insert_above` column the tab lacks, as the apply already did.
+
 ## [0.12.0] - 2026-09-27
 
 ### Added

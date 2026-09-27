@@ -49,6 +49,7 @@ from gdrives.sheets.apply import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
 )
 from gdrives.sheets.cells import index_rows, problems, row_key, to_cell
 from gdrives.sheets.config import (
@@ -63,6 +64,7 @@ from gdrives.sheets.structure import (
     add_columns,
     delete_columns,
     ensure_tabs,
+    place_columns,
     set_column_widths,
 )
 from gdrives.sheets.table import EmptyTabError, Table, parse_tab
@@ -131,7 +133,11 @@ class TabReport:
     ``drop_columns`` (with non-blank cell counts) are the structure steps
     asked for; ``bootstrapped`` marks a first run that took the local file as
     the base, and ``deferred`` the pushes such a run held back, which go on
-    the next run; ``adopted`` marks an ``adopt`` run. For pull and push,
+    the next run; ``adopted`` marks an ``adopt`` run. On a tab with
+    ``insert_above`` and new rows for the sheet, ``insert_row`` is the
+    spreadsheet row they go above, as :func:`~gdrives.sheets.apply.insert_point`
+    finds it, or None when no row matches and they go after ``last_row``, the
+    last row holding anything; both are None otherwise. For pull and push,
     ``replacement`` says what the write replaces. ``applied`` is what
     :func:`~gdrives.sheets.apply.apply_plan` wrote, and the ``wrote_*`` flags
     record the writes made, so a failed run shows how far it got: a structure
@@ -154,6 +160,8 @@ class TabReport:
     bootstrapped: bool = False
     adopted: bool = False
     deferred: list[Cell] = field(default_factory=list)
+    insert_row: int | None = None
+    last_row: int | None = None
     replacement: Replacement | None = None
     applied: ApplyResult | None = None
     skipped: bool = False
@@ -336,8 +344,11 @@ def plan_tab(
     emptied after a sync, and that is refused for a person to look at.
 
     A projection column the tab lacks is refused unless ``add_missing``, in
-    which case it is planned as a blank column. ``drop_extra`` lists the tab's
-    columns outside the projection, with their non-blank cell counts.
+    which case it is planned as a blank column, to be added at its place in
+    the projection (:func:`~gdrives.sheets.structure.place_columns`).
+    ``drop_extra`` lists the tab's columns outside the projection, with their
+    non-blank cell counts. On a tab with ``insert_above``, the report names
+    the row the new rows go above.
     ``report`` is filled in place when given (a caller keeping a partial
     report on error), else created.
     """
@@ -378,6 +389,7 @@ def _plan(
     report.problems, report.notes = list[str](), list[str]()
     report.deferred = list[Cell]()
     report.plan, report.bootstrapped = None, False
+    report.insert_row, report.last_row = None, None
     report.add_columns, report.drop_columns = list[str](), dict[str, int]()
     local = _read_local(tab)
     columns = _projection(tab, local)
@@ -413,6 +425,7 @@ def _plan(
         )
 
     table: Table | None = None
+    grid: list[list[Any]] = []
     remote: list[dict[str, str]] = []
     fresh = set(added)
     if tab.title not in list_tabs(service, spreadsheet_id):
@@ -475,6 +488,10 @@ def _plan(
         if report.bootstrapped and plan.pushes:
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
+    if table is not None and tab.insert_above is not None:
+        above = _insert_row(tab, table, grid, plan, report.add_columns)
+        if plan.appends:
+            report.insert_row, report.last_row = above, table.last_row
     if check:
         report.problems = _check(plan.new_local, tab, options["validate"], "merged")
     return planned(table, plan, base)
@@ -517,6 +534,35 @@ def _sheet_side(
     return table, [row | blank for row in table.rows]
 
 
+def _insert_row(
+    tab: TabConfig,
+    table: Table,
+    grid: Sequence[Sequence[Any]],
+    plan: MergePlan,
+    missing: Sequence[str],
+) -> int | None:
+    """The row ``plan``'s new rows go above, on the tab ``grid`` was read from.
+
+    ``table`` holds the projection, which the ``insert_above`` column may be
+    outside of: it is then taken from the same grid, with no further request.
+    One of the ``missing`` columns, which the run is still to add, is blank in
+    every row. Raises ValueError for a column the tab lacks, as the apply
+    does.
+    """
+    insert_above = tab.insert_above or {}
+    column = next(iter(insert_above), "")
+    if column in missing:
+        table = replace(
+            table,
+            header=[*table.header, column],
+            columns=[*table.columns, column],
+            rows=[row | {column: ""} for row in table.rows],
+        )
+    elif column in table.header and column not in table.columns:
+        table = parse_tab(tab.title, grid, [*table.columns, column], tab.key)
+    return insert_point(table, plan, insert_above)
+
+
 def _defer_pushes(plan: MergePlan, key: Sequence[str], report: TabReport) -> MergePlan:
     """Hold a bootstrap's pushes back to the next run.
 
@@ -551,7 +597,9 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     :func:`~gdrives.sheets.apply.apply_plan` (re-read guard, pushes, new
     rows, read-back); then the local file, the base, and
     the column widths. The local file and the base are written only when
-    they change, and widths only on a run that wrote to the sheet. Raises on
+    they change, and widths only on a run that wrote to the sheet. Both files
+    end their lines as the tab's ``newline`` says (LF by default), so a file
+    written with other line endings keeps them until a run changes it. Raises on
     the first failure, with the report recording every write made before it.
     """
     report = planned.report
@@ -586,11 +634,17 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             plan.new_local,
             types=tab.types,
             bom=tab.bom,
+            newline=tab.newline,
         )
         report.wrote_local = True
     base = planned.base
     if base is None or base.columns != planned.columns or base.rows != plan.new_base:
-        write_records(planned.target.base_path(tab), planned.columns, plan.new_base)
+        write_records(
+            planned.target.base_path(tab),
+            planned.columns,
+            plan.new_base,
+            newline=tab.newline,
+        )
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
         set_column_widths(service, spreadsheet_id, tab.title, tab.widths)
@@ -620,7 +674,8 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         add_columns(service, spreadsheet_id, tab.title, planned.columns)
         report.wrote_sheet = True
     if added:
-        add_columns(service, spreadsheet_id, tab.title, added)
+        # Placed on the sheet's header as it is now: the deletes run after.
+        place_columns(service, spreadsheet_id, tab.title, planned.columns)
         report.wrote_sheet = True
     if dropped:
         delete_columns(service, spreadsheet_id, tab.title, list(dropped))
@@ -759,7 +814,8 @@ def pull_tab(
     ``validate`` before anything is written. The report's ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
-    local file is simply created. An unchanged file is not rewritten.
+    local file is simply created. An unchanged file is not rewritten. A
+    delimited file ends its lines as the tab's ``newline`` says.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     report.local, report.apply = tab.local, apply
@@ -783,7 +839,12 @@ def pull_tab(
     report.replacement = _compare(before, table.columns, table.rows, tab.key)
     if apply and not report.replacement.unchanged:
         write_records(
-            tab.local, table.columns, table.rows, types=tab.types, bom=tab.bom
+            tab.local,
+            table.columns,
+            table.rows,
+            types=tab.types,
+            bom=tab.bom,
+            newline=tab.newline,
         )
         report.wrote_local = True
     return report
@@ -979,8 +1040,8 @@ def pull_all_tabs(
     ``skip`` title the spreadsheet lacks, and two titles whose file names
     collide (compared case-insensitively). A tab with no values, or no header
     row, is reported and skipped, never written as an empty file. With
-    ``apply`` the files are written (and ``out_dir`` created); an unchanged
-    file is not rewritten.
+    ``apply`` the files are written (and ``out_dir`` created), a delimited
+    one with LF line endings; an unchanged file is not rewritten.
     """
     if extension.lower() not in LOCAL_EXTENSIONS:
         raise ValueError(
@@ -1205,7 +1266,7 @@ def _format_tab(tab: TabReport) -> list[str]:
             "sheet-only rows are flagged, never removed"
         )
     if tab.plan is not None:
-        lines.extend(_format_plan(tab.plan, tab.deferred))
+        lines.extend(_format_plan(tab.plan, tab.deferred, _placement(tab)))
     if tab.replacement is not None:
         lines.extend(_format_replacement(tab, tab.replacement))
     if tab.problems:
@@ -1250,7 +1311,23 @@ def _cells(label: str, cells: Sequence[Cell], show: Callable[[Cell], str]) -> li
     return lines
 
 
-def _format_plan(plan: MergePlan, deferred: Sequence[Cell]) -> list[str]:
+def _placement(tab: TabReport) -> str:
+    """Where the new rows of a tab with ``insert_above`` go, or went."""
+    if tab.last_row is None:
+        return ""
+    if tab.applied is not None and tab.applied.appended_rows:
+        rows = tab.applied.appended_rows
+        if len(rows) == 1:
+            return f", in row {rows[0]}"
+        return f", in rows {rows[0]} to {rows[-1]}"
+    if tab.insert_row is not None:
+        return f", above row {tab.insert_row}"
+    return f", after row {tab.last_row}"
+
+
+def _format_plan(
+    plan: MergePlan, deferred: Sequence[Cell], placement: str = ""
+) -> list[str]:
     lines = [
         *_cells(
             "push to the sheet",
@@ -1273,12 +1350,14 @@ def _format_plan(plan: MergePlan, deferred: Sequence[Cell]) -> list[str]:
             lambda c: f"{_q(c.sheet)} -> {_q(c.local)}",
         ),
     ]
-    for label, rows in (
-        ("new rows for the sheet", plan.appends),
-        ("new rows for the local file", plan.fold_rows),
+    for label, rows, where in (
+        ("new rows for the sheet", plan.appends, placement),
+        ("new rows for the local file", plan.fold_rows, ""),
     ):
         if rows:
-            lines.append(f"  {label} ({len(rows)}): {_keys([r.key for r in rows])}")
+            lines.append(
+                f"  {label} ({len(rows)}){where}: {_keys([r.key for r in rows])}"
+            )
     if plan.overrides:
         lines.append(f"  overrides ({len(plan.overrides)}):")
         for o in plan.overrides:
