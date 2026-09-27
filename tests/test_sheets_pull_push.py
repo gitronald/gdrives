@@ -388,6 +388,33 @@ class TestPull:
             mark + b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
         )
 
+    def test_a_declared_date_column_is_pulled_as_iso(self, tmp_path):
+        from datetime import date, datetime
+
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            schema={"on": {"type": "date"}, "at": {"type": "datetime"}},
+        )
+        rows = [
+            ["a", date(2026, 9, 27), datetime(2026, 9, 27, 23, 59, 59, 999000)],
+            ["b", "2026-09-28", date(2026, 9, 28)],
+        ]
+        grid = FakeSheetGrid({"T": [["id", "on", "at"], *rows]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [] and report.wrote_local
+        assert rows_of(tab.local) == [
+            ["a", "2026-09-27", "2026-09-27 23:59:59.999000"],
+            ["b", "2026-09-28", "2026-09-28 00:00:00"],
+        ]
+        assert grid.methods == ["spreadsheets.get", "values.get", "values.batchGet"]
+
+    def test_a_pull_with_no_declared_date_makes_the_reads_it_made(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", schema={"amt": {"type": "int"}})
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        pull_tab(grid, "S", tab, apply=True)
+        assert grid.methods == ["spreadsheets.get", "values.get"]
+
     def test_a_missing_local_file_is_created(self, tmp_path):
         tab = one_tab(tmp_path, "pull", local="out/deep/t.json")
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})

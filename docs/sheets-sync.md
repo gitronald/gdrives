@@ -114,7 +114,7 @@ to keep in step with local files:
 | `mode` | all | `sync` (the default), `pull`, or `push` |
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
@@ -373,6 +373,28 @@ checkbox reads as `TRUE` or `FALSE`, a blank cell as an empty string, and a
 formula cell as its result. Columns are found by header name, never by
 position, and a header that repeats a name stops the run.
 
+**Dates.** A date cell reads as the text its number format shows, which
+depends on the format and the spreadsheet's locale: `9/27/2026` on one sheet
+and `27.09.2026` on another. A column the `schema` declares `date` or
+`datetime` is read a second time, as the serial numbers the sheet holds, and
+each date cell arrives as ISO 8601 whatever the sheet displays: `2026-09-27`,
+or `2026-09-27 10:30:15` for a date-time, to the millisecond.
+
+- Conversion is by declaration, never by guess. A number in an undeclared
+  column cannot be told from a date's serial, and is left alone. A plain
+  number in a declared column is read as a serial.
+- A cell holding text stays as it is. A sync writes literal strings, so a date
+  it pushed is text on the sheet, and reads back as written. A column can
+  hold date cells and ISO text, and both arrive as ISO 8601.
+- A date-time in a `date` column is not cut to its day. It keeps its display
+  text, and the schema check reports it.
+- The serial is also the more exact read. Display text rounds to what its
+  format shows, so a cell holding `23:59:59.999` under a format of whole
+  seconds displays as midnight of the next day.
+- A serial carries no time zone. The values are in the spreadsheet's own.
+- The second read covers the declared columns only, and a tab with no
+  declared date column is read once, as before.
+
 **Local files.** In a `.csv` or `.tsv` file every cell is a string, so leading
 zeros, booleans, and dates stay exactly as written. Its lines end with LF, or
 with CRLF when the tab sets `newline: "crlf"`, and the base follows the tab. A
@@ -394,6 +416,9 @@ the next merge depend on: `007` stays `007`, and `=1+2` is stored as text, not
 run as a formula. The consequence is that **sheet formulas over a synced
 column see text**: a number pushed as `"250"` is the string `250` to the
 sheet, so a `=SUM()` over that column does not count it.
+
+A date or number that a sync or a push writes is **text on the sheet**, as
+every written value is. The sheet does not sort or format it as a date.
 
 **Schema.** A `schema` type is declared, never guessed. A cell that does not
 parse as its declared type (`int` takes digits with an optional minus sign;

@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-b-typed-cells
 ---
 
 # 007b — Add the typed codec, Python column types, and typed dates
@@ -159,3 +159,71 @@ the guide's section on moving over says so
 - The guide's section on how cells are read says what a declared date column reads as.
 - Changelog: the codec, `column_type`, and `ColumnSchema.of` under Added; typed dates
   and the writer's message under Changed.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-b-typed-cells`, cut from step a's branch, with a
+draft PR onto it.
+
+| Commit | Part |
+|---|---|
+| `0ebfc75` | `column_type`, `ColumnSchema.of`, `encode_rows`, `decode_rows`, and the JSON reader and writer over them |
+| `08542a4` | `serial_to_cell`, `pull_serials`, `read_tab(types=)`, `parse_tab(types=, serials=)`, `Table.types`, and the typed reads of `apply_plan`, `plan_tab`, and `pull_tab` |
+| `a561859` | The guide, the changelog, and the live case |
+
+Decisions made during the work:
+
+- **`serials` is a mapping of column name to that column's grid**, as the second read
+  returns it (`{"on": [["on"], [46292], ...]}`). `parse_tab` takes `types` beside it,
+  since the type says whether a serial is a `date` or a `datetime`. The design named
+  `serials` only.
+- **`pull_serials` is public.** `plan_tab` and `pull_tab` read the grid themselves and
+  parse it, so they need the second read as a function of its own. It takes the grid
+  already read, for the header, and makes no request when the tab has no declared date
+  column.
+- **`Table.types` holds the declared types of the columns read**, every type and not
+  only the dates, by name.
+- **A serial that does not fit its type keeps the first read's value.** A time of day
+  in a `date` column reads as its display text, which the schema check reports. It is
+  what the design's "refuses one with a fraction, which the schema check then reports"
+  comes to in `parse_tab`.
+- **A `date` serial is tested after rounding to the millisecond**, so a fraction below
+  one is not a time of day.
+- **`encode_rows` lists every problem in one error**, as `decode_rows` does. The JSON
+  reader keeps its own refusal of a nested value, which runs first and names the item.
+- **`decode_rows` and `write_records` refuse an unknown type whatever the rows hold.**
+  0.11.0's writer met the type only when it parsed a cell, so an unknown type with no
+  rows passed. Listed in the changelog with the writer's message.
+- **`ColumnType`, the alias `str | type`, is what the signatures use.** Inside
+  `ColumnSchema` the name `type` is the field, and an annotation `str | type` there
+  reads the field's default.
+- **`SERIAL_TYPES`** names the two types read from serials, and is exported.
+- **The two reads are not one moment.** A row inserted between them puts a date against
+  the wrong row. `apply_plan` reads the tab again before it writes, which a sync gets;
+  a pull does not. `read_tab`'s docstring says so. No request reads both renders at
+  once, since one request carries one `dateTimeRenderOption`.
+
+One test of the draft could not be written as it was worded: a base saved from the
+display text of a typed date column. A column declared `date` on 0.11.0 had to display
+ISO 8601 already, or its schema check failed on every row. So the case that remains is
+a display that is ISO but not the whole value, such as a date-time whose format hides
+its milliseconds, and the test and the changelog line are about that one.
+
+`FakeSheetGrid` takes a `date` or a `datetime` as a date cell. It works out the serial
+by itself, and displays `m/d/yyyy` to the whole second, so the midnight case of P12 is
+in the unit tests.
+
+**Live suite.** One case: a date, a date-time, and ISO text in the same two columns,
+read with `types`. One run of the whole suite, by the orchestrating session, after the
+case had passed by itself:
+
+| | Writes | Reads |
+|---|---|---|
+| Before this step | 61 | 76 |
+| The new case | 3 | 2 |
+| After | 64 | 78 |
+
+22 passed in 136 seconds. 7 requests were refused on the quota and sent again (6 reads
+and 1 write), which the counts above leave out.

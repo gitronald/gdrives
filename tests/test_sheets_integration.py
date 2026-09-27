@@ -484,6 +484,28 @@ def _table(service, sid, name):
     return sheets.read_tab(service, sid, name, ["id", "name", "code"], ["id"])
 
 
+def test_read_tab_reads_declared_dates_from_their_serials(seeded):
+    # Row a holds a date and a date-time, entered as a person types them; row
+    # b holds ISO text, as a sync writes it. Both arrive as ISO 8601.
+    service, sid, name = seeded(
+        [["id", "on", "at"], ["a", "9/27/2026", "9/27/2026 10:30:15"], ["b", "", ""]]
+    )
+    sheets.update_values(
+        service,
+        sid,
+        f"'{name}'!B3:C3",
+        [["2026-09-28", "2026-09-28T01:02:03"]],
+        input_option=sheets.RAW,
+    )
+    table = sheets.read_tab(
+        service, sid, name, None, ["id"], types={"on": "date", "at": "datetime"}
+    )
+    assert table.rows == [
+        {"id": "a", "on": "2026-09-27", "at": "2026-09-27 10:30:15"},
+        {"id": "b", "on": "2026-09-28", "at": "2026-09-28T01:02:03"},
+    ]
+
+
 def test_apply_pushes_and_appends_past_the_grid_end(seeded, shared_tab):
     service, sid, name = seeded(
         [["id", "note", "name", "code"], ["a", "keep", "Ada", "1"], ["b", "", "Bo"]]

@@ -3,16 +3,38 @@
 A tab is read in one request, with every cell turned into its canonical string
 (:func:`gdrives.sheets.cells.to_cell`), and columns are found by header name,
 never by position, so a column moved on the sheet is still read correctly.
+
+A date cell reads as the text its number format shows, which depends on the
+format and the locale. A column **declared** ``date`` or ``datetime`` is read
+a second time, as serial numbers (:func:`pull_serials`), and each of its date
+cells becomes ISO 8601 whatever the sheet displays. Nothing is converted by
+guess: a number in an undeclared column cannot be told from a date's serial.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from gdrives.files import Service
-from gdrives.sheets.a1 import a1_quote
-from gdrives.sheets.cells import index_rows, to_cell
-from gdrives.sheets.values import FORMATTED_STRING, UNFORMATTED_VALUE, pull_values
+from gdrives.sheets.a1 import a1_quote, column_letter
+from gdrives.sheets.cells import (
+    SERIAL_TYPES,
+    ColumnType,
+    column_type,
+    index_rows,
+    serial_to_cell,
+    to_cell,
+)
+from gdrives.sheets.values import (
+    FORMATTED_STRING,
+    SERIAL_NUMBER,
+    UNFORMATTED_VALUE,
+    pull_many,
+    pull_values,
+)
+
+#: One grid per column, as a serial read of that column returned it.
+Serials = Mapping[str, Sequence[Sequence[Any]]]
 
 
 class EmptyTabError(ValueError):
@@ -33,7 +55,9 @@ class Table:
     header's last column; those cells belong to no column and are not read.
     ``last_row`` is the last spreadsheet row holding a value in any column,
     columns outside ``columns`` and past the header included (1 when the tab
-    holds only its header): new rows go after it.
+    holds only its header): new rows go after it. ``types`` holds the declared
+    type of each column read that has one, by name, so that a later read of
+    the same tab reads its dates the same way.
     """
 
     tab: str
@@ -45,6 +69,24 @@ class Table:
     extra_columns: list[str]
     wide_rows: list[int]
     last_row: int
+    types: dict[str, str] = field(default_factory=dict)
+
+
+def _declared(types: Mapping[str, ColumnType] | None) -> dict[str, str]:
+    """Each declared type by name, refusing one that is not a column type."""
+    declared: dict[str, str] = {}
+    for column, type_ in (types or {}).items():
+        try:
+            declared[column] = column_type(type_)
+        except ValueError as e:
+            raise ValueError(f"column {column!r}: {e}") from None
+    return declared
+
+
+def _header(grid: Sequence[Sequence[Any]]) -> list[str]:
+    """The header row of a grid as read: canonical strings, stripped."""
+    first: Sequence[Any] = grid[0] if grid else []
+    return [to_cell(cell).strip() for cell in first]
 
 
 def _check_request(tab: str, columns: Sequence[str] | None, key: Sequence[str]) -> None:
@@ -60,22 +102,72 @@ def _check_request(tab: str, columns: Sequence[str] | None, key: Sequence[str]) 
             raise ValueError(f"tab {tab!r}: key column(s) {outside} not in columns")
 
 
+def pull_serials(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    grid: Sequence[Sequence[Any]],
+    types: Mapping[str, ColumnType],
+) -> dict[str, list[list[Any]]]:
+    """Read the declared date columns of ``tab`` again, as serial numbers.
+
+    ``grid`` is the tab as already read, whose header row places the columns.
+    Every column of it that ``types`` declares ``date`` or ``datetime`` is
+    read whole (``Tab!C:C``) in one ``values.batchGet`` with the
+    ``SERIAL_NUMBER`` render, and returned by name for :func:`parse_tab`'s
+    ``serials``. The whole tab is never read that way: it would turn the
+    dates of undeclared columns into numbers. With no such column on the tab
+    no request is made.
+    """
+    header = _header(grid)
+    dated = [
+        column
+        for column, name in _declared(types).items()
+        if name in SERIAL_TYPES and column in header
+    ]
+    quoted = a1_quote(tab)
+    letters = [column_letter(header.index(column)) for column in dated]
+    grids = pull_many(
+        service,
+        spreadsheet_id,
+        [f"{quoted}!{letter}:{letter}" for letter in letters],
+        render=UNFORMATTED_VALUE,
+        date_time_render=SERIAL_NUMBER,
+    )
+    return dict(zip(dated, grids, strict=True))
+
+
 def read_tab(
     service: Service,
     spreadsheet_id: str,
     tab: str,
     columns: Sequence[str] | None,
     key: Sequence[str] = (),
+    *,
+    types: Mapping[str, ColumnType] | None = None,
 ) -> Table:
-    """Read ``tab`` in one request and return its ``columns`` as keyed records.
+    """Read ``tab`` and return its ``columns`` as keyed records.
 
     ``columns=None`` reads every named header column. Cells are read unformatted
     (numbers and booleans as values, dates as the sheet displays them) and
     turned into canonical strings, so a number typed on the sheet reads as
     ``"3"`` whatever its display format. The grid is parsed by
     :func:`parse_tab`, which says what is refused.
+
+    ``types`` declares column types by name or class. The tab is read in one
+    request, and in two when it has a column read that is declared ``date``
+    or ``datetime``: those columns are read again as serial numbers
+    (:func:`pull_serials`), and their date cells arrive as ISO 8601. The two
+    reads are not one moment, so rows inserted between them put a date
+    against the wrong row; :func:`~gdrives.sheets.apply.apply_plan` reads the
+    tab again before it writes.
     """
     _check_request(tab, columns, key)
+    declared = {
+        column: name
+        for column, name in _declared(types).items()
+        if columns is None or column in columns
+    }
     grid = pull_values(
         service,
         spreadsheet_id,
@@ -83,7 +175,24 @@ def read_tab(
         render=UNFORMATTED_VALUE,
         date_time_render=FORMATTED_STRING,
     )
-    return parse_tab(tab, grid, columns, key)
+    serials = pull_serials(service, spreadsheet_id, tab, grid, declared)
+    return parse_tab(tab, grid, columns, key, types=declared, serials=serials)
+
+
+def _dated(text: str, serials: Sequence[Sequence[Any]], number: int, type_: str) -> str:
+    """The cell of spreadsheet row ``number`` in a declared date column.
+
+    Its serial as ISO 8601 when the serial read gave a number for it that
+    fits the type, and ``text``, the first read's value, otherwise.
+    """
+    cells: Sequence[Any] = serials[number - 1] if number <= len(serials) else []
+    value = cells[0] if cells else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return text
+    try:
+        return serial_to_cell(value, type_)
+    except ValueError:
+        return text
 
 
 def parse_tab(
@@ -91,12 +200,25 @@ def parse_tab(
     grid: Sequence[Sequence[Any]],
     columns: Sequence[str] | None,
     key: Sequence[str] = (),
+    *,
+    types: Mapping[str, ColumnType] | None = None,
+    serials: Serials | None = None,
 ) -> Table:
     """Parse ``grid``, a whole tab's rows as read, into ``columns`` as keyed records.
 
     The parsing half of :func:`read_tab`, for a grid already read (one
     :func:`~gdrives.sheets.values.pull_many` request can fetch several tabs).
     ``grid`` holds the values an unformatted read returns.
+
+    ``types`` declares column types, and ``serials`` holds the serial read of
+    each column declared ``date`` or ``datetime``, as :func:`pull_serials`
+    returns it. A cell of such a column becomes ISO 8601 when the serial read
+    gave a number for it, and keeps the value of ``grid`` otherwise: text, a
+    boolean, a row ``serials`` does not reach, or a serial that does not fit
+    the type (a time of day in a ``date`` column), which a schema check then
+    reports. So a column holding both date cells and ISO text reads as ISO
+    8601 throughout. A plain number in such a column is converted like any
+    other, since the declaration is what says the column holds dates.
 
     Raises :class:`EmptyTabError` when the tab has no header row, and
     ValueError, before any row is looked at, when a header name repeats or a
@@ -107,8 +229,8 @@ def parse_tab(
     (see :func:`~gdrives.sheets.cells.index_rows`).
     """
     _check_request(tab, columns, key)
-    first: Sequence[Any] = grid[0] if grid else []
-    header = [to_cell(cell).strip() for cell in first]
+    declared = _declared(types)
+    header = _header(grid)
     if not any(header):
         raise EmptyTabError(f"tab {tab!r} has no header row")
     repeated = sorted({name for name in header if name and header.count(name) > 1})
@@ -122,6 +244,12 @@ def parse_tab(
 
     positions = {column: header.index(column) for column in wanted}
     extra = [name for name in header if name and name not in positions]
+    read_types = {c: name for c, name in declared.items() if c in positions}
+    dated = {
+        column: (serials[column], name)
+        for column, name in read_types.items()
+        if name in SERIAL_TYPES and serials is not None and column in serials
+    }
     width = len(header)
     rows: list[dict[str, str]] = []
     numbers: list[int] = []
@@ -133,7 +261,10 @@ def parse_tab(
         if len(cells) > width:
             wide.append(number)
         cells += [""] * (width - len(cells))
-        rows.append({column: cells[index] for column, index in positions.items()})
+        row = {column: cells[index] for column, index in positions.items()}
+        for column, (serial, name) in dated.items():
+            row[column] = _dated(row[column], serial, number, name)
+        rows.append(row)
         numbers.append(number)
 
     row_numbers = (
@@ -151,4 +282,5 @@ def parse_tab(
         # Only rows blank in every column are skipped, so the last row read is
         # the last one holding anything.
         last_row=numbers[-1] if numbers else 1,
+        types=read_types,
     )

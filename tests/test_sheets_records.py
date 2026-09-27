@@ -218,9 +218,34 @@ class TestJson:
 
     def test_cell_that_does_not_parse_as_its_type_raises(self, tmp_path):
         path = tmp_path / "m.json"
-        with pytest.raises(ValueError, match=r"m\.json: 'x' is not a valid int"):
+        with pytest.raises(
+            ValueError, match=r"m\.json: row 1, column 'n': 'x' is not a valid int"
+        ):
             write_records(path, ["n"], [{"n": "x"}], types={"n": "int"})
         assert not path.exists()
+
+    def test_every_cell_that_does_not_parse_is_listed(self, tmp_path):
+        path = tmp_path / "m.json"
+        rows = [{"n": "x", "on": "2026-01-15"}, {"n": "2", "on": "soon"}]
+        with pytest.raises(ValueError) as refused:
+            write_records(path, ["n", "on"], rows, types={"n": "int", "on": "date"})
+        assert str(refused.value) == (
+            f"{path}: row 1, column 'n': 'x' is not a valid int; "
+            "row 2, column 'on': 'soon' is not a valid date"
+        )
+        assert not path.exists()
+
+    def test_types_may_be_classes(self, tmp_path):
+        from datetime import date
+
+        path = tmp_path / "m.json"
+        rows = [{"n": "007", "paid": "TRUE", "on": "2026-01-15"}]
+        write_records(
+            path, ["n", "paid", "on"], rows, types={"n": int, "paid": bool, "on": date}
+        )
+        assert json.loads(path.read_text()) == [
+            {"n": 7, "paid": True, "on": "2026-01-15"}
+        ]
 
     def test_non_finite_float_raises(self, tmp_path):
         path = tmp_path / "m.json"
