@@ -361,6 +361,21 @@ class TestPullAndPush:
         with pytest.raises(ValueError, match=message):
             push_tab(FakeSheetGrid({"T": []}), "S", tab, apply=True)
 
+    @pytest.mark.parametrize(
+        ("tabs", "message"),
+        [
+            ({}, "no tab named 'T'; the local store is left alone"),
+            ({"T": []}, "tab 'T' has no header row; the local store is left alone"),
+            ({"T": [HEADER]}, "tab 'T' has no rows; the local store is left alone"),
+        ],
+    )
+    def test_refusals_of_a_pull_call_a_store_a_store(self, tmp_path, tabs, message):
+        local = memory(*ROWS)
+        _, tab = make(tmp_path, local, mode="pull")
+        with pytest.raises(ValueError, match=f"^{message}$"):
+            pull_tab(FakeSheetGrid(tabs), "S", tab, apply=True)
+        assert rows_of(local) == ROWS and local.writes == 0
+
     def test_a_file_is_still_called_a_file(self, tmp_path):
         tab = TabConfig(title="T", local=tmp_path / "m.csv", mode="push")
         with pytest.raises(ValueError, match=r"tab 'T': local file .*m\.csv does not"):
@@ -418,6 +433,32 @@ class TestReport:
             "pull tab 'T' (preview)",
             "  local store: the\\x1brows",
         ]
+
+    def test_a_sync_over_a_store_says_store_throughout(self, tmp_path):
+        local = memory(ROWS[0])
+        target, _ = make(tmp_path, local, MemoryStore(label="the base"))
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "9"], ["c", "Cy", "3"]]})
+        report = run_target(grid, "S", target, "sync", apply=True)
+        text = format_report(report)
+        assert "so the local store was taken as the base" in text
+        assert "  fold into the local store (1):" in text
+        assert "  new rows for the local store (1): c" in text
+        assert "  wrote: local store, base" in text
+        assert "local file" not in text
+
+    def test_an_adopt_over_a_store_says_store(self, tmp_path):
+        target, _ = make(tmp_path, memory(*ROWS), MemoryStore())
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run_target(grid, "S", target, "sync", adopt=True)
+        assert "  adopt: the local store wins every difference" in format_report(report)
+
+    def test_a_pull_over_a_store_says_what_the_store_holds(self, tmp_path):
+        target, _ = make(tmp_path, memory(ROWS[0]), mode="pull")
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run_target(grid, "S", target, "pull")
+        assert format_report(report).splitlines()[2] == (
+            "  the local store holds 1 rows (3 non-blank cells); it would hold 2"
+        )
 
     def test_a_file_is_named_as_before(self, tmp_path):
         tab = TabConfig(title="T", local=tmp_path / "m.csv", mode="pull")
