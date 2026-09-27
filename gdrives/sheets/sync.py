@@ -133,7 +133,9 @@ class TabReport:
     the next run; ``adopted`` marks an ``adopt`` run. For pull and push,
     ``replacement`` says what the write replaces. ``applied`` is what
     :func:`~gdrives.sheets.apply.apply_plan` wrote, and the ``wrote_*`` flags
-    record every write made, so a failed run shows how far it got.
+    record the writes made, so a failed run shows how far it got. A sheet
+    write that fails with an API error part way is not flagged; the error
+    says what failed.
     """
 
     tab: str
@@ -560,9 +562,13 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             f"tab {tab.title!r} changed while it was restructured; run again"
         )
 
-    result = apply_plan(
-        service, spreadsheet_id, table, plan, insert_above=tab.insert_above
-    )
+    try:
+        result = apply_plan(
+            service, spreadsheet_id, table, plan, insert_above=tab.insert_above
+        )
+    except ReadBackError:
+        report.wrote_sheet = True  # the writes went out; they did not read back
+        raise
     report.applied = result
     if result.pushed or result.appended:
         report.wrote_sheet = True
