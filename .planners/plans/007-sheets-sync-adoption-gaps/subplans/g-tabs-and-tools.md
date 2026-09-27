@@ -11,6 +11,10 @@ tab by `sheetId` needs it.
 
 Notes applied: M7, M8, M12, D8.
 
+**Before starting:** plan 008 edits `gdrives/sheets/commands.py` and `gdrives/cli.py`
+too. If it has merged into `dev`, merge `dev` into the umbrella branch first. See the
+umbrella's [Log](../plan.md#log).
+
 ## One tab listing per run
 
 Plan 006's close review measured it and left it for a follow-up: `run_target` lists the

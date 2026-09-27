@@ -1,8 +1,8 @@
 ---
 id: 7
 slug: sheets-sync-adoption-gaps
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-gaps
 created: 2026-09-27T10:24:14-07:00
 concluded:
 pr:
@@ -307,3 +307,38 @@ deleted afterwards, 4 reads and 5 writes).
   (`6fb7606`, decision 15).
 - **Number formats.** `50%` reads `0.5` and a 3 shown as `3.00` reads `3` [P13], as D5
   had reasoned.
+
+### 2026-09-27 — plan 008 runs first, and may overlap this one
+
+Decided by the owner on 2026-09-27T11:47:03-07:00, before either plan was activated:
+plan [008](../008-oauth-token-and-consent-safety/plan.md) is implemented first, and
+this plan may be in progress at the same time, in its own worktree. 008's Log has the
+same entry from its side.
+
+The two share no design. They share files, and on this plan's side the code overlap is
+all in step g:
+
+| File | This plan | Plan 008 |
+|---|---|---|
+| `gdrives/sheets/commands.py` | Step g: retry notices, `--all-tabs` options, and `sheets-widths` | The credential line moves out of this file, and prints on a preview |
+| `gdrives/cli.py` | Step g: one command and two options | `gdrives login`, and the credential line on every command |
+| `CHANGELOG.md`, `README.md`, the project `CLAUDE.md` | Lines added by every step | Lines added |
+| `docs/sheets-sync.md` | Steps a to h | Its section on credentials, if 008 changes what it says |
+
+What this plan does about it:
+
+- Steps a to f touch `gdrives/sheets/` outside `commands.py`, and need nothing from
+  008. They start whether or not 008 has merged.
+- **Before step g starts, check whether 008 has merged into `dev`.** If it has, merge
+  `dev` into the umbrella branch first, so that step g builds on the credential helper
+  where 008 left it. If it has not, step g goes ahead, and whichever plan merges second
+  resolves `commands.py` and `cli.py`.
+- Step g wraps the `sheets-*` commands in `retry_notices`, and 008 adds a credential
+  line to the same commands. Both print to stderr before a run's first request, so
+  step g's tests assert on their own line and not on stderr as a whole.
+- Step h reads the guide's section on credentials against what 008 shipped, as it
+  reads every other section against the Logs.
+- 008 has no live tests, so this plan has the Sheets quota to itself.
+- This plan reaches `dev` through one umbrella PR at its end. If 008 ships as a release
+  of its own before then, its changelog lines are already promoted, and this plan's
+  lines are the only ones under `[Unreleased]`.
