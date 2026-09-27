@@ -271,10 +271,11 @@ def login(
     token the other commands then use. Nothing is asked when a cached token
     already serves the scope. Also the way to grant again after a token's
     refresh has failed. Exits 1, with every token file untouched, when
-    --timeout runs out.
+    --timeout runs out, and when the token of a consent could not be saved.
     """
     from gdrives.auth import (
         LOGIN_SCOPES,
+        ConsentError,
         announce_credentials,
         authenticate_oauth,
         describe_credentials,
@@ -284,7 +285,15 @@ def login(
         scopes = LOGIN_SCOPES[scope]
         announce_credentials(scopes, force=True)
         authenticate_oauth(scopes, force=True, timeout=timeout)
-        print(f"Credential: {describe_credentials(scopes)}", file=sys.stderr)
+        # What the next command will find, read back from the token files: a
+        # consent whose token was not saved has granted nothing that lasts.
+        info = describe_credentials(scopes)
+        if info.kind != "oauth" or info.consent:
+            raise ConsentError(
+                "the consent finished, but its token was not saved, so the "
+                "next command would ask again"
+            )
+        print(f"Credential: {info}", file=sys.stderr)
 
 
 # A spreadsheet target accepted by every sheets command: a Sheet URL, a bare

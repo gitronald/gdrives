@@ -5,9 +5,11 @@ command is called directly with plain Python defaults; the lazily-imported
 delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
+import json
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from google.auth.exceptions import RefreshError, TransportError
@@ -835,6 +837,61 @@ class TestLogin:
         assert result.stderr.endswith(
             "Error: no consent within 5 seconds; no token was written\n"
         )
+
+
+class TestLoginReadsTheTokenBack:
+    """The last line of ``gdrives login`` is what the token files then hold."""
+
+    @pytest.fixture
+    def config(self, monkeypatch, tmp_path):
+        """A config dir with client secrets, no terminal, and a faked consent."""
+        from gdrives import auth
+
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        consented = MagicMock()
+        consented.to_json.return_value = json.dumps(
+            {"refresh_token": "new", "scopes": auth.DOCS_WRITE_SCOPES}
+        )
+        flow = MagicMock()
+        flow.run_local_server.return_value = consented
+        monkeypatch.setattr(
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+            lambda path, scopes=None: flow,
+        )
+
+        def load(path, scopes=None):
+            # As the real loader does, refuse a file that is not a token.
+            json.loads(Path(path).read_text())
+            return MagicMock(valid=True, expired=False)
+
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file", load
+        )
+        return tmp_path
+
+    def test_a_saved_token_is_reported(self, config):
+        result = CliRunner().invoke(cli.app, ["login", "--scope", "docs"])
+        token = config / "gdrives_token_documents.json"
+        assert result.exit_code == 0
+        assert result.stderr.endswith(f"Credential: OAuth token {token}\n")
+        assert token.exists()
+
+    def test_a_token_that_was_not_saved_exits_1(self, config):
+        # The one place for a docs token holds something a consent must not
+        # replace, so the consent's token is not saved.
+        token = config / "gdrives_token_documents.json"
+        token.write_text("not json {{{")
+        result = CliRunner().invoke(cli.app, ["login", "--scope", "docs"])
+        assert result.exit_code == 1
+        assert result.stderr.endswith(
+            "Error: the consent finished, but its token was not saved, so the "
+            "next command would ask again\n"
+        )
+        assert "Credential: Application Default Credentials" not in result.stderr
+        assert token.read_text() == "not json {{{"
 
 
 class TestCommandsAnnounceAWait:
