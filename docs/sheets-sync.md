@@ -116,11 +116,12 @@ to keep in step with local files:
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
+| `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
-| `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end |
+| `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
 
 The loader checks the whole file before any request is made and reports every
@@ -204,6 +205,30 @@ the row flags, each cell with its before and after values. A value that came
 from the sheet or a file is shown with control characters escaped, so it cannot
 drive the terminal.
 
+### Where new rows go
+
+New rows for the sheet go directly after the last row holding a value in any
+column. With `insert_above` they are inserted directly above the first row
+whose column holds one of the values, and go after the last row when no row
+does. A tab that keeps its closed rows at the bottom sets
+`"insert_above": {"status": ["closed"]}`, and new rows land above the closed
+block.
+
+The column is read **as it will be once the run's pushes are in**. When one
+run closes row 5 and adds a row, the new row goes above row 5, the first
+closed row after the run, and not above the closed block as it was read. A
+column outside the projection gets no pushes, so it counts as read.
+
+The report says where the rows go: `new rows for the sheet (2), above row 5`
+in a preview, or `after row 40` when no row matches, and the rows they were
+written to after an apply (`in rows 5 to 6`). The preview and the apply find
+the row the same way.
+
+Inserted rows take the **formatting of the row above them**, so a new open
+row placed above a block of grey closed rows is not grey. Directly below the
+header they take the formatting of the row below. Conditional format rules
+apply by range and cover the new rows either way.
+
 ### The order of writes
 
 `--apply` writes in a fixed order and stops at the first failure:
@@ -272,6 +297,22 @@ A projection column the sheet lacks is refused unless `--add-missing`, which
 adds it as a blank column. A key column the sheet lacks is always refused: an
 added key column would hold blank keys.
 
+An added column lands **at its place in the projection**: directly after the
+nearest projection column before it that the sheet has, or at the front when
+there is none. Columns the sheet already has are never moved, so when the
+sheet's order differs from the projection's, a new column still follows its
+nearest earlier one, wherever that sits:
+
+| Sheet header | Projection | Header after `--add-missing` |
+|---|---|---|
+| `id, name, notes` | `id, email, name, notes` | `id, email, name, notes` |
+| `id, name` | `status, id, name, city` | `status, id, name, city` |
+| `name, id` | `id, email, name` | `name, id, email` |
+
+A new column takes the formatting of the column to its left, or of the one
+to its right at the front. Columns that `--drop-extra` deletes in the same run
+are deleted after the new ones are placed.
+
 ## Pull and push
 
 **`pull`** replaces the local file with the tab. The tab is read over the
@@ -333,7 +374,11 @@ formula cell as its result. Columns are found by header name, never by
 position, and a header that repeats a name stops the run.
 
 **Local files.** In a `.csv` or `.tsv` file every cell is a string, so leading
-zeros, booleans, and dates stay exactly as written. A `.json` file is an array
+zeros, booleans, and dates stay exactly as written. Its lines end with LF, or
+with CRLF when the tab sets `newline: "crlf"`, and the base follows the tab. A
+file is rewritten only when its records change, so one written with other
+line endings keeps them until a run changes it, and changes once then. A line
+break inside a cell is written as the cell holds it. A `.json` file is an array
 of objects with typed values, written with a fixed key order, a two-space
 indent, and a final newline, so a run that changes nothing leaves it
 byte-for-byte the same. Column names are read with surrounding whitespace
