@@ -11,11 +11,10 @@ ID, so resolving it makes no request.
 
 import copy
 import json
-import re
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid
+from helpers import FakeSheetGrid, plain
 from typer.testing import CliRunner
 
 from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo
@@ -96,11 +95,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr("gdrives.auth.build_sheets_service", build)
     monkeypatch.setattr("gdrives.auth.describe_credentials", describe)
     return project
-
-
-def plain(text: str) -> str:
-    """``text`` without terminal styling, which Typer forces on GitHub Actions."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def assert_no_request(env: Env, result) -> None:

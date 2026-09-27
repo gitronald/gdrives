@@ -11,6 +11,11 @@ from typing import Any
 import pytest
 
 
+def plain(text: str) -> str:
+    """``text`` without terminal styling, which Typer forces on GitHub Actions."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 def plant_scratch_symlink(
     monkeypatch: pytest.MonkeyPatch, directory: Path, victim: Path
 ) -> Path:

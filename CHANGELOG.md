@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `gdrives sheets-sync`, `sheets-pull`, and `sheets-push` run the `sync`, `pull`, and `push` tabs of a target in `gdrives-sheets.json` (or `--config PATH`), optionally narrowed with repeatable `--tab`. Each previews by default and writes only with `--apply`, printing its report to stdout and exiting 0 when in sync or applied, 1 for an error, and 2 when conflicts or row flags are left for a person. `sheets-sync` takes `--adopt` (for a first sync, allowed without `--apply` as a preview), `--add-missing`, `--drop-extra`, and `--prefer local|sheet`. `sheets-pull SHEET --all-tabs -o DIR` dumps every tab with no config, with `--skip TITLE` and `--format csv|tsv|json`. A config, target, or tab problem, and an option that belongs to the other form of `sheets-pull`, is refused with exit 1 before any request. A preview uses the read-only scope; with `--apply`, each command prints the credential it will use to stderr before its first request, and `sheets-sync` and `sheets-push` request the `spreadsheets` write scope. The guide is `docs/sheets-sync.md`.
 - `run_sync`, `run_pull`, and `run_push` in `gdrives.sheets` are the entry points behind those commands; each returns the run's exit code.
 - `parse_tab` parses a tab's grid already read (for example by `pull_many`) as `read_tab` does, and `read_tab` raises `EmptyTabError`, a `ValueError`, for a tab with no header row.
+- `gdrives --version` prints the installed version and exits.
 
 ### Changed
 

@@ -164,6 +164,7 @@ Default Credentials.
 Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
 and the `sheets-*` and `docs-*` commands) resolves it against the cache.
+`gdrives --version` prints the installed version.
 
 ### List Drive contents
 

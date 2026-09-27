@@ -10,6 +10,31 @@ import typer
 
 app = typer.Typer(help="Google Drive file management tools.")
 
+
+def _version(value: bool) -> None:
+    """Print the installed package's version and exit, for ``--version``."""
+    if value:
+        from importlib.metadata import version
+
+        print(f"gdrives {version('gdrives')}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the version and exit.",
+            callback=_version,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """The options of ``gdrives`` itself, given before any command."""
+
+
 # The "-y/--yes" flag shared by every command that confirms before writing.
 YesFlag = Annotated[
     bool, typer.Option("-y", "--yes", help="Skip the confirmation prompt")
