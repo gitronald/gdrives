@@ -731,3 +731,44 @@ def test_unreferenced_duplicate_headers_do_not_block_update():
     svc = FakeSheetsService(get={"values": [["id", "unused", "unused"], ["X"]]})
     set_by_match(svc, "sid", "S", {"id": "X"}, {"id": "Y"})
     assert svc.calls[-1][1]["body"]["data"] == [{"range": "'S'!A2", "values": [["Y"]]}]
+
+
+# -- package surface --
+
+
+SUBMODULES = ("a1", "commands", "files", "match", "rules", "values")
+
+
+def _defined_public(module):
+    """Public functions and constants a submodule defines (not ones it imports)."""
+    return {
+        name: obj
+        for name, obj in vars(module).items()
+        if not name.startswith("_")
+        and (
+            getattr(obj, "__module__", None) == module.__name__
+            or (name.isupper() and isinstance(obj, str))
+        )
+    }
+
+
+class TestPackageSurface:
+    """``gdrives.sheets`` re-exports every public name its submodules define."""
+
+    def test_all_matches_submodule_definitions(self):
+        import importlib
+
+        import gdrives.sheets as pkg
+
+        defined = {}
+        for sub in SUBMODULES:
+            module = importlib.import_module(f"gdrives.sheets.{sub}")
+            defined.update(_defined_public(module))
+        assert sorted(pkg.__all__) == sorted(defined)
+        for name, obj in defined.items():
+            assert getattr(pkg, name) is obj
+
+    def test_all_has_no_duplicates(self):
+        import gdrives.sheets as pkg
+
+        assert len(pkg.__all__) == len(set(pkg.__all__))
