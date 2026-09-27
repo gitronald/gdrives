@@ -17,7 +17,7 @@ import pytest
 from helpers import FakeSheetGrid, plain
 from typer.testing import CliRunner
 
-from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo
+from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo, build_sheets_service
 from gdrives.cli import app
 from gdrives.sheets import CONFIG_NAME, read_records, run_pull, write_values_csv
 
@@ -84,7 +84,7 @@ def env(tmp_path, monkeypatch):
         project.scopes.append(scopes)
         return grid
 
-    def describe(scopes=None):
+    def describe(scopes=None, *, force=False):
         project.described.append(scopes)
         return CredentialInfo(
             kind="service_account",
@@ -101,6 +101,40 @@ def assert_no_request(env: Env, result) -> None:
     """Nothing was resolved, authenticated, announced, or sent."""
     assert env.scopes == [] and env.described == [] and env.grid.calls == []
     assert "Spreadsheet ID" not in result.stderr
+
+
+class TestAWaitIsAnnounced:
+    """The credential line when authentication is about to wait on a person."""
+
+    LINE = "Credential: OAuth token token.json, refreshed first\n"
+
+    @pytest.fixture(autouse=True)
+    def expired_token(self, env, monkeypatch):
+        """The real service builder, with a token that is refreshed first."""
+        info = CredentialInfo(kind="oauth", refresh=True, source=Path("token.json"))
+        monkeypatch.setattr(
+            "gdrives.auth.describe_credentials",
+            lambda scopes=None, *, force=False: info,
+        )
+        monkeypatch.setattr("gdrives.auth.build_sheets_service", build_sheets_service)
+        monkeypatch.setattr(
+            "gdrives.auth.authenticate", lambda scopes=None, *, force=False: "creds"
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda api, version, credentials: env.grid,
+        )
+
+    def test_on_a_preview(self, env):
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert result.stderr == "Spreadsheet ID: SHEET\n" + self.LINE
+        assert env.writes() == []
+
+    def test_once_with_apply(self, env):
+        result = env.invoke("sheets-pull", "roster", "--apply")
+        assert result.exit_code == 0
+        assert result.stderr == self.LINE + "Spreadsheet ID: SHEET\n"
 
 
 class TestSheetsSync:

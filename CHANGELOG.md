@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A column that a tab's `schema` declares `date` or `datetime` is read from the sheet as ISO 8601 whatever the sheet displays, by a second read of the declared columns as serial numbers. A sync, its re-read guard and read-back, and a pull all read that way. A cell holding text is left as it is. A base that holds a date's display text where the serial gives another value, such as a date-time whose format hides its milliseconds, reports that cell as a sheet edit on the first run and folds the ISO value in. A tab with no declared date column is read once, as before.
 - `write_records` lists every cell of a `.json` file that does not parse as its declared type, each by row position and column, where it raised on the first one. The message still starts with the path. An unknown type in `types` is refused whatever the rows hold.
 
+## [0.12.0] - 2026-09-27
+
+### Added
+
+- `gdrives login` grants OAuth access with or without a terminal attached, for a run started by a tool that captures stdin while a person still watches its output. It prints the consent URL, waits for the browser to come back, caches the token, and prints the credential line. `--scope read|sheets|docs|drive` picks the access (`read` by default), and `--timeout SECONDS` (300 by default) exits 1, with every token file untouched, when nobody consents in time. It also exits 1 when the token of a consent could not be saved, since the next command would ask again. A cached token that already serves the scope is kept, and nothing is asked. It is also the way to grant again after a token's refresh has failed.
+- `authenticate_oauth`, `authenticate`, `describe_credentials`, and the `build_*` service helpers take `force=True`: a consent that is needed runs whether or not stdin is a terminal, and OAuth that is not configured raises `gdrives.auth.ConsentError` instead of falling through to a service account or ADC. `authenticate_oauth` also takes `timeout=`, in seconds.
+- `gdrives.auth.announce_credentials` prints the credential line for a scope set, and inside a `gdrives.auth.announcing_credentials()` block every service that is built announces a coming consent or refresh by itself. A library caller's stderr is left alone outside one.
+
+### Changed
+
+- A cached OAuth token whose grant is broader than the request is used as it is, instead of being replaced through a new consent. A token granted `drive` serves a request for `drive.readonly`, `drive.file`, `drive.metadata`, `spreadsheets`, or `documents`, and each write scope serves its own `.readonly`. A token that a caller wrote itself under `gdrives_token_rw.json` with the `drive` scope, before 0.6.0 took that name for the `spreadsheets` scope, is no longer replaced by the first Sheets write command. Such a token is loaded and refreshed with the scopes it records.
+- A consent never overwrites a token file that holds a grant the new one does not include, no recorded scopes, or content that does not parse. The new token is written under the name derived from its scopes (`gdrives_token_spreadsheets.json` for the Sheets write scope, `gdrives_token_drive-readonly.json` for read-only), a warning names both files, and later runs look in both places. When that name is taken as well, the token serves the run and is not saved.
+- The names `gdrives_token*.json` in `$GOOGLE_CONFIG_DIR` are reserved for the tokens `gdrives` writes. A caller that keeps a token of its own there should give it another name.
+- Every command prints the credential line to stderr when its authentication is about to wait on an interactive consent or a token refresh, so a preview waiting on a browser consent no longer looks hung. `sheets-sync`, `sheets-pull`, and `sheets-push` still print it on every `--apply`. A caller that treats any stderr output as a failure will see this line on a preview.
+- The consent URL is flushed as it is printed, so it is visible while the flow waits even when stdout is not a terminal.
+
 ## [0.11.0] - 2026-09-27
 
 ### Added
