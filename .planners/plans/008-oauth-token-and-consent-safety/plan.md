@@ -151,3 +151,33 @@ and the TTY check.
   and it leaves the write command unable to run.
 - **Order with plan 004.** If 004 narrows `mv` to `drive.metadata` first, the table
   gains that pair and `gdrives login --scope drive` asks for what `mv` asks for.
+
+## Log
+
+### 2026-09-27 — runs before plan 007, which may overlap it
+
+Decided by the owner on 2026-09-27T11:47:03-07:00, before either plan was activated:
+this plan is implemented first, and plan
+[007](../007-sheets-sync-adoption-gaps/plan.md) may be in progress at the same time, in
+its own worktree.
+
+The two share no design. They share files:
+
+| File | This plan | Plan 007 |
+|---|---|---|
+| `gdrives/sheets/commands.py` | Item 4: the credential line moves out, and prints on a preview | Step g: retry notices, `--all-tabs` options, and `sheets-widths` |
+| `gdrives/cli.py` | `gdrives login`, and the credential line on every command | Step g: one command and two options |
+| `CHANGELOG.md`, `README.md`, the project `CLAUDE.md` | Lines added | Lines added by every step |
+| `docs/sheets-sync.md` | Its section on credentials, if item 4 changes what it says | Steps a to h |
+
+What follows from the order:
+
+- This plan is cut from `dev` and merges into `dev` without waiting for 007. It is the
+  smaller of the two, and M1 is a hazard at upgrade time.
+- 007's overlap is in its step g, the seventh of eight. Once this plan has merged,
+  007's umbrella branch takes `dev` in before step g starts, so that step g builds on
+  the moved credential helper.
+- This plan has no live tests, so 007 has the Sheets quota to itself.
+- If this plan ships as a release of its own, its changelog lines are promoted before
+  007 merges into `dev`. 007 lands through one umbrella PR at its end, so its lines do
+  not reach `[Unreleased]` on `dev` before then.
