@@ -141,6 +141,15 @@ class TestRefusals:
             )
         assert grid.calls == []
 
+    @pytest.mark.parametrize(
+        "the_plan", [plan(), plan([push("a", "name", "x")])], ids=["empty", "pushes"]
+    )
+    def test_a_bad_insert_above_is_refused_without_appends(self, the_plan):
+        grid, table = sheet(*ROWS)
+        with pytest.raises(ValueError, match="column 'status' is not in the header"):
+            apply_plan(grid, "S", table, the_plan, insert_above={"status": "x"})
+        assert grid.calls == []
+
 
 class TestGuard:
     """The tab is read again first; any change aborts with nothing written."""
