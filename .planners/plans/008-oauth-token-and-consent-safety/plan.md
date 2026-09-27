@@ -1,10 +1,10 @@
 ---
 id: 8
 slug: oauth-token-and-consent-safety
-status: active
+status: done
 branch: feature/oauth-token-and-consent-safety
 created: 2026-09-27T11:03:57-07:00
-concluded:
+concluded: 2026-09-27T13:47:01-07:00
 pr: https://github.com/gitronald/gdrives/pull/45
 ---
 
@@ -275,3 +275,70 @@ attempt in the browser costs nothing while the command is still waiting.
 
 This closes the first item under "Still open" in the entry above. The second, the
 untracked project `CLAUDE.md`, stays open until the branch merges.
+
+### 2026-09-27 — review gate and close
+
+Written at 2026-09-27T13:47:41-07:00. The PR reported a conflict with `dev`, in the
+generated index only: both branches had rewritten this plan's row. `dev` was merged
+into the branch (`c00c143`) and the index regenerated (`c824db8`).
+
+#### Review follow-up
+
+The review ran at the medium level: a finder for correctness and one for reuse and
+simplification, then a verifier per file. Nine candidates, two rejected, and one added
+by a last sweep. It is posted on the PR.
+
+Actioned, each with a test (`91c872f`, `4e3ceeb`, and the docs in `bba6ab5`):
+
+| Finding | Fix | Test |
+|---|---|---|
+| After a consent whose token was not saved, `gdrives login` printed `Credential: Application Default Credentials` and exited 0 | `login` reads the token files back, and exits 1 when no cached OAuth token serves the scope | `TestLoginReadsTheTokenBack`, on real files in a temporary config directory |
+| Any `AttributeError` inside the flow was reported as a timeout | The catch is `WSGITimeoutError` where the library has it (`_timeout_error`), and the bare `AttributeError` only where it does not | `test_another_attribute_error_is_not_reported_as_a_timeout`, and the old release simulated in `test_running_out_raises_and_touches_no_token` |
+| `describe_credentials(force=True)` described a service account or ADC where `authenticate(force=True)` raises | Both raise the `ConsentError` of one helper, `_no_consent` | `test_described_as_the_error_authenticate_raises` |
+| `_token_covers` and `_token_path` lost their callers to `_load_token` and `_token_paths`, and were kept alive by their own tests | Both removed | Their tests moved onto `_recorded_scopes`, `_load_token`, and `_token_name` |
+
+Conscious no-ops:
+
+- Token files are read twice per scope set in a command, once to describe and once to
+  authenticate. These are two small local reads per process, and merging them would
+  give `describe_credentials` side effects.
+- `_write_consent_token` builds the list of token paths that `_consent_path` builds
+  again. It is string building, with no I/O.
+- A caller's own token that now serves a request is written back after a refresh, in
+  the shape of google-auth's `to_json`, so keys of the caller's own beyond those would
+  be dropped. The grant and the refresh token are kept, and not writing it back would
+  cost a refresh on every run.
+
+Rejected by the verifiers: the repeated read in `login` (a one-shot command), and a
+race between choosing the token file and writing it, which `dev` has too.
+
+Checks after the fixes: `ruff check`, `ruff format --check`, `pyrefly check`, and 1614
+tests at 100% coverage. The 28 live integration tests were deselected, as CI skips
+them, which left the Sheets quota to plan 007.
+
+The second item under "Still open", the untracked project `CLAUDE.md`: the worktree's
+copy differs from the main checkout's only by this plan's lines, and the close copies
+it over after the merge, before the worktree is removed.
+
+## Retrospective
+
+- The design held. All four items shipped as written, and the three open questions
+  were settled by evidence, not by preference: the scope table came from the
+  per-method lists of 84 methods, which also showed why `drive.file` had to stay out
+  although the lists allow it.
+- Item 4 became one seam and not a call per command. Announcing where credentials are
+  made caught the Drive service that resolves a path, which a call in each command
+  would have missed. A rule that every command must follow belongs where every
+  command already passes.
+- The tests of `login` faked both the consent and the description, so they could only
+  confirm the wiring. The false credential line showed up once a test ran on real
+  token files. A command whose last line reports the state of the disk needs one test
+  that reads the disk.
+- Replacing a helper's callers left the helper and its tests behind, green and
+  unused. After a lookup moves to a new function, grep the old one's call sites
+  before the branch is pushed; its own tests say nothing about whether it is used.
+- Running the command with no terminal found the buffered URL, and the owner's manual
+  run found the URL cut by a wrapped line. Neither was reachable from a unit test, so
+  the manual check in the Testing section was worth its place.
+- The only conflict with plan 007 so far was the generated index. The shared source
+  files are still ahead, in 007's step g, which takes `dev` in first.
