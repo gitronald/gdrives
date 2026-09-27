@@ -75,6 +75,7 @@ class TestValidConfig:
                     "newline": "crlf",
                     "blank_keys": "partial",
                     "on_invalid": "hold",
+                    "clear_links": True,
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -112,6 +113,7 @@ class TestValidConfig:
                             newline="crlf",
                             blank_keys="partial",
                             on_invalid="hold",
+                            clear_links=True,
                         ),
                         TabConfig(
                             title="Summary",
@@ -136,6 +138,7 @@ class TestValidConfig:
         assert tab.newline == "lf"
         assert tab.blank_keys == "refuse"
         assert tab.on_invalid == "refuse"
+        assert tab.clear_links is False
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -425,6 +428,25 @@ class TestTabProblems:
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
         )
+
+    @pytest.mark.parametrize("clear_links", ["yes", 1, None])
+    def test_clear_links_not_a_bool(self, clear_links):
+        self.tab_refused(
+            members(clear_links=clear_links), "'clear_links' must be true or false"
+        )
+
+    @pytest.mark.parametrize("clear_links", [True, False])
+    def test_clear_links_on_a_pull_tab(self, clear_links):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "clear_links": clear_links},
+            "'clear_links' does not apply to a pull tab",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_clear_links_on_a_sync_or_a_push_tab(self, mode):
+        tab = members(mode=mode, clear_links=True)
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].clear_links is True
 
     @pytest.mark.parametrize("on_invalid", ["skip", "Hold", "", True, None, 1])
     def test_on_invalid_not_a_setting(self, on_invalid):

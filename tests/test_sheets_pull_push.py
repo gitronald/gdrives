@@ -523,6 +523,105 @@ class TestPushRows:
         assert report.local_label == "the cases" and not report.wrote_sheet
 
 
+class TestPushClearLinks:
+    HEADER = ["id", "site", "note"]
+    ROWS = [
+        ["a", "https://example.com/a", "see https://x.io"],
+        ["b", "example.com", "a@x.io"],
+    ]
+
+    def push(self, grid, **options):
+        rows = as_records(*self.ROWS, header=self.HEADER)
+        return push_rows(grid, "S", "T", self.HEADER, rows, apply=True, **options)
+
+    def test_a_push_links_what_the_api_links(self):
+        grid = FakeSheetGrid({"T": []})
+        self.push(grid)
+        assert grid.links("T") == {
+            (2, 2): "https://example.com/a",
+            (3, 2): "http://example.com",
+        }
+
+    def test_clear_links_leaves_the_tab_with_none(self):
+        grid = FakeSheetGrid({"T": [self.HEADER, ["a", "old", "see the docs"]]})
+        grid.tab("T").formats[(1, 2)] = {
+            "runs": [
+                {"startIndex": 4, "format": {"link": {"uri": "https://docs.example"}}}
+            ],
+            "bold": True,
+        }
+        report = self.push(grid, clear_links=True)
+        assert grid.values("T") == [self.HEADER, *self.ROWS]
+        assert grid.links("T") == {}
+        assert grid.format("T", 2, 3) == {"bold": True}
+        assert report.wrote_sheet and report.exit_code == 0
+        assert writes(grid) == ["values.update", "spreadsheets.batchUpdate"]
+        assert grid.methods[-3:] == [
+            "spreadsheets.get",
+            "spreadsheets.batchUpdate",
+            "spreadsheets.get",
+        ]
+
+    def test_a_push_of_no_link_costs_one_read_and_no_write(self):
+        grid = FakeSheetGrid({"T": []})
+        rows = as_records(*ROWS)
+        push_rows(grid, "S", "T", HEADER, rows, apply=True, clear_links=True)
+        assert writes(grid) == ["values.update"]
+        assert grid.methods[-2:] == ["values.get", "spreadsheets.get"]
+
+    def test_a_preview_and_an_unchanged_tab_clear_nothing(self):
+        grid = FakeSheetGrid({"T": [self.HEADER, *self.ROWS]})
+        rows = as_records(*self.ROWS, header=self.HEADER)
+        push_rows(grid, "S", "T", self.HEADER, rows, clear_links=True)
+        push_rows(grid, "S", "T", self.HEADER, rows, apply=True, clear_links=True)
+        assert writes(grid) == [] and len(grid.links("T")) == 2
+
+    def test_a_link_that_remains_fails_the_read_back(self):
+        grid = FakeSheetGrid({"T": []})
+        grid.edit_externally(
+            lambda g: g.write("T", [["a", "example.org"]], row=2),
+            before="spreadsheets.get",
+            occurrence=4,
+        )
+        with pytest.raises(ReadBackError) as raised:
+            self.push(grid, clear_links=True)
+        assert str(raised.value) == (
+            "tab 'T': the read-back found links the push did not clear: row 2, "
+            "column 'site' still holds a link to ['http://example.org']"
+        )
+
+    def test_a_grid_too_large_to_decode_is_reported_for_its_tab(self, tmp_path):
+        import httplib2.decode
+
+        tabs = {
+            "T": {"mode": "push", "local": "t.csv", "clear_links": True},
+            "U": {"mode": "push", "local": "u.csv"},
+        }
+        target = make_target(tmp_path, tabs)
+        for tab in target.tabs:
+            write_local(tab, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": [], "U": []})
+        # The third spreadsheets.get of tab T is the grid read for its links.
+        error = httplib2.decode.DecodeRatioError("too much")
+        grid.fail("spreadsheets.get", error, occurrence=3)
+        report = run_target(grid, "S", target, "push", apply=True)
+        first, second = report.tabs
+        assert first.error == (
+            "the grid read of \"'T'!A:C\" came back too large to decode (too "
+            "much); narrow the range or the fields mask"
+        )
+        assert first.wrote_sheet and second.error is None and second.wrote_sheet
+        assert grid.values("U") == [self.HEADER, *self.ROWS]
+        assert report.exit_code == 1
+
+    def test_a_tab_takes_the_setting_from_its_config(self, tmp_path):
+        tab = one_tab(tmp_path, "push", clear_links=True)
+        write_local(tab, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": []})
+        push_tab(grid, "S", tab, apply=True)
+        assert grid.links("T") == {}
+
+
 class TestHooks:
     def test_a_pull_checks_the_rows_the_sheet_holds(self, tmp_path):
         tab = one_tab(tmp_path, "pull", columns=["id", "amt"])

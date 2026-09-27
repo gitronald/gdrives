@@ -362,7 +362,6 @@ def clear_link_format(
     positions, known = _wanted(service, spreadsheet_id, tab, columns, header)
     if not positions or (rows is not None and not rows):
         return
-    spans = [(None, None)] if rows is None else _adjacent([row - 1 for row in rows])
     partial: list[LinkedCell] = []
     if runs:
         partial = linked_cells(
@@ -370,23 +369,45 @@ def clear_link_format(
         )
     if sheet_id is None:
         sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
+    requests = _link_clears(sheet_id, positions, rows, partial)
+    batch_update_spreadsheet(service, spreadsheet_id, requests)
 
-    def cleared(
-        field: str, across: tuple[int, int], down: tuple[int | None, int | None]
-    ) -> dict[str, Any]:
-        span: dict[str, Any] = {"sheetId": sheet_id}
-        if down[0] is not None:
-            span |= {"startRowIndex": down[0], "endRowIndex": down[1]}
-        span |= {"startColumnIndex": across[0], "endColumnIndex": across[1]}
-        return {"repeatCell": {"range": span, "cell": {}, "fields": field}}
 
+def link_clear(
+    sheet_id: int,
+    field: str,
+    across: tuple[int, int],
+    down: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """The ``repeatCell`` that clears ``field`` over a block of cells.
+
+    ``across`` and ``down`` are 0-based, end-exclusive column and row bounds;
+    with no ``down`` the block is every row. The cell sent is empty, so each
+    field the mask names is cleared, and no other.
+    """
+    span: dict[str, Any] = {"sheetId": sheet_id}
+    if down is not None:
+        span |= {"startRowIndex": down[0], "endRowIndex": down[1]}
+    span |= {"startColumnIndex": across[0], "endColumnIndex": across[1]}
+    return {"repeatCell": {"range": span, "cell": {}, "fields": field}}
+
+
+def _link_clears(
+    sheet_id: int,
+    positions: Mapping[str, int],
+    rows: Sequence[int] | None,
+    partial: Sequence[LinkedCell],
+) -> list[dict[str, Any]]:
+    """The requests that clear the cell link of a block, and the runs of ``partial``."""
+    spans = [None] if rows is None else _adjacent([row - 1 for row in rows])
     requests = [
-        cleared(CELL_LINK_FIELD, across, down)
+        link_clear(sheet_id, CELL_LINK_FIELD, across, down)
         for across in _adjacent(list(positions.values()))
         for down in spans
     ]
     requests.extend(
-        cleared(
+        link_clear(
+            sheet_id,
             RUNS_FIELD,
             (positions[cell.column], positions[cell.column] + 1),
             (cell.row - 1, cell.row),
@@ -394,7 +415,43 @@ def clear_link_format(
         for cell in partial
         if cell.in_runs and (rows is None or cell.row in rows)
     )
+    return requests
+
+
+def strip_links(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    columns: Sequence[str],
+    *,
+    header: Sequence[str],
+    sheet_id: int,
+    rows: Sequence[int] | None = None,
+) -> list[LinkedCell]:
+    """Clear the links the cells of ``columns`` hold, and return the ones left.
+
+    For a run that has just written those cells and knows the tab's
+    ``header`` and ``sheet_id``. One grid read finds the links. With none
+    there is nothing to write, and the result is empty. Otherwise the links
+    found are cleared as :func:`clear_link_format` clears them, and a second
+    grid read returns the cells that still hold one, which the caller reports
+    as a failed read-back. ``rows`` bounds both what is cleared and what is
+    returned.
+    """
+
+    def found() -> list[LinkedCell]:
+        cells = linked_cells(
+            service, spreadsheet_id, tab, columns=columns, header=header
+        )
+        return [cell for cell in cells if rows is None or cell.row in rows]
+
+    linked = found()
+    if not linked:
+        return []
+    positions = _positions(list(header), list(columns), tab)
+    requests = _link_clears(sheet_id, positions, rows, linked)
     batch_update_spreadsheet(service, spreadsheet_id, requests)
+    return found()
 
 
 def delete_columns(

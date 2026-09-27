@@ -39,6 +39,12 @@ from gdrives.files import Service
 from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import row_key, to_cell
 from gdrives.sheets.merge import MergePlan
+from gdrives.sheets.structure import (
+    CELL_LINK_FIELD,
+    RUNS_FIELD,
+    link_clear,
+    linked_cells,
+)
 from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.values import (
     RAW,
@@ -258,13 +264,18 @@ def _row_requests(
     row_count: int,
     at: int,
     insert: bool,
+    clear_links: bool = False,
 ) -> list[dict[str, Any]]:
     """The requests that open rows at 0-based row ``at`` and fill them.
 
     With ``insert`` the rows are inserted there, shifting the rows below down;
     otherwise they are written in place, after appending grid rows if they
-    would not fit.
+    would not fit. With ``clear_links`` the cell link is in the mask of the
+    write, so a URL is written with no link, in the same request.
     """
+    fields = "userEnteredValue"
+    if clear_links:
+        fields += f",{CELL_LINK_FIELD}"
     count = len(plan.appends)
     requests: list[dict[str, Any]] = []
     if insert:
@@ -313,11 +324,37 @@ def _row_requests(
                         }
                         for new in plan.appends
                     ],
-                    "fields": "userEnteredValue",
+                    "fields": fields,
                 }
             }
         )
     return requests
+
+
+def _check_links(
+    service: Service, spreadsheet_id: str, fresh: Table, result: ApplyResult
+) -> None:
+    """Read the links of the cells a run wrote, raising if one holds any."""
+    written = {*result.pushed_cells}
+    written.update(
+        (row, column)
+        for row in result.appended_rows
+        for column in result.appended_columns
+    )
+    columns = sorted({column for _, column in written}, key=fresh.header.index)
+    found = linked_cells(
+        service, spreadsheet_id, fresh.tab, columns=columns, header=fresh.header
+    )
+    left = [cell for cell in found if (cell.row, cell.column) in written]
+    if left:
+        raise ReadBackError(
+            f"tab {fresh.tab!r}: the read-back found links the run did not clear: "
+            + "; ".join(
+                f"row {cell.row}, column {cell.column!r} still holds a link to "
+                f"{list(cell.targets)}"
+                for cell in left
+            )
+        )
 
 
 def apply_plan(
@@ -327,6 +364,7 @@ def apply_plan(
     plan: MergePlan,
     *,
     insert_above: Mapping[str, Any] | None = None,
+    clear_links: bool = False,
 ) -> ApplyResult:
     """Write ``plan``'s pushed cells and new rows to ``table``'s tab, then verify.
 
@@ -344,6 +382,16 @@ def apply_plan(
     row when no row does (:func:`insert_point`). ``column`` may be any header
     column, in the projection or not. Inserted rows take the formatting of
     the row above them, or of the row below when that row is the header.
+
+    The Sheets API links text that is a URL or a bare domain when it is
+    written. ``clear_links`` leaves the cells this run writes, and no others,
+    with no link. New rows are written with the link in their mask, which
+    costs nothing. A pushed cell has its link and its text format runs
+    cleared in the run's ``spreadsheets.batchUpdate``, after the inserts, so
+    a run with pushes and no new rows sends one request more. The links of
+    the written cells are then read back
+    (:func:`~gdrives.sheets.structure.linked_cells`), and
+    :class:`ReadBackError` is raised when one remains.
 
     A plan with nothing to push or add makes no request at all. Raises
     ValueError, before any request, when the plan does not fit ``table`` (a
@@ -364,16 +412,37 @@ def apply_plan(
     requests: list[dict[str, Any]] = []
     at = fresh.last_row  # 0-based: the row after the last one holding anything
     inserted = False
-    if count:
-        if insert_above is not None:
-            above = insert_point(fresh, plan, insert_above)
-            if above is not None:
-                at, inserted = above - 1, True
+    if count and insert_above is not None:
+        above = insert_point(fresh, plan, insert_above)
+        if above is not None:
+            at, inserted = above - 1, True
+    shift = count if inserted else 0
+
+    def after(row: int) -> int:
+        """Where a row of the fresh read sits once the new rows are in."""
+        return row + shift if row > at else row
+
+    pushed_cells = [
+        (after(fresh.row_numbers[cell.key]), cell.column) for cell in plan.pushes
+    ]
+    if count or (clear_links and pushed_cells):
         # Read before any write, so a failed read leaves the tab untouched.
         grid = tab_grid(service, spreadsheet_id, fresh.tab)
-        requests = _row_requests(
-            fresh, plan, grid.sheet_id, grid.row_count, at, inserted
-        )
+        if count:
+            requests = _row_requests(
+                fresh, plan, grid.sheet_id, grid.row_count, at, inserted, clear_links
+            )
+        if clear_links:
+            # After the inserts, so by the rows as they are once those are in.
+            requests.extend(
+                link_clear(
+                    grid.sheet_id,
+                    f"{CELL_LINK_FIELD},{RUNS_FIELD}",
+                    (fresh.header.index(column), fresh.header.index(column) + 1),
+                    (row - 1, row),
+                )
+                for row, column in pushed_cells
+            )
 
     quoted = a1_quote(fresh.tab)
     data = [
@@ -391,24 +460,19 @@ def apply_plan(
         batch_update_spreadsheet(service, spreadsheet_id, requests)
     verify(service, spreadsheet_id, table, plan)
 
-    shift = count if inserted else 0
-
-    def after(row: int) -> int:
-        """Where a row of the fresh read sits once the new rows are in."""
-        return row + shift if row > at else row
-
     pushed_rows = sorted({fresh.row_numbers[cell.key] for cell in plan.pushes})
     written = sorted(table.columns, key=fresh.header.index) if count else []
-    return ApplyResult(
+    result = ApplyResult(
         pushed=len(plan.pushes),
         appended=count,
         pushed_rows=[after(row) for row in pushed_rows],
         appended_rows=list(range(at + 1, at + 1 + count)),
-        pushed_cells=[
-            (after(fresh.row_numbers[cell.key]), cell.column) for cell in plan.pushes
-        ],
+        pushed_cells=pushed_cells,
         appended_columns=written,
     )
+    if clear_links:
+        _check_links(service, spreadsheet_id, fresh, result)
+    return result
 
 
 def verify(

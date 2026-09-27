@@ -83,6 +83,7 @@ from gdrives.sheets.structure import (
     ensure_tabs,
     place_columns,
     set_column_widths,
+    strip_links,
 )
 from gdrives.sheets.table import (
     EmptyTabError,
@@ -801,7 +802,12 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
 
     try:
         result = apply_plan(
-            service, spreadsheet_id, table, plan, insert_above=tab.insert_above
+            service,
+            spreadsheet_id,
+            table,
+            plan,
+            insert_above=tab.insert_above,
+            clear_links=tab.clear_links,
         )
     except ReadBackError:
         report.wrote_sheet = True  # the writes went out; they did not read back
@@ -1108,6 +1114,7 @@ def push_tab(
         check=check,
         warn=warn,
         widths=tab.widths,
+        clear_links=tab.clear_links,
         label=_named(store),
         report=report,
     )
@@ -1129,6 +1136,7 @@ def push_rows(
     check: Check | None = None,
     warn: Check | None = None,
     widths: Mapping[str, int] | None = None,
+    clear_links: bool = False,
     label: str = "rows",
     report: TabReport | None = None,
 ) -> TabReport:
@@ -1162,6 +1170,13 @@ def push_rows(
     holding exactly the rows is not written. ``widths`` are set after a
     write. ``report`` is filled in place when given, so a caller keeps a
     partial report on an error.
+
+    The Sheets API links text that is a URL or a bare domain when it is
+    written. With ``clear_links`` the links of the columns pushed are cleared
+    after the write (:func:`~gdrives.sheets.structure.strip_links`), which
+    costs one grid read when the push left none, and a write and a second
+    read when it left some. A link that remains raises
+    :class:`ReadBackError`.
     """
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
@@ -1221,7 +1236,7 @@ def push_rows(
     height = max(len(grid), len(expected))
     width = max(max((len(row) for row in grid), default=0), len(out))
     # The grid is grown first: a write outside it fails.
-    _grow(service, spreadsheet_id, title, height, width)
+    sheet_id = _grow(service, spreadsheet_id, title, height, width)
     padded = [
         [*row, *[""] * (width - len(row))]
         for row in [*expected, *[list[str]()] * (height - len(expected))]
@@ -1235,6 +1250,20 @@ def push_rows(
     )
     report.wrote_sheet = True
     _check_push(service, spreadsheet_id, title, expected, input_option)
+    if clear_links:
+        left = strip_links(
+            service, spreadsheet_id, title, out, header=out, sheet_id=sheet_id
+        )
+        if left:
+            raise ReadBackError(
+                f"tab {title!r}: the read-back found links the push did not "
+                "clear: "
+                + "; ".join(
+                    f"row {cell.row}, column {cell.column!r} still holds a link "
+                    f"to {list(cell.targets)}"
+                    for cell in left
+                )
+            )
     if widths:
         set_column_widths(service, spreadsheet_id, title, widths)
         report.wrote_widths = True
@@ -1243,8 +1272,11 @@ def push_rows(
 
 def _grow(
     service: Service, spreadsheet_id: str, title: str, rows: int, columns: int
-) -> None:
-    """Grow the tab's grid to ``rows`` by ``columns``; no request when it fits."""
+) -> int:
+    """Grow the tab's grid to ``rows`` by ``columns``; no request when it fits.
+
+    Returns the tab's ``sheetId``, which the read of its size came with.
+    """
     grid = tab_grid(service, spreadsheet_id, title)
     requests: list[dict[str, Any]] = []
     for dimension, need, have in (
@@ -1263,6 +1295,7 @@ def _grow(
             )
     if requests:
         batch_update_spreadsheet(service, spreadsheet_id, requests)
+    return grid.sheet_id
 
 
 def _row(grid: Sequence[list[str]], number: int) -> list[str]:

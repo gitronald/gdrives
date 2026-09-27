@@ -17,6 +17,7 @@ from gdrives.sheets import (
     linked_cells,
     place_columns,
     set_column_widths,
+    strip_links,
 )
 
 READ = "values.get"
@@ -538,6 +539,55 @@ class TestClearLinkFormat:
         with pytest.raises(ValueError, match=message):
             clear_link_format(grid, "S", "T", **options)
         assert STRUCTURE not in grid.methods
+
+
+class TestStripLinks:
+    HEADER = ["id", "site", "", "note", "mail"]
+
+    def strip(self, grid, columns, **options):
+        return strip_links(
+            grid, "S", "T", columns, header=self.HEADER, sheet_id=0, **options
+        )
+
+    def test_the_links_found_are_cleared_and_none_remains(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["site", "note"]) == []
+        assert grid.methods == [GRID, STRUCTURE, GRID]
+        assert grid.links("T") == {(2, 3): "http://gap.io"}
+        assert grid.format("T", 4, 2) == {"bold": True}
+        assert grid.format("T", 3, 4) == {
+            "runs": [{"startIndex": 0, "format": {"bold": True}}]
+        }
+
+    def test_columns_with_no_link_cost_one_read_and_no_write(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["id", "mail"]) == []
+        assert grid.methods == [GRID]
+
+    def test_rows_bound_what_is_cleared_and_what_is_reported(self):
+        grid = linked_grid()
+        assert self.strip(grid, ["site", "note"], rows=[3, 4]) == []
+        assert [(cell.row, cell.column) for cell in linked_cells(grid, "S", "T")] == [
+            (2, "site"),
+            (2, "note"),
+        ]
+        assert self.strip(grid, ["site", "note"], rows=[7]) == []
+
+    def test_a_link_that_comes_back_is_returned(self):
+        grid = linked_grid()
+        grid.edit_externally(
+            lambda g: g.write("T", [["a", "example.org"]], row=2),
+            before=GRID,
+            occurrence=2,
+        )
+        assert self.strip(grid, ["site"]) == [
+            LinkedCell(2, "site", ("http://example.org",), in_runs=False)
+        ]
+
+    def test_no_columns_asks_nothing(self):
+        grid = linked_grid()
+        assert self.strip(grid, []) == []
+        assert grid.calls == []
 
 
 class TestDeleteColumns:

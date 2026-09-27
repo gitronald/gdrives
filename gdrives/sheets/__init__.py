@@ -143,9 +143,11 @@ from gdrives.sheets.structure import (
     clear_link_format,
     delete_columns,
     ensure_tabs,
+    link_clear,
     linked_cells,
     place_columns,
     set_column_widths,
+    strip_links,
 )
 from gdrives.sheets.sync import (
     STAGES,
@@ -289,6 +291,7 @@ __all__ = [
     "hex_to_color",
     "index_rows",
     "insert_point",
+    "link_clear",
     "linked_cells",
     "list_conditional_rules",
     "list_tabs",
@@ -331,6 +334,7 @@ __all__ = [
     "set_by_match",
     "set_column_widths",
     "split_a1",
+    "strip_links",
     "sync_tab",
     "tab_grid",
     "tab_sheet_ids",
