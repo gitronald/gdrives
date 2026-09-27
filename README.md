@@ -37,7 +37,13 @@ gdrives/
 ├── download.py  # Download a single file, or recurse a folder, to local disk
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
-├── sheets.py    # Google Sheet cell ranges and conditional format rules (Sheets API v4)
+├── sheets/      # Google Sheet cell ranges and conditional format rules (Sheets API v4)
+│   ├── values.py    # spreadsheets.values.* wrappers and tab lookups
+│   ├── a1.py        # A1 notation and GridRange conversion
+│   ├── match.py     # Keyed row updates (find_rows, set_by_match)
+│   ├── rules.py     # Conditional format rules
+│   ├── files.py     # Local CSV/TSV interchange
+│   └── commands.py  # run_* entry points for the sheets-* commands
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
 ```
 

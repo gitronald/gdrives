@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `gdrives.sheets` is now a package, split into `values`, `a1`, `match`, `rules`, `files`, and `commands` submodules. Every name importable from `gdrives.sheets` before is still importable from it; code that patches a helper internally must now patch it on the submodule that looks it up.
+
 ## [0.10.0] - 2026-09-26
 
 ### Added
