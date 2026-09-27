@@ -848,6 +848,7 @@ SUBMODULES = (
     "retry",
     "rules",
     "structure",
+    "sync",
     "table",
     "values",
 )

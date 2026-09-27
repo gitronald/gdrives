@@ -25,6 +25,8 @@ pull_values`` works regardless of which submodule defines a name:
   and read back
 - ``structure``: add and delete columns by header name, create missing tabs,
   and set column widths
+- ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
+  ``pull_tab``, ``push_tab``, ``pull_all_tabs``, ``run_target``) and report it
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -117,6 +119,20 @@ from gdrives.sheets.structure import (
     ensure_tabs,
     set_column_widths,
 )
+from gdrives.sheets.sync import (
+    Replacement,
+    SyncReport,
+    TabPlan,
+    TabReport,
+    apply_tab,
+    format_report,
+    plan_tab,
+    pull_all_tabs,
+    pull_tab,
+    push_tab,
+    run_target,
+    sync_tab,
+)
 from gdrives.sheets.table import EmptyTabError, Table, parse_tab, read_tab
 from gdrives.sheets.values import (
     FORMATTED_STRING,
@@ -168,12 +184,16 @@ __all__ = [
     "ROW_FLAGS",
     "ReadBackError",
     "Records",
+    "Replacement",
     "RowFlag",
     "SERIAL_NUMBER",
     "SIDES",
     "SheetChangedError",
+    "SyncReport",
     "TabConfig",
     "TabGrid",
+    "TabPlan",
+    "TabReport",
     "Table",
     "Target",
     "UNFORMATTED_VALUE",
@@ -184,6 +204,7 @@ __all__ = [
     "add_conditional_rule",
     "append_values",
     "apply_plan",
+    "apply_tab",
     "batch_update_spreadsheet",
     "batch_update_values",
     "build_formula_rule",
@@ -198,6 +219,7 @@ __all__ = [
     "find_config",
     "find_rows",
     "first_tab",
+    "format_report",
     "format_rules",
     "format_values",
     "from_cell",
@@ -212,9 +234,13 @@ __all__ = [
     "parse_config",
     "parse_pairs",
     "parse_tab",
+    "plan_tab",
     "problems",
+    "pull_all_tabs",
     "pull_many",
+    "pull_tab",
     "pull_values",
+    "push_tab",
     "read_records",
     "read_rule_json",
     "read_tab",
@@ -227,10 +253,12 @@ __all__ = [
     "run_get",
     "run_rules",
     "run_set",
+    "run_target",
     "run_update",
     "set_by_match",
     "set_column_widths",
     "split_a1",
+    "sync_tab",
     "tab_grid",
     "tab_sheet_ids",
     "to_cell",
