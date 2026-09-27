@@ -314,3 +314,90 @@ def test_pull_many_reads_ranges_in_order(tab):
         render=sheets.UNFORMATTED_VALUE,
     )
     assert grids == [[[1], [2.5]], [], [["h2"]]]
+
+
+# -- apply and structure: pin FakeSheetGrid's assumptions against the API --
+
+
+def _table(service, sid, name):
+    return sheets.read_tab(service, sid, name, ["id", "name", "code"], ["id"])
+
+
+def test_apply_pushes_and_appends_past_the_grid_end(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "keep", "Ada", "1"], ["b", "", "Bo"]],
+    )
+    # Shrink the grid to the rows in use, so the new rows need grid rows added.
+    sheet_id = sheets.tab_grid(service, sid, name).sheet_id
+    sheets.batch_update_spreadsheet(
+        service,
+        sid,
+        [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {"rowCount": 3},
+                    },
+                    "fields": "gridProperties.rowCount",
+                }
+            }
+        ],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        pushes=[sheets.Cell(("b",), "code", "", "01", "")],
+        appends=[
+            sheets.NewRow(("c",), {"id": "c", "name": "TRUE", "code": "007"}),
+            sheets.NewRow(("d",), {"id": "d", "name": "=1+2", "code": ""}),
+        ],
+    )
+    # apply_plan reads the tab back itself: literal strings must survive.
+    result = sheets.apply_plan(service, sid, table, plan)
+    assert result == sheets.ApplyResult(1, 2, [3], [4, 5])
+    assert _row_count(service, sid, name) == 5
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "keep", "Ada", "1"],
+        ["b", "", "Bo", "01"],
+        ["c", "", "TRUE", "007"],
+        ["d", "", "=1+2"],
+    ]
+
+
+def test_apply_inserts_above_a_matching_row(tab):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [["id", "note", "name", "code"], ["a", "", "Ada"], ["b", "old", "Bo"]],
+    )
+    table = _table(service, sid, name)
+    plan = sheets.MergePlan(
+        appends=[sheets.NewRow(("c",), {"id": "c", "name": "Cy", "code": "3"})]
+    )
+    result = sheets.apply_plan(service, sid, table, plan, insert_above={"note": "old"})
+    assert result.appended_rows == [3]
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "note", "name", "code"],
+        ["a", "", "Ada"],
+        ["c", "", "Cy", "3"],
+        ["b", "old", "Bo"],
+    ]
+
+
+def test_add_then_delete_columns_by_name(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["id", "name"], ["a", "Ada"]])
+    sheets.add_columns(service, sid, name, ["x", "y"], before="name")
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["id", "x", "y", "name"],
+        ["a", "", "", "Ada"],
+    ]
+    sheets.delete_columns(service, sid, name, ["x", "name"])
+    assert sheets.pull_values(service, sid, f"'{name}'") == [["id", "y"], ["a"]]
