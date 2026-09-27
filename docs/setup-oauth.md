@@ -39,7 +39,7 @@ gdrives login --scope drive    # mv
 gdrives login --timeout 60     # wait 60 seconds for the consent (default 300)
 ```
 
-It prints the consent URL, waits for the browser to come back, caches the token, and prints the credential the commands will now use. When a cached token already serves the scope, nothing is asked. When the time runs out it exits 1 and no token file is touched. It is also the way to grant again after a token's refresh has failed.
+It prints the consent URL, waits for the browser to come back, caches the token, and prints the credential the commands will now use. When a cached token already serves the scope, nothing is asked. When the time runs out it exits 1 and no token file is touched. It also exits 1 when the token could not be saved, because a file in its place holds something a consent must not replace: move that file and run it again. It is also the way to grant again after a token's refresh has failed.
 
 Before any command waits on a consent or a token refresh, it says so on stderr with a line starting `Credential:`.
 

@@ -178,8 +178,9 @@ gdrives login --timeout 60     # Give up after 60 seconds (default 300)
 Any command starts the consent it needs when run in a terminal. `login` starts
 it with or without one: it prints the consent URL, waits for the browser to
 come back, caches the token, and prints the credential the commands will now
-use. When a cached token already serves the scope, nothing is asked. It is also
-the way to grant again after a token's refresh has failed. Before any command
+use. When a cached token already serves the scope, nothing is asked. It exits 1
+when the time runs out, or when the token could not be saved. It is also the
+way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
 starting `Credential:`.
 
