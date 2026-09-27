@@ -491,7 +491,9 @@ rather than fail when those aren't configured. A run that skips them ends with a
    GDRIVES_TEST_DOCUMENT_ID=<doc id>
    ```
 
-5. Run `uv run pytest -m integration`.
+5. Run `uv run pytest -m integration`. The Sheets API allows 60 reads and 60
+   writes a minute, and the tests wait when it refuses a request, so a run takes
+   from half a minute to a few minutes.
 
 The tests leave your files as they found them. The Sheets tests share one
 temporary `itest_<hex>` tab, which is added before the first test, emptied
