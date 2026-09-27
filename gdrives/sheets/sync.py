@@ -13,10 +13,11 @@ directory. :func:`plan_tab` reads and merges; :func:`apply_tab` writes, in an
 order that is a safety property, stopping at the first failure:
 
 1. The schema and ``validate`` checks, on the local rows and on the merged
-   result. Any problem means nothing is written.
+   result. Any problem means nothing is written. These are the only checks:
+   every later step writes what they passed.
 2. The structure steps asked for: create a missing tab with its header row,
    add missing columns, delete extra ones. The tab is then read and merged
-   again.
+   again, and the run stops if that merge differs from the checked one.
 3. :func:`~gdrives.sheets.apply.apply_plan`: the re-read guard, the pushed
    cells, the new rows, and the read-back check.
 4. The local file, then the base, then the column widths.
@@ -366,9 +367,12 @@ def _plan(
     *,
     created: bool = False,
     added: Sequence[str] = (),
+    check: bool = True,
 ) -> TabPlan:
     """:func:`plan_tab`'s body. ``created`` marks a tab this run created, and
     ``added`` the columns this run added, both of which the base cannot hold.
+    ``check=False`` skips the schema and ``validate`` checks, for the merge
+    after a restructure, which must match one that already passed them.
     """
     report.problems, report.notes = list[str](), list[str]()
     report.deferred = list[Cell]()
@@ -394,9 +398,10 @@ def _plan(
             **options,
         )
 
-    report.problems = _check(local.rows, tab, options["validate"], "local")
-    if report.problems:
-        return planned(None, None, None)
+    if check:
+        report.problems = _check(local.rows, tab, options["validate"], "local")
+        if report.problems:
+            return planned(None, None, None)
 
     base_path = target.base_path(tab)
     base = read_records(base_path) if base_path.exists() else None
@@ -469,7 +474,8 @@ def _plan(
         if report.bootstrapped and plan.pushes:
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
-    report.problems = _check(plan.new_local, tab, options["validate"], "merged")
+    if check:
+        report.problems = _check(plan.new_local, tab, options["validate"], "merged")
     return planned(table, plan, base)
 
 
@@ -540,8 +546,9 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     Nothing is written when the plan found schema or ``validate`` problems.
     Otherwise: the structure steps (create a missing tab and its header row,
     add missing columns, delete extra ones), after which the tab is read and
-    merged again; then :func:`~gdrives.sheets.apply.apply_plan` (re-read
-    guard, pushes, new rows, read-back); then the local file, the base, and
+    merged again, refusing a merge that differs from the checked one; then
+    :func:`~gdrives.sheets.apply.apply_plan` (re-read guard, pushes, new
+    rows, read-back); then the local file, the base, and
     the column widths. The local file and the base are written only when
     they change, and widths only on a run that wrote to the sheet. Raises on
     the first failure, with the report recording every write made before it.
@@ -553,8 +560,6 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     tab = planned.tab
     if planned.table is None or report.add_columns or report.drop_columns:
         planned = _restructure(service, spreadsheet_id, planned)
-        if report.problems:
-            return report
     table, plan = planned.table, planned.plan
     if table is None or plan is None:
         # Created or given a header above, and now missing or empty again.
@@ -597,6 +602,12 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
 
     The report keeps what the first read found (the tab's state and the
     columns added or dropped), since the second read sees the result.
+
+    The second merge is not checked again: the checks gate every write, and
+    the structure writes have already happened. Instead it must equal the
+    merge the checks passed, with the same local file; a sheet or local edit
+    made in between raises :class:`SheetChangedError` rather than writing
+    unchecked rows.
     """
     report, tab = planned.report, planned.tab
     state, added, dropped = report.tab_state, report.add_columns, report.drop_columns
@@ -626,8 +637,14 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         options,
         created=planned.created or state != "present",
         added=[*planned.added, *added],
+        check=False,
     )
-    if report.add_columns or report.drop_columns:
+    if (
+        report.add_columns
+        or report.drop_columns
+        or again.plan != planned.plan
+        or again.local != planned.local
+    ):
         raise SheetChangedError(
             f"tab {tab.title!r} changed while it was restructured; run again"
         )

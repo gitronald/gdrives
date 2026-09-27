@@ -745,18 +745,61 @@ class TestChecks:
         assert report.problems == ["T (local): no"]
         assert grid.calls == []
 
-    def test_problems_found_after_a_restructure_write_nothing_more(self, tmp_path):
+    def test_the_checks_all_run_before_a_restructure_writes(self, tmp_path):
         target = make_target(tmp_path)
         write_local(target, *ROWS)
         grid = FakeSheetGrid({"Other": []})
         calls = []
 
         def validate(rows):
-            calls.append(len(rows))
-            return ["late"] if len(calls) == 4 else []
+            calls.append(len(writes(grid)))
+            return ["late"] if len(calls) > 2 else []
 
         report = run(grid, target, apply=True, validate=validate)
-        assert report.problems == ["T (merged): late"]
+        # Both checks ran before the tab was created, and none after it.
+        assert calls == [0, 0]
+        assert report.problems == [] and report.wrote_sheet
+        assert grid.values("T") == [HEADER, *ROWS]
+        assert report.exit_code == 0
+
+    def test_problems_and_a_sheet_write_never_come_together(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"Other": []})
+        report = run(grid, target, apply=True, validate=lambda rows: ["no"])
+        assert report.problems == ["T (local): no"]
+        assert not report.wrote_sheet and writes(grid) == []
+        assert "Other" in [t.title for t in grid.tabs] and len(grid.tabs) == 1
+
+    def test_a_cell_edited_during_the_restructure_is_refused(self, synced):
+        grid, target = synced
+        grid.write("T", [["id", "name", "amt", "y"], *ROWS])
+        files = snapshot(target)
+        # After the column is dropped, before the second read of the tab.
+        grid.edit_externally(
+            lambda g: g.write("T", [HEADER, ROWS[0], ["b", "Bob", "2"]]),
+            before="values.get",
+            occurrence=3,
+        )
+        with pytest.raises(
+            SheetChangedError, match="changed while it was restructured"
+        ):
+            run(grid, target, apply=True, drop_extra=True)
+        assert snapshot(target) == files
+
+    def test_a_local_edit_during_the_restructure_is_refused(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"Other": []})
+        grid.edit_externally(
+            lambda g: write_local(target, *ROWS, ["c", "Cy", "3"]),
+            before="spreadsheets.batchUpdate",
+            occurrence=2,
+        )
+        with pytest.raises(
+            SheetChangedError, match="changed while it was restructured"
+        ):
+            run(grid, target, apply=True)
         assert grid.values("T") == [HEADER]
         assert snapshot(target)[1] is None
 
