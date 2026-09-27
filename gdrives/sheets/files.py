@@ -99,7 +99,7 @@ def _read_delimited(path: str | Path, delimiter: str) -> Records:
     grid = read_values_csv(str(path), delimiter=delimiter)
     if not grid:
         return Records([], [])
-    columns = grid[0]
+    columns = [name.strip() for name in grid[0]]
     _check_columns(path, columns)
     rows: list[dict[str, str]] = []
     for number, cells in enumerate(grid[1:], start=2):
@@ -123,17 +123,24 @@ def _read_json(path: str | Path) -> Records:
     if not isinstance(data, list):
         raise ValueError(f"{path}: expected a JSON array of objects")
     columns: dict[str, None] = {}  # insertion-ordered set
+    items: list[dict[str, Any]] = []
     for index, item in enumerate(data):
         if not isinstance(item, dict):
             raise ValueError(f"{path}: item {index} is not an object")
+        named: dict[str, Any] = {}
         for column, value in item.items():
             if isinstance(value, (list, dict)):
                 raise ValueError(
                     f"{path}: item {index}, {column!r}: nested values are not cells"
                 )
-            columns.setdefault(column, None)
+            name = column.strip()
+            if name in named:
+                raise ValueError(f"{path}: item {index} repeats column name {name!r}")
+            named[name] = value
+            columns.setdefault(name, None)
+        items.append(named)
     _check_columns(path, list(columns))
-    rows = [{column: to_cell(item.get(column)) for column in columns} for item in data]
+    rows = [{column: to_cell(item.get(column)) for column in columns} for item in items]
     return Records(list(columns), [row for row in rows if not _is_blank(row)])
 
 
@@ -145,8 +152,10 @@ def read_records(path: str | Path) -> Records:
     column to go in). A JSON file is an array of flat objects; its columns are
     every key in first-seen order, and a key an object lacks is blank. Typed
     JSON values become canonical strings (``true`` -> ``"TRUE"``). Entirely
-    blank rows are skipped in every format, as they are on a tab. A blank or
-    repeated column name raises.
+    blank rows are skipped in every format, as they are on a tab. Column names
+    are stripped of surrounding whitespace, as a tab's header cells are, so a
+    padded name matches the sheet's column. A blank or repeated column name
+    raises.
     """
     delimiter = _format(path)
     if delimiter is None:
