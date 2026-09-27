@@ -1,4 +1,4 @@
-# gdrives v0.12.1a0
+# gdrives v0.13.0
 
 Command-line tools for Google Drive.
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-27
+
 ### Added
 
 - `insert_point` in `gdrives.sheets` returns the spreadsheet row a merge plan's new rows go above, for a table and an `insert_above` pair. It is pure, and `apply_plan` and the sync preview both use it. `TabReport.insert_row` and `TabReport.last_row` hold the result for a sync tab with `insert_above` and new rows, and the text report says where the rows go: `above row 5` or `after row 40` in a preview, and the rows written after an apply.
