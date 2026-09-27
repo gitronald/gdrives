@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A read layer in `gdrives.sheets` for keyed records: `read_tab` reads a whole tab in one request as header-named records of canonical cell strings, with row numbers by key; `read_records` and `write_records` move records to and from `.csv`, `.tsv`, and `.json` files (JSON with typed values, written byte-stably); `to_cell`, `from_cell`, and `problems` convert and check declared column types; `row_key` and `index_rows` compare row keys with whitespace normalized and refuse blank or duplicate keys.
 - `pull_values` takes `render=` and `date_time_render=` (for example `UNFORMATTED_VALUE`), and `pull_many` reads several ranges in one `values.batchGet` request.
 - `with_retry` retries a Sheets API call with exponential backoff and jitter.
+- `gdrives.sheets.merge` merges local records and a tab's records by row key against a saved base, and returns a `MergePlan` of cells to push, cells and rows to fold into the local file, rows to append, conflicts, ownership overrides, and row flags, with the next local rows and base. It is pure: nothing is read or written. `local_owned` and `sheet_owned` columns always keep one side's value, `owns_rows` flags rows added on the sheet instead of folding them in, and `prefer` resolves conflicts toward one side. Deleted rows are flagged, never removed.
 
 ### Changed
 
