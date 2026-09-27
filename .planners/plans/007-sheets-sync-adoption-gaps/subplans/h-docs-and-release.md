@@ -10,7 +10,7 @@ Each earlier step adds its config fields, its rows in the guide's tables, and it
 changelog lines. This step writes what spans them, and checks the whole against what
 was built.
 
-Notes applied: D5, D7, D10, M6, M9, R15.
+Notes applied: D5, D7, D10, M6, M9, R15, and the probe finding P13.
 
 ## Guide sections (`docs/sheets-sync.md`)
 
@@ -22,8 +22,10 @@ expected and not alarming:
 
 - **Unformatted reads.** Tabs are read with `UNFORMATTED_VALUE` (`table.py:79-85`). A
   base or a file saved from displayed values differs wherever a cell has a number
-  format: `50%` reads `0.5`, and `3.00` reads `3`. Each such cell is reported as a
-  sheet edit once and folded in.
+  format: `50%` reads `0.5`, `$1,234.50` reads `1234.5`, and a 3 shown as `3.00` reads
+  `3` [P13]. Each such cell is reported as a sheet edit once and folded in.
+- **Starting over instead.** A caller that does not want those folds deletes its base
+  and makes a first sync, with `--adopt` when the local file should win.
 - **Typed dates.** A declared `date` or `datetime` column reads as ISO 8601 (step b),
   so a file that holds display text differs in every row of it.
 - **Blank keys.** A blank key cell is refused on every side, the base included
@@ -35,8 +37,9 @@ expected and not alarming:
   and the base snapshots where a caller already keeps them.
 - **Look first.** A preview shows all of it before anything is written.
 
-The examples are checked live once, in this step: a cell formatted as a percentage
-and one with two decimals, read through `read_tab`. Note D5 reasoned them from the code.
+Note D5 reasoned the examples from the code. They were checked live on 2026-09-27
+([note 005](../implementation-notes/005-serial-and-format-probe.md)), so the section
+is written from what the API returned.
 
 ### A caller's own retry [D7]
 
@@ -67,7 +70,7 @@ Each gets its reference rows in its own step and its prose here:
 
 | Section | From |
 |---|---|
-| How cells are read: typed dates, and that a pushed date is text on the sheet | b |
+| How cells are read: typed dates, and that a pushed date or number is text on the sheet, which plan [010](../../010-sheets-typed-writes/plan.md) takes up | b |
 | Holding invalid cells, and partial keys | c |
 | Hooks: `validate`, `check`, and `warn`, which are library only, so a caller with checks in code keeps a command of its own [D3] | d |
 | Writing a store, with a worked example | e |

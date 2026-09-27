@@ -32,8 +32,9 @@ Three reviews in [`implementation-notes/`](implementation-notes/) widened it. `0
 checked the first draft against the code. `002` and `003` each followed a downstream
 caller that had written its own sync code and tried to replace it with 0.11.0: one ran a
 keyed three-way sync, the other replaced whole tabs. `004` checked the three against the
-code and the live API. What they found falls in three groups, and the plan covers all
-three within `gdrives.sheets`:
+code and the live API, and `005` checked two assumptions the plan still rested on. What
+they found falls in three groups, and the plan covers all three within
+`gdrives.sheets`:
 
 - defects in the released sync that change what a run writes: where new rows and new
   columns land, the formatting new rows take, and line endings;
@@ -85,8 +86,10 @@ Out of scope:
   merge still moves values only.
 - Setting links. `linked_cells` reports a link and its target; writing one stays the
   caller's [D12].
-- Applying row deletions, and per-column `USER_ENTERED` writes. Both remain open from
-  plan 006.
+- Applying row deletions, which remains open from plan 006.
+- Writing a typed column as dates and numbers, not text. It was plan 006's open
+  question on `RAW`, and is plan [010](../010-sheets-typed-writes/plan.md), which
+  builds on steps b and c here.
 - CLI flags for the new tab options. `sheets-sync`, `sheets-pull`, and `sheets-push`
   reach them through config fields. The only CLI additions are those of item 18.
 - A tab mode that both pulls and pushes [M9], and a schema setting that refuses an
@@ -112,22 +115,22 @@ not check them. The table below is the status of record for the pieces.
 | Subplan | Scope | Items | Notes applied | Status |
 |---|---|---|---|---|
 | [`a-sync-fixes.md`](subplans/a-sync-fixes.md) | Where new rows and columns land, the formatting of inserted rows, and line endings | 10 to 13 | D1, D2, D4, D6, M4 | draft |
-| [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5 | draft |
+| [`b-typed-cells.md`](subplans/b-typed-cells.md) | The typed codec, Python classes as column types, and typed dates read from the sheet | 1, 2, 14 | R2, R4, R9, R13, M5, P9 to P12 | draft |
 | [`c-merge-additions.md`](subplans/c-merge-additions.md) | Partial blank keys, normalized comparison, held cells, `carry=`, and the plan predicates | 3, 4, 5, 9, 15 | R1, R6, R7, R10, D9 | draft |
 | [`d-checks-and-hooks.md`](subplans/d-checks-and-hooks.md) | `CheckContext`, the blocking `check` hook, and the non-blocking `warn` hook | 9, 15 | R11, D3 | draft |
 | [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | draft |
 | [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | draft |
 | [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | draft |
-| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15 | draft |
+| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15, P13 | draft |
 
 Each subplan keeps its own Log. Entries that concern the whole effort go in this file's
 Log.
 
 ### Decisions
 
-Settled on 2026-09-27, before any work started. The first four were put to the owner;
-the rest were proposals of the draft or follow from a note, and are recorded here so
-that a step does not reopen them by accident.
+Settled on 2026-09-27, before any work started. Those marked owner were put to the
+owner; the rest were proposals of the draft or follow from a note, and are recorded
+here so that a step does not reopen them by accident.
 
 | # | Decision | Alternative set aside | From |
 |---|---|---|---|
@@ -143,6 +146,9 @@ that a step does not reopen them by accident.
 | 10 | `validate` keeps its rows-only signature; `check` and `warn` take a `CheckContext` | Detecting a hook's arity; changing `validate` | R11, D3 |
 | 11 | A typed date column costs a second read, of the declared columns only | Reading the whole tab with `SERIAL_NUMBER`, which changes undeclared date columns | M5 |
 | 12 | `clear_links` is a tab field for `push` and `sync` tabs | A helper the caller runs by hand after every run | P3 |
+| 13 | A typed date cell is converted when the serial read gives a number, and otherwise keeps the first read's value; a date-time rounds to the millisecond | Trusting what the API returns for text; rounding to the second | owner, P9, P10 |
+| 14 | Every grid read goes through `pull_grid`, which requires a `fields` mask and reports `httplib2`'s decode errors per tab | Reproducing D14's failure first | owner, P8 |
+| 15 | A pushed date or number stays text on the sheet in this plan, and the guide says so. Writing typed values is plan 010 | A per-column `USER_ENTERED` write inside this plan | owner |
 
 ### Compatibility
 
@@ -239,24 +245,21 @@ Two things carried over from plan 006's retrospective:
 
 ### Open questions
 
-Settled, and moved to [Decisions](#decisions): normalized comparison by default (3),
-held rows (5), `required` under `hold` (6), and a store for `pull_all_tabs` (out of
-scope).
+None is left. Each was settled before any work started, and is recorded under
+[Decisions](#decisions):
 
-Still open, each with the step that settles it:
+- From the draft: normalized comparison by default (3), held rows (5), `required`
+  under `hold` (6), and a store for `pull_all_tabs` (out of scope).
+- **What a serial-number read returns**, and the precision of a date-time serial:
+  checked live [P9, P10], and the rule made per cell (13).
+- **Whether an unbounded grid read can fail**: closed without reproducing D14's
+  failure, by masking every grid read and turning the error into a per-tab one (14).
+- **Pushed dates and numbers land as text**: documented here, and taken up by plan
+  [010](../010-sheets-typed-writes/plan.md) (15).
+- **Unformatted reads and a saved base** [D5]: the guide's examples were checked live
+  [P13].
 
-- **What a serial-number read returns for a text cell** in a declared date column, and
-  the precision a date-time serial carries. Step b opens with a live check; the design
-  assumes text comes back as text and rounds to the millisecond.
-- **Whether an unbounded grid read can fail.** D14 reports `DecodeRatioError` on a
-  16 MB response. The probe got 18.6 MB back without an error [P8]. Step f bounds the
-  read and masks its fields either way, which makes the response a few hundred bytes.
-- **Pushed dates land as text.** A sync writes `RAW` strings, so an ISO date pushed to
-  the sheet is text there, and sheet formulas over the column see text. This is plan
-  006's open question on numeric cells under `RAW`, now for dates too. Step h documents
-  it; a per-column `USER_ENTERED` write stays a follow-up.
-- **Unformatted reads and a saved base** [D5]. The note reasons from the code that a
-  `50%` cell reads `0.5`. Step h's guide section gets a live check of its examples.
+A question that comes up during the work goes in the Log of the step that met it.
 
 ## Log
 
@@ -282,3 +285,25 @@ each claim. In short:
 The owner settled scope, structure, the three default changes, and the probe
 (decisions 1 to 4). Plans 008 and 009 were added for the notes that fall outside
 `gdrives.sheets` (`8fa364f`, `8531d3e`).
+
+### 2026-09-27 — the open questions closed
+
+Four questions were left open by the rewrite. The owner settled each, and a second
+probe answered the two that were questions of fact
+([note `005`](implementation-notes/005-serial-and-format-probe.md): one temporary tab,
+deleted afterwards, 4 reads and 5 writes).
+
+- **Serial reads.** Text comes back as text, a date as a whole number, and a date-time
+  as a float that keeps the millisecond [P9, P10]. Step b's design stands, and its
+  rule is now per cell so that it does not rest on that (decision 13). The probe also
+  found that display text can name the wrong day [P12], which the draft's reasons for
+  typed dates did not include.
+- **Grid reads.** D14's failure was not reproduced and is not pursued. Every grid read
+  goes through `pull_grid`, masked, with `httplib2`'s decode errors reported per tab
+  (decision 14). Those errors are not `HttpError`s, so today one would stop a whole
+  run.
+- **Pushed dates as text.** Documented in this plan; plan
+  [010](../010-sheets-typed-writes/plan.md) was added for writing typed values
+  (`6fb7606`, decision 15).
+- **Number formats.** `50%` reads `0.5` and a 3 shown as `3.00` reads `3` [P13], as D5
+  had reasoned.

@@ -111,6 +111,7 @@ The design, from those:
 - The grid read is one `spreadsheets.get` for one tab, with a `fields` mask naming
   those two fields, over the header's columns [D14, P8]. The header comes from the
   caller when it has one, and from one read of row 1 when not.
+- The read goes through `pull_grid`, below.
 - `push_rows(clear_links=True)` runs the first after the write and the second as part of
   the read-back, raising `ReadBackError` when a link remains. The clear follows every
   write, since the write puts the link back [P3].
@@ -127,8 +128,32 @@ The design, from those:
 - Setting a link stays the caller's. The guide notes what the probe found: a run over
   the whole text takes, and a cell-level `link` on a plain string did not [P7].
 
+## Grid reads (`values.py`) [D14, P8]
+
+D14 reports `DecodeRatioError` from a grid read of 16 MB. The probe got 18.6 MB back
+with no error, so the failure depends on how well a response compresses: `httplib2`
+applies its 100 to 1 limit only past 10 MB of output. The question is closed without
+reproducing it, in two parts (decision 14).
+
+- `pull_grid(service, spreadsheet_id, range_, fields)` is the one way the package reads
+  grid data. `fields` is required, so no read of the package is unmasked, and the
+  range names one tab. With the link mask the probe's response was 382 bytes.
+- It catches `httplib2`'s `DecodeRatioError` and `DecodeLimitError` and raises
+  `GridTooLargeError`, a `ValueError` that names the range and says to narrow the range
+  or the mask. The two are plain `Exception`s, not `HttpError`s, so today one would
+  pass `TAB_ERRORS` and stop a whole run; as a `ValueError` it is reported for its tab.
+- The two classes exist only in recent `httplib2` releases. They are looked up at
+  import, and an older release that lacks them has nothing to catch.
+- `pull_grid` is public, so a caller that reads grid data for its own formatting pass
+  gets the mask and the message too.
+- `linked_cells` reads through it, and so does `get_column_widths`
+  ([`g-tabs-and-tools.md`](g-tabs-and-tools.md)).
+
 ## Tests
 
+- `pull_grid`: the request it sends, a missing `fields`, each of the two errors raised
+  by a fake transport and reported for one tab of a run, and an `httplib2` without the
+  classes.
 - `push_rows` with each refusal of `push_tab`, an empty row list, a `report` kept on
   an error, and `label` in each message. The `push_tab` tests pass unchanged.
 - `pushed_cells` and `appended_columns`, with and without an `insert_above` shift.
@@ -151,5 +176,5 @@ The design, from those:
   on a `pull` tab.
 - The guide's list of what a sync never does keeps formatting on it, with links as the
   one exception a tab can ask for.
-- Changelog: `push_rows`, `clear_link_format`, `linked_cells`, `clear_links`, and the
-  two `ApplyResult` fields under Added.
+- Changelog: `push_rows`, `clear_link_format`, `linked_cells`, `clear_links`,
+  `pull_grid`, `GridTooLargeError`, and the two `ApplyResult` fields under Added.

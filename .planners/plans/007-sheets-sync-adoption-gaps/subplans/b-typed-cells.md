@@ -9,7 +9,8 @@ Part of [007](../plan.md). Step 2 of the umbrella's implementation order. It is 
 except for the typed date read, and [`c-merge-additions.md`](c-merge-additions.md) and
 [`e-stores.md`](e-stores.md) build on it.
 
-Notes applied: R2, R4, R9, R13, M5.
+Notes applied: R2, R4, R9, R13, M5, and the probe findings P9 to P12 of
+[note 005](../implementation-notes/005-serial-and-format-probe.md).
 
 ## Typed codec (`cells.py`)
 
@@ -100,21 +101,31 @@ and the normalized comparison of step c both assume a typed column's cells parse
   typed columns; `serials` is the second grid, for a caller that read it itself. The
   `Table` records `types`, so the re-read guard and the read-back in `apply_plan` read
   the same way.
-- `serial_to_cell(number, type_) -> str` in `cells.py`, pure. The epoch is 1899-12-30.
-  A `date` column takes a whole serial and refuses one with a fraction, which the
-  schema check then reports. A `datetime` column rounds to the millisecond and writes
-  what `to_cell` writes for a `datetime`, with no fraction when it is zero.
+- `serial_to_cell(number, type_) -> str` in `cells.py`, pure. The epoch is 1899-12-30
+  [P10]. A `date` column takes a whole serial and refuses one with a fraction, which
+  the schema check then reports. A `datetime` column rounds to the millisecond, which a
+  serial keeps exactly [P10], and writes what `to_cell` writes for a `datetime`, with no
+  fraction when it is zero.
+- The rule is per cell, and does not rest on what the API returns for text: a cell is
+  converted when the serial read gives a number, and otherwise keeps the value of the
+  first read. A boolean is not a number here.
 - A cell holding text in a declared column stays as it is: a sync writes `RAW` strings,
-  so an ISO date it pushed is text on the sheet and reads back as written. A column can
-  hold both, and both arrive as ISO 8601.
+  so an ISO date it pushed is text on the sheet and reads back as written [P9]. A
+  column can hold both, and both arrive as ISO 8601.
+- A plain number in a declared column is converted like any other, since it cannot be
+  told from a serial [P11]. The declaration is what says the column holds dates.
+- The serial read is also the more accurate one. Display text rounds to what its
+  format shows, so a cell holding `23:59:59.999` under a format of whole seconds reads
+  today as midnight of the next day [P12].
 - Serials carry no time zone. The values are naive, in the spreadsheet's own zone.
 - `plan_tab` and `pull_tab` pass the tab's schema types. `pull_all_tabs` has no schema
   and is unchanged.
 
-**First task: a live check.** Read a date cell, a date-time cell, and an ISO string in
-one column with `SERIAL_NUMBER`, and record in the Log what each returns and how many
-digits the date-time carries. The design above assumes text comes back as text. If it
-does not, stop and revise this section before building on it.
+**Checked live before the step started.** The draft of this section opened with a
+live check of what a serial read returns. It was run on 2026-09-27, and
+[note 005](../implementation-notes/005-serial-and-format-probe.md) has the result: a
+date comes back as a whole number, a date-time as a float that keeps the millisecond,
+and text as text. The step's live test keeps those cells as a regression check.
 
 A base saved from display text reports each typed date cell as a sheet edit on the
 first run after the upgrade, and folds the ISO value in. It is a visible change, and
@@ -132,8 +143,12 @@ the guide's section on moving over says so
   writer's message.
 - `serial_to_cell`: a whole serial, a fraction in a `date` column, midnight, a
   millisecond, and a serial before the epoch.
-- `parse_tab` with `serials`: a typed column of mixed serials and text, a typed column
-  the tab lacks, and a `serials` grid shorter than the values grid.
+- `parse_tab` with `serials`: a typed column of mixed serials and text, a boolean and
+  a plain number in it, a serial read that gives text where the first read gave other
+  text (the first read wins), a typed column the tab lacks, and a `serials` grid
+  shorter than the values grid.
+- The midnight case of P12: display text of the next day, and a serial of the day
+  before, read as the day before.
 - `FakeSheetGrid` gains a `SERIAL_NUMBER` read: a cell seeded as a date returns its
   serial, and a string returns itself.
 - Live: the first task's cells, kept as one test.

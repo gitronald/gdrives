@@ -68,8 +68,9 @@ hand on the sheet and copies the numbers out.
 
 - `get_column_widths(service, spreadsheet_id, tab) -> dict[str, int]` in
   `structure.py`: each named header column's width in pixels, in header order, from one
-  `spreadsheets.get` with a `fields` mask over `data.columnMetadata.pixelSize`. A
-  column with a blank header cell is left out.
+  grid read of row 1 with a `fields` mask over `data.columnMetadata.pixelSize`, through
+  `pull_grid` ([`f-push-rows-and-links.md`](f-push-rows-and-links.md#grid-reads-valuespy-d14-p8)).
+  A column with a blank header cell is left out.
 - `gdrives sheets-widths SHEET [--tab TITLE]` prints the result as a JSON object ready
   to paste under a tab's `widths`. It reads with the read-only scope, and takes the
   first tab by default, as `sheets-get` and `sheets-set` do.
