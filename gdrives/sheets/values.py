@@ -19,6 +19,7 @@ columns, or rules, so they retry on a rate limit only.
 """
 
 import importlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -282,11 +283,34 @@ class TabGrid:
     column_count: int
 
 
-def tab_grid(service: Service, spreadsheet_id: str, tab: str) -> TabGrid:
-    """Return ``tab``'s ``sheetId`` and grid size, in one ``spreadsheets.get``.
+@dataclass(frozen=True)
+class TabListing:
+    """The tabs of a spreadsheet as one read found them: each title with its grid.
 
-    Raises ValueError when the spreadsheet has no tab named ``tab``.
+    ``grids`` maps each tab's title to its :class:`TabGrid`, in tab order. A
+    run that reads it once knows which tabs exist, and which title a
+    ``sheetId`` has now, for every tab it goes on to. The grid sizes are as
+    they were when it was read: a write that depends on one reads it again
+    (:func:`tab_grid`).
     """
+
+    grids: Mapping[str, TabGrid]
+
+    @property
+    def titles(self) -> list[str]:
+        """The tab titles, in tab order."""
+        return list(self.grids)
+
+    def title_of(self, sheet_id: int) -> str | None:
+        """The title of the tab with ``sheet_id``, or None when there is none."""
+        for title, grid in self.grids.items():
+            if grid.sheet_id == sheet_id:
+                return title
+        return None
+
+
+def tab_listing(service: Service, spreadsheet_id: str) -> TabListing:
+    """Read every tab's title, ``sheetId``, and grid size, in one request."""
     result = with_retry(
         lambda: (
             service.spreadsheets()
@@ -297,16 +321,27 @@ def tab_grid(service: Service, spreadsheet_id: str, tab: str) -> TabGrid:
             .execute()
         )
     )
-    tabs = result.get("sheets", [])
-    _lookup_tab(_tab_ids(tabs), tab)
-    (props,) = [s["properties"] for s in tabs if s["properties"]["title"] == tab]
-    # The API omits zero-valued fields, as for sheetId in _tab_ids.
-    grid = props.get("gridProperties", {})
-    return TabGrid(
-        sheet_id=props.get("sheetId", 0),
-        row_count=grid.get("rowCount", 0),
-        column_count=grid.get("columnCount", 0),
-    )
+    grids: dict[str, TabGrid] = {}
+    for sheet in result.get("sheets", []):
+        props = sheet["properties"]
+        # The API omits zero-valued fields, as for sheetId in _tab_ids.
+        grid = props.get("gridProperties", {})
+        grids[props["title"]] = TabGrid(
+            sheet_id=props.get("sheetId", 0),
+            row_count=grid.get("rowCount", 0),
+            column_count=grid.get("columnCount", 0),
+        )
+    return TabListing(grids)
+
+
+def tab_grid(service: Service, spreadsheet_id: str, tab: str) -> TabGrid:
+    """Return ``tab``'s ``sheetId`` and grid size, in one ``spreadsheets.get``.
+
+    Raises ValueError when the spreadsheet has no tab named ``tab``.
+    """
+    listing = tab_listing(service, spreadsheet_id)
+    _lookup_tab({t: grid.sheet_id for t, grid in listing.grids.items()}, tab)
+    return listing.grids[tab]
 
 
 def _lookup_tab(tab_ids: dict[str, int], tab: str | None) -> str:

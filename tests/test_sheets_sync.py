@@ -23,6 +23,7 @@ from gdrives.sheets import (
     parse_config,
     plan_tab,
     read_records,
+    run_target,
     sync_tab,
     write_values_csv,
 )
@@ -485,6 +486,152 @@ class TestHooks:
 
         planned = plan_tab(grid, "S", target, target.tabs[0], check=check, warn=warn)
         assert (planned.check, planned.warn) == (check, warn)
+
+
+class TestSheetId:
+    """A tab named by its ``sheet_id`` is found by it, whatever its title is now."""
+
+    def scene(self, tmp_path, sheet_id=1, **fields):
+        target = make_target(tmp_path, sheet_id=sheet_id, **fields)
+        write_local(target, ["a", "Ada", "9"], ROWS[1], ["c", "Cy", "3"])
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {"First": [["x"]], "Form responses 1": [HEADER, ROWS[0], ["b", "Bea", "2"]]}
+        )
+        return grid, target
+
+    def test_a_renamed_tab_is_synced_and_the_report_notes_the_rename(self, tmp_path):
+        grid, target = self.scene(tmp_path, widths={"amt": 50})
+        preview = run(grid, target)
+        assert preview.tab == "T" and preview.tab_state == "present"
+        assert preview.notes == ["renamed on the sheet: 'T' is now 'Form responses 1'"]
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        merged = [["a", "Ada", "9"], ["b", "Bea", "2"], ["c", "Cy", "3"]]
+        assert grid.values("Form responses 1") == [HEADER, *merged]
+        assert local_rows(target) == merged
+        assert [tab.title for tab in grid.tabs] == ["First", "Form responses 1"]
+        assert grid.tab("Form responses 1").widths[2] == 50
+        assert grid.values("First") == [["x"]]
+        # The base file is named by the config's title.
+        assert target.base_path(target.tabs[0]).name == "T.csv"
+        assert base_rows(target) == merged
+        assert format_report(SyncReport([report])).splitlines()[:3] == [
+            "sync tab 'T' (apply)",
+            f"  local file: {target.tabs[0].local}",
+            "  note: renamed on the sheet: 'T' is now 'Form responses 1'",
+        ]
+
+    def test_a_tab_that_kept_its_title_notes_nothing(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        grid.tab("Form responses 1").title = "T"
+        assert run(grid, target).notes == []
+
+    def test_the_title_is_not_looked_for_when_the_id_is_gone(self, tmp_path):
+        grid, target = self.scene(tmp_path, sheet_id=7)
+        grid.tab("First").title = "T"
+        with pytest.raises(
+            ValueError, match="tab 'T': the spreadsheet has no tab with sheet_id 7"
+        ):
+            run(grid, target, apply=True)
+        assert writes(grid) == [] and [t.title for t in grid.tabs] == [
+            "T",
+            "Form responses 1",
+        ]
+
+    def test_columns_are_added_to_the_tab_under_its_title_on_the_sheet(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        grid.tab("Form responses 1").cells[0][2] = None
+        for row in grid.tab("Form responses 1").cells[1:3]:
+            row[2] = None
+        write_base(target, ["a", "Ada"], ["b", "Bo"], header=["id", "name"])
+        report = run(grid, target, apply=True, add_missing=True)
+        assert report.exit_code == 0, report.error
+        assert report.notes == ["renamed on the sheet: 'T' is now 'Form responses 1'"]
+        assert grid.values("Form responses 1")[0] == HEADER
+
+
+class TestRequestBudget:
+    """A run lists the spreadsheet's tabs once, whatever the number of its tabs."""
+
+    LISTING, VALUES, SERIALS = "spreadsheets.get", "values.get", "values.batchGet"
+
+    def target(self, tmp_path, mode, count, **fields):
+        tabs = {
+            f"T{n}": {"mode": mode, "local": f"t{n}.csv", "key": ["id"]} | fields
+            for n in range(count)
+        }
+        data = {"t": {"spreadsheet": "S", "tabs": tabs}}
+        target = parse_config(data, tmp_path / CONFIG_NAME).target("t")
+        for tab in target.tabs:
+            if mode != "pull":
+                write_values_csv(str(tab.local), [HEADER, *ROWS])
+        return target
+
+    def grid(self, count):
+        return FakeSheetGrid({f"T{n}": [HEADER, *ROWS] for n in range(count)})
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_a_preview_of_n_tabs_is_one_listing_and_n_reads(self, tmp_path, mode):
+        target, grid = self.target(tmp_path, mode, 4), self.grid(4)
+        report = run_target(grid, "S", target, mode)
+        assert report.exit_code == 0, format_report(report)
+        assert grid.methods == [self.LISTING, *[self.VALUES] * 4]
+
+    def test_typed_date_columns_cost_a_second_read_per_tab(self, tmp_path):
+        schema = {"amt": {"type": "date"}}
+        target = self.target(tmp_path, "sync", 3, schema=schema)
+        for tab in target.tabs:
+            write_values_csv(str(tab.local), [HEADER, ["a", "Ada", "2026-09-27"]])
+        grid = FakeSheetGrid(
+            {f"T{n}": [HEADER, ["a", "Ada", "2026-09-27"]] for n in range(3)}
+        )
+        run_target(grid, "S", target, "sync")
+        assert grid.methods == [self.LISTING, *[self.VALUES, self.SERIALS] * 3]
+
+    def test_a_tab_run_by_itself_reads_its_own_listing(self, tmp_path):
+        target, grid = self.target(tmp_path, "sync", 2), self.grid(2)
+        sync_tab(grid, "S", target, target.tabs[1])
+        assert grid.methods == [self.LISTING, self.VALUES]
+
+    def test_the_listing_is_read_again_after_a_tab_is_created(self, tmp_path):
+        target = self.target(tmp_path, "push", 3)
+        grid = FakeSheetGrid({"T0": [HEADER, *ROWS], "T2": [HEADER, *ROWS]})
+        report = run_target(grid, "S", target, "push", apply=True)
+        assert report.exit_code == 0, format_report(report)
+        assert [tab.tab_state for tab in report.tabs] == [
+            "present",
+            "missing",
+            "present",
+        ]
+        assert [tab.title for tab in grid.tabs] == ["T0", "T2", "T1"]
+        # One listing for the run, the grid size for the push of T1, and the
+        # listing again for the tab after it.
+        assert grid.methods.count(self.LISTING) == 3
+        assert grid.methods[:2] == [self.LISTING, self.VALUES]
+
+    def test_a_listing_that_fails_is_reported_for_each_tab(self, tmp_path):
+        target, grid = self.target(tmp_path, "sync", 2), self.grid(2)
+        grid.fail(self.LISTING, http_error(403, "forbidden"))
+        report = run_target(grid, "S", target, "sync")
+        first, second = report.tabs
+        assert first.error is not None and "forbidden" in first.error
+        assert second.error is None and report.exit_code == 1
+        assert grid.methods == [self.LISTING, self.LISTING, self.VALUES]
+
+    def test_a_sync_that_creates_its_tab_lists_the_tabs_twice(self, tmp_path):
+        target = self.target(tmp_path, "sync", 1)
+        grid = FakeSheetGrid({"Other": []})
+        report = run_target(grid, "S", target, "sync", apply=True)
+        assert report.exit_code == 0, format_report(report)
+        listings = [
+            kwargs["fields"]
+            for method, kwargs in grid.calls
+            if method == self.LISTING and "ranges" not in kwargs
+        ]
+        # The run's listing, the grid size for the header, the listing after
+        # the tab was created, and the grid size for the new rows.
+        assert len(listings) == 4
 
 
 class TestNormalizedComparison:
@@ -1258,8 +1405,11 @@ class TestMissingAndEmptyTabs:
         def delete(g):
             g.tabs = [t for t in g.tabs if t.title != "T"]
 
-        # After the header is written, before the second read lists the tabs.
-        grid.edit_externally(delete, before="spreadsheets.get", occurrence=4)
+        # After the header is written, before the second read lists the tabs:
+        # the plan's listing, the grid size for the header, and then that read.
+        # Creating the tab lists no tabs, since the plan's listing says which
+        # exist; 0.11.0 listed them a third time there.
+        grid.edit_externally(delete, before="spreadsheets.get", occurrence=3)
         with pytest.raises(
             SheetChangedError, match="changed while it was restructured"
         ):

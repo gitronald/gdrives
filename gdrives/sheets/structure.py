@@ -16,7 +16,7 @@ that hold a link, and :func:`clear_link_format` takes the link format off
 cells meant to hold plain text, leaving every other format alone.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -476,19 +476,26 @@ def delete_columns(
 
 
 def ensure_tabs(
-    service: Service, spreadsheet_id: str, tabs: Sequence[str]
+    service: Service,
+    spreadsheet_id: str,
+    tabs: Sequence[str],
+    *,
+    existing: Collection[str] | None = None,
 ) -> list[str]:
     """Create each of ``tabs`` the spreadsheet lacks; return the titles created.
 
     New tabs go after the existing ones, in the order given. A tab is never
     deleted or renamed: one this list does not name belongs to whoever added
-    it. Raises ValueError for a blank title; a repeated title is created once.
+    it. ``existing`` is the spreadsheet's tab titles when the caller has just
+    read them, which saves the read here. Raises ValueError for a blank
+    title; a repeated title is created once.
     """
     if "" in tabs:
         raise ValueError(f"blank tab title in {list(tabs)}")
     if not tabs:
         return []
-    existing = set(list_tabs(service, spreadsheet_id))
+    if existing is None:
+        existing = list_tabs(service, spreadsheet_id)
     missing = [title for title in dict.fromkeys(tabs) if title not in existing]
     if missing:
         batch_update_spreadsheet(

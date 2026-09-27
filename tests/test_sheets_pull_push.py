@@ -523,6 +523,66 @@ class TestPushRows:
         assert report.local_label == "the cases" and not report.wrote_sheet
 
 
+class TestSheetId:
+    def grid(self):
+        return FakeSheetGrid({"First": [["x"]], "Renamed": [HEADER, *ROWS]})
+
+    def test_a_pull_finds_the_tab_by_its_id(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", sheet_id=1)
+        report = pull_tab(self.grid(), "S", tab, apply=True)
+        assert rows_of(tab.local) == ROWS
+        assert report.tab == "T" and report.notes == [
+            "renamed on the sheet: 'T' is now 'Renamed'"
+        ]
+
+    def test_a_push_finds_the_tab_by_its_id(self, tmp_path):
+        tab = one_tab(tmp_path, "push", sheet_id=1, widths={"amt": 50})
+        write_local(tab, ["a", "Ada", "9"])
+        grid = self.grid()
+        report = push_tab(grid, "S", tab, apply=True)
+        assert grid.values("Renamed") == [HEADER, ["a", "Ada", "9"]]
+        assert [t.title for t in grid.tabs] == ["First", "Renamed"]
+        assert grid.tab("Renamed").widths[2] == 50
+        assert report.notes == ["renamed on the sheet: 'T' is now 'Renamed'"]
+
+    @pytest.mark.parametrize("mode", ["pull", "push"])
+    def test_an_id_the_spreadsheet_lacks_is_an_error_and_creates_no_tab(
+        self, tmp_path, mode
+    ):
+        tab = one_tab(tmp_path, mode, sheet_id=9)
+        write_local(tab, *ROWS)
+        before = tab.local.read_bytes() if tab.local else b""
+        grid = FakeSheetGrid({"T": [HEADER, ["z", "Zed", "0"]]})
+        run = pull_tab if mode == "pull" else push_tab
+        with pytest.raises(ValueError, match="has no tab with sheet_id 9"):
+            run(grid, "S", tab, apply=True)
+        assert writes(grid) == [] and [t.title for t in grid.tabs] == ["T"]
+        assert tab.local is not None and tab.local.read_bytes() == before
+
+    def test_push_rows_takes_the_id(self):
+        grid = self.grid()
+        report = push_rows(
+            grid,
+            "S",
+            "Cases",
+            HEADER,
+            as_records(["a", "Ada", "9"]),
+            sheet_id=1,
+            apply=True,
+        )
+        assert report.tab == "Cases"
+        assert report.notes == ["renamed on the sheet: 'Cases' is now 'Renamed'"]
+        assert grid.values("Renamed") == [HEADER, ["a", "Ada", "9"]]
+
+    def test_a_listing_given_saves_its_read(self):
+        from gdrives.sheets import tab_listing
+
+        grid = self.grid()
+        listing = tab_listing(grid, "S")
+        push_rows(grid, "S", "Renamed", HEADER, as_records(*ROWS), listing=listing)
+        assert grid.methods == ["spreadsheets.get", "values.get"]
+
+
 class TestPushClearLinks:
     HEADER = ["id", "site", "note"]
     ROWS = [

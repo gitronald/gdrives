@@ -76,6 +76,7 @@ class TestValidConfig:
                     "blank_keys": "partial",
                     "on_invalid": "hold",
                     "clear_links": True,
+                    "sheet_id": 0,
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -114,6 +115,7 @@ class TestValidConfig:
                             blank_keys="partial",
                             on_invalid="hold",
                             clear_links=True,
+                            sheet_id=0,
                         ),
                         TabConfig(
                             title="Summary",
@@ -139,6 +141,7 @@ class TestValidConfig:
         assert tab.blank_keys == "refuse"
         assert tab.on_invalid == "refuse"
         assert tab.clear_links is False
+        assert tab.sheet_id is None
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -428,6 +431,40 @@ class TestTabProblems:
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
         )
+
+    @pytest.mark.parametrize("sheet_id", ["0", 1.5, True, -1, [1]])
+    def test_sheet_id_not_a_whole_number(self, sheet_id):
+        self.tab_refused(
+            members(sheet_id=sheet_id),
+            f"'sheet_id' must be a whole number, the tab's sheetId, not {sheet_id!r}",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_sheet_id_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, sheet_id=1234567890)
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].sheet_id == 1234567890
+
+    def test_two_tabs_of_a_target_with_one_sheet_id(self):
+        tabs = {
+            "A": members(sheet_id=7, local="a.csv"),
+            "B": members(sheet_id=8, local="b.csv"),
+            "C": members(sheet_id=7, local="c.csv"),
+            "D": members(local="d.csv"),
+            "E": members(local="e.csv"),
+        }
+        with pytest.raises(ConfigError) as raised:
+            parse_config(config(tabs), PATH)
+        assert raised.value.problems == [
+            "target 'roster', tab 'C': 'sheet_id' 7 is tab 'A' too"
+        ]
+
+    def test_two_targets_may_name_one_sheet_id(self):
+        data = {
+            "one": config({"A": members(sheet_id=7, local="a.csv")})["roster"],
+            "two": config({"A": members(sheet_id=7, local="b.csv")})["roster"],
+        }
+        assert set(parse_config(data, PATH).targets) == {"one", "two"}
 
     @pytest.mark.parametrize("clear_links", ["yes", 1, None])
     def test_clear_links_not_a_bool(self, clear_links):

@@ -17,6 +17,8 @@ from gdrives.sheets import (
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
     GridTooLargeError,
+    TabGrid,
+    TabListing,
     a1_quote,
     append_values,
     batch_update_values,
@@ -152,6 +154,48 @@ class TestPullMany:
 
 
 # -- update_values --
+
+
+class TestTabListing:
+    SHEETS = {
+        "sheets": [
+            # The API omits zero-valued fields: sheetId 0, and a size of none.
+            {"properties": {"title": "First", "gridProperties": {"rowCount": 5}}},
+            {
+                "properties": {
+                    "title": "Second",
+                    "sheetId": 77,
+                    "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                }
+            },
+        ]
+    }
+
+    def test_one_read_of_every_tab(self):
+        from gdrives.sheets import tab_listing
+
+        svc = FakeSheetsService(meta=self.SHEETS)
+        listing = tab_listing(svc, "sid")
+        assert listing == TabListing(
+            {"First": TabGrid(0, 5, 0), "Second": TabGrid(77, 1000, 26)}
+        )
+        assert listing.titles == ["First", "Second"]
+        assert listing.title_of(77) == "Second" and listing.title_of(0) == "First"
+        assert listing.title_of(5) is None
+        assert svc.calls == [
+            (
+                "spreadsheets.get",
+                {
+                    "spreadsheetId": "sid",
+                    "fields": "sheets.properties(sheetId,title,gridProperties)",
+                },
+            )
+        ]
+
+    def test_a_spreadsheet_with_no_tabs(self):
+        from gdrives.sheets import tab_listing
+
+        assert tab_listing(FakeSheetsService(meta={}), "sid") == TabListing({})
 
 
 class TestPullGrid:
