@@ -138,6 +138,8 @@ from gdrives.sheets.structure import (
     set_column_widths,
 )
 from gdrives.sheets.sync import (
+    STAGES,
+    CheckContext,
     Replacement,
     SyncReport,
     TabPlan,
@@ -188,6 +190,7 @@ __all__ = [
     "COLUMN_TYPES",
     "CONFIG_NAME",
     "Cell",
+    "CheckContext",
     "ColumnSchema",
     "Config",
     "ConfigError",
@@ -217,6 +220,7 @@ __all__ = [
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
+    "STAGES",
     "SheetChangedError",
     "SyncReport",
     "TabConfig",

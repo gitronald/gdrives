@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-d-checks-and-hooks
 ---
 
 # 007d — Give the check hooks the columns and the plan
@@ -111,3 +111,32 @@ restructure runs with `check=False`, since it must equal the one the checks pass
 - No config field: hooks are code.
 - `format_report` prints warnings under their own heading, after problems.
 - Changelog: `CheckContext`, `check`, and `warn` under Added.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-d-checks-and-hooks`, cut from step c's branch,
+with a draft PR onto it. One commit, `e2956c6`: `CheckContext`, `check`, `warn`,
+`TabReport.warnings`, the report's heading, the guide's table of hooks, and the
+changelog line. `push_rows` takes the hooks in step f, where it is added.
+
+Decisions made during the work:
+
+- **At the merged stage `columns` is the local file's columns**, since the merged rows
+  are the local side as it will be. At the sheet stage of a pull, `columns` and
+  `projection` are both the columns read, and `sheet_columns` is every named column
+  of the header.
+- **`projection` on a push is the columns written**, in the local file's order.
+- **`warn`'s messages are stored as given**, with no `T (merged):` prefix. They come
+  from one stage, and the report prints them under the tab.
+- **A pull and a push reset `warnings` on entry**, as `_plan` does, so a report passed
+  in for a second run does not keep the first run's.
+- **`STAGES`** names the three stages, and is exported with `CheckContext`. `Check`,
+  the hook's type, is in `sync.py` beside `Validate`.
+- The last four fields of `CheckContext` have defaults, so a caller's test can build
+  one from the rows and the columns.
+
+**Live suite.** Not run for this step. The step adds no live case, and changes no
+request a run makes: the hooks are called on rows already read. The counts stand at
+68 writes and 84 reads.

@@ -14,6 +14,7 @@ from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     CONFIG_NAME,
+    CheckContext,
     ReadBackError,
     SheetChangedError,
     SyncReport,
@@ -297,6 +298,193 @@ class TestSync:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         run(grid, target, apply=True)
         assert grid.values("T") == [HEADER, ROWS[0], ["c", "Cy", "3"], ROWS[1]]
+
+
+class Recorder:
+    """A hook that keeps every context it is given, and answers ``says(context)``."""
+
+    def __init__(self, says=lambda context: []):
+        self.seen = []
+        self.says = says
+
+    def __call__(self, context):
+        self.seen.append(context)
+        return self.says(context)
+
+    @property
+    def stages(self):
+        return [context.stage for context in self.seen]
+
+
+def undeclared(declared):
+    """A check that refuses a column outside ``declared``, on either side."""
+
+    def check(context):
+        extra = [c for c in context.columns if c not in declared]
+        extra += [c for c in context.extra_columns if c not in declared]
+        return [f"undeclared column {c!r}" for c in dict.fromkeys(extra)]
+
+    return check
+
+
+class TestHooks:
+    def test_check_sees_the_columns_of_both_sides_and_the_plan(self, synced):
+        grid, target = synced
+        grid.write("T", [[*HEADER, "memo"], ["a", "Ada", "9", "m"]])
+        write_local(target, *[[*row, "t"] for row in ROWS], header=[*HEADER, "tag"])
+        check = Recorder()
+        target = make_target(target.tabs[0].local.parent, columns=HEADER)
+        report = run(grid, target, check=check)
+        assert check.stages == ["local", "merged"]
+        local, merged = check.seen
+        assert local == CheckContext(
+            tab="T",
+            stage="local",
+            rows=[
+                dict(zip([*HEADER, "tag"], [*row, "t"], strict=True)) for row in ROWS
+            ],
+            columns=(*HEADER, "tag"),
+            projection=tuple(HEADER),
+            sheet_columns=None,
+            adding=(),
+            dropping=(),
+            plan=None,
+        )
+        assert merged.rows == plan_of(report).new_local
+        assert merged.columns == (*HEADER, "tag")
+        assert merged.sheet_columns == (*HEADER, "memo")
+        assert merged.extra_columns == ("memo",)
+        assert merged.plan is report.plan
+        assert [c.sheet for c in plan_of(report).fold_cells] == ["9"]
+
+    def test_a_check_refuses_an_undeclared_column_on_either_side(self, synced):
+        grid, target = synced
+        grid.write("T", [[*HEADER, "memo"]])
+        before = snapshot(target)
+        report = run(grid, target, apply=True, check=undeclared(HEADER))
+        assert report.problems == ["T (merged): undeclared column 'memo'"]
+        assert writes(grid) == [] and snapshot(target) == before
+        assert report.exit_code == 1
+        write_local(target, *[[*row, "t"] for row in ROWS], header=[*HEADER, "tag"])
+        report = run(grid, target, apply=True, check=undeclared(HEADER))
+        assert report.problems == ["T (local): undeclared column 'tag'"]
+        assert report.plan is None
+
+    def test_a_column_the_run_drops_is_not_an_extra_column(self, synced):
+        grid, target = synced
+        grid.write("T", [[*HEADER, "memo"], ["a", "Ada", "1", "m"]])
+        check = Recorder(undeclared(HEADER))
+        report = run(grid, target, apply=True, drop_extra=True, check=check)
+        assert report.problems == [] and report.exit_code == 0
+        merged = check.seen[-1]
+        assert merged.dropping == ("memo",) and merged.extra_columns == ()
+        assert merged.sheet_columns == (*HEADER, "memo")
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_a_check_for_a_required_column_neither_side_has(self, synced):
+        grid, target = synced
+
+        def required(context):
+            have = {*context.columns, *(context.sheet_columns or ()), *context.adding}
+            return [f"no column {c!r}" for c in ["id", "email"] if c not in have]
+
+        report = run(grid, target, check=required)
+        assert report.problems == ["T (local): no column 'email'"]
+
+    def test_adding_names_the_columns_the_run_adds(self, synced):
+        grid, target = synced
+        grid.write("T", [["id", "name", ""], ["a", "Ada", ""], ["b", "Bo", ""]])
+        write_base(target, ["a", "Ada"], ["b", "Bo"], header=["id", "name"])
+        check = Recorder()
+        run(grid, target, add_missing=True, check=check)
+        merged = check.seen[-1]
+        assert merged.adding == ("amt",)
+        assert merged.sheet_columns == ("id", "name")
+
+    @pytest.mark.parametrize("tabs", [{"Other": []}, {"T": []}])
+    def test_a_missing_or_empty_tab_has_no_sheet_columns(self, tmp_path, tabs):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        check = Recorder()
+        run(FakeSheetGrid(tabs), target, check=check)
+        assert [context.sheet_columns for context in check.seen] == [None, None]
+        assert check.seen[-1].extra_columns == ()
+
+    def test_check_runs_after_validate_at_each_stage(self, synced):
+        grid, target = synced
+        calls = []
+
+        def validate(rows):
+            calls.append("validate")
+            return ["from validate"]
+
+        def check(context):
+            calls.append(f"check {context.stage}")
+            return ["from check"]
+
+        report = run(grid, target, validate=validate, check=check)
+        assert calls == ["validate", "check local"]
+        assert report.problems == ["T (local): from validate", "T (local): from check"]
+
+    def test_a_warn_reads_what_the_run_folded(self, synced):
+        grid, target = synced
+        warn = Recorder(
+            lambda context: [
+                f"{c.key[0]} changed on the sheet" for c in context.plan.fold_cells
+            ]
+        )
+        quiet = run(grid, target, apply=True, warn=warn)
+        assert quiet.warnings == [] and warn.stages == ["merged"]
+        grid.write("T", [["a", "Ada", "9"]], row=2)
+        report = run(grid, target, apply=True, warn=warn)
+        assert report.warnings == ["a changed on the sheet"]
+        assert report.exit_code == 0 and report.wrote_local
+        assert local_rows(target)[0] == ["a", "Ada", "9"]
+
+    def test_warn_is_called_once_across_a_restructure(self, synced):
+        grid, target = synced
+        grid.write("T", [["id", "name", ""], ["a", "Ada", ""], ["b", "Bo", ""]])
+        write_base(target, ["a", "Ada"], ["b", "Bo"], header=["id", "name"])
+        warn = Recorder(lambda context: [f"adding {list(context.adding)}"])
+        check = Recorder()
+        report = run(grid, target, apply=True, add_missing=True, warn=warn, check=check)
+        assert report.exit_code == 0 and report.wrote_sheet
+        assert report.warnings == ["adding ['amt']"]
+        assert warn.stages == ["merged"] and check.stages == ["local", "merged"]
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_warn_is_not_called_when_the_run_has_problems(self, synced):
+        grid, target = synced
+        warn = Recorder(lambda context: ["a warning"])
+        report = run(grid, target, check=lambda context: ["a problem"], warn=warn)
+        assert warn.seen == [] and report.warnings == []
+        report = run(
+            grid,
+            target,
+            check=lambda context: ["late"] if context.stage == "merged" else [],
+            warn=warn,
+        )
+        assert report.problems == ["T (merged): late"]
+        assert warn.seen == [] and report.warnings == []
+
+    def test_a_second_plan_on_the_same_report_starts_with_no_warnings(self, synced):
+        grid, target = synced
+        report = run(grid, target, warn=lambda context: ["once"])
+        assert report.warnings == ["once"]
+        again = sync_tab(grid, "S", target, target.tabs[0], report=report)
+        assert again is report and report.warnings == []
+
+    def test_plan_tab_keeps_the_hooks(self, synced):
+        grid, target = synced
+
+        def check(context):
+            return []
+
+        def warn(context):
+            return []
+
+        planned = plan_tab(grid, "S", target, target.tabs[0], check=check, warn=warn)
+        assert (planned.check, planned.warn) == (check, warn)
 
 
 class TestNormalizedComparison:
