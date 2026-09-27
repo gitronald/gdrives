@@ -500,7 +500,7 @@ class TestSheetsWidths:
         env.grid.tab("Totals").widths[:2] = [90, 40]
         result = env.invoke("sheets-widths", "SHEET", "--tab", "Totals")
         assert json.loads(result.stdout) == {"status": 90, "count": 40}
-        assert env.grid.methods == ["spreadsheets.get"]
+        assert env.grid.methods == ["values.get", "spreadsheets.get"]
 
     def test_the_output_is_a_tab_s_widths_in_the_config(self, env):
         from gdrives.sheets import parse_config

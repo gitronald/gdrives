@@ -70,6 +70,12 @@ def to_cell(value: Any) -> str:
     return str(value)
 
 
+def _header_row(grid: Sequence[Sequence[Any]]) -> list[str]:
+    """The header row of a grid as read: canonical strings, stripped."""
+    first: Sequence[Any] = grid[0] if grid else []
+    return [to_cell(cell).strip() for cell in first]
+
+
 def _check_type(type_: Any) -> None:
     if not isinstance(type_, str) or type_ not in COLUMN_TYPES:
         raise ValueError(
@@ -90,6 +96,25 @@ def column_type(type_: ColumnType) -> str:
             return name
     _check_type(type_)
     return str(type_)
+
+
+def _declared(types: Mapping[str, ColumnType] | None, who: str = "") -> dict[str, str]:
+    """Each declared type by name, refusing any that is not a column type.
+
+    Every unknown type is listed in one ValueError, each by its column.
+    ``who`` starts each message, for a caller that names itself in its
+    errors (``"merge: "``).
+    """
+    declared: dict[str, str] = {}
+    found: list[str] = []
+    for column, type_ in (types or {}).items():
+        try:
+            declared[column] = column_type(type_)
+        except ValueError as e:
+            found.append(f"{who}column {column!r}: {e}")
+    if found:
+        raise ValueError("; ".join(found))
+    return declared
 
 
 def from_cell(text: str, type_: ColumnType = "str") -> CellValue:
@@ -205,15 +230,16 @@ def encode_rows(
         names = list(dict.fromkeys(column for row in rows for column in row))
     else:
         names = list(columns)
+    known = set(names)
     found: list[str] = []
     records: list[dict[str, str]] = []
     for position, row in enumerate(rows, start=1):
         found.extend(
             f"row {position}, column {column!r}: nested values are not cells"
             for column, value in row.items()
-            if column in names and isinstance(value, (list, dict))
+            if column in known and isinstance(value, (list, dict))
         )
-        unknown = [column for column in row if column not in names]
+        unknown = [column for column in row if column not in known]
         if unknown:
             found.append(f"row {position} has unknown columns {unknown}")
         records.append({column: to_cell(row.get(column)) for column in names})
@@ -239,15 +265,8 @@ def decode_rows(
     row's 1-based position and its column, and an unknown type in ``types``
     whatever the records hold.
     """
+    declared = _declared(types)
     found: list[str] = []
-    declared: dict[str, str] = {}
-    for column, type_ in types.items():
-        try:
-            declared[column] = column_type(type_)
-        except ValueError as e:
-            found.append(f"column {column!r}: {e}")
-    if found:
-        raise ValueError("; ".join(found))
     rows: list[dict[str, CellValue]] = []
     for position, record in enumerate(records, start=1):
         row: dict[str, CellValue] = {}
