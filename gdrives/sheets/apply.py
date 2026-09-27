@@ -7,12 +7,15 @@ plan's pushed cells and new rows to the tab, in this order:
 1. **Re-read the tab** and compare its header, rows, and row numbers with the
    table. Any difference raises :class:`SheetChangedError` with nothing
    written. The Sheets API has no revision precondition, so this re-read is
-   the only tie between the plan and the write.
+   the only tie between the plan and the write. The tab is read as the table
+   was, with the table's declared types and its setting for blank keys, so a
+   date cell of a typed column compares as the ISO 8601 it was read as.
 2. **Push changed cells** in one ``values.batchUpdate`` call, with ``RAW``
    input, each cell addressed by its header position and its row number in
    the fresh read.
 3. **Write new rows** in one ``spreadsheets.batchUpdate`` call. They are sent
-   after the pushes, so the row numbers the pushes use are still true.
+   after the pushes, so the row numbers the pushes use are still true, and
+   placed (:func:`insert_point`) by the values the pushes leave behind.
 4. **Read the tab back** (:func:`verify`) and check every pushed cell and
    every new row, raising :class:`ReadBackError` on any mismatch.
 
@@ -23,18 +26,26 @@ and push again, on every run.
 New rows never go through ``values.append``, which takes the first blank row
 it finds as the table's end and so writes over rows below a cleared gap. They
 go to explicit rows: after the last row holding anything, or with
-``insert_above`` into rows opened above a named row. Only the projection's
-columns are written; other columns of the new rows are left alone.
+``insert_above`` into rows opened above a named row, which take the
+formatting of the row above them. Only the projection's columns are written;
+other columns of the new rows are left alone.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from gdrives.files import Service
 from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import row_key, to_cell
 from gdrives.sheets.merge import MergePlan
+from gdrives.sheets.structure import (
+    CELL_LINK_FIELD,
+    RUNS_FIELD,
+    LinkedCell,
+    link_clear,
+    linked_cells,
+)
 from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.values import (
     RAW,
@@ -69,12 +80,21 @@ class ApplyResult:
     ``pushed_rows`` and ``appended_rows`` are the spreadsheet rows they sit in
     after the apply (a pushed row below an ``insert_above`` point has moved
     down by the rows inserted).
+
+    ``pushed_cells`` is each pushed cell as ``(row, column)``, in the plan's
+    order, the row as it is after the apply. ``appended_columns`` is the
+    columns written in each new row, in header order, so the cells of the
+    new rows are every ``appended_rows`` row by every such column. Together
+    they are the cells the run wrote, for a pass over them that need not read
+    the tab again.
     """
 
     pushed: int
     appended: int
     pushed_rows: list[int]
     appended_rows: list[int]
+    pushed_cells: list[tuple[int, str]] = field(default_factory=list)
+    appended_columns: list[str] = field(default_factory=list)
 
 
 def _insert_target(
@@ -95,6 +115,42 @@ def _insert_target(
     if not values:
         raise ValueError(f"insert_above column {column!r} lists no values")
     return column, {to_cell(value) for value in values}
+
+
+def insert_point(
+    table: Table, plan: MergePlan, insert_above: Mapping[str, Any]
+) -> int | None:
+    """The spreadsheet row ``plan``'s new rows go above, as the tab will be.
+
+    ``insert_above`` is ``{column: value or [values]}``. Returns the 1-based
+    row of the first row of ``table`` whose ``column`` will hold one of the
+    values once the plan's pushes are in: a row's value is the plan's push to
+    that cell when there is one, else the value read. Returns None when no row
+    will, and the new rows go after ``table.last_row``. Pushes move no rows,
+    so the row numbers of ``table`` hold until the rows are inserted.
+
+    A column outside the projection gets no pushes, so its rows count as
+    read. Folds change the local file only, and are not applied. Pure: the
+    preview and the apply both call it, so a preview names the row the apply
+    inserts at, on a tab that has not changed in between. The apply calls it
+    on its own fresh read, and its guard compares the projection's columns
+    only: an edit to an ``insert_above`` column outside the projection is not
+    refused, and the rows go where the column puts them as re-read. Raises
+    ValueError for an ``insert_above`` that does not name
+    one header column with its values, or a column ``table`` did not read.
+    """
+    column, values = _insert_target(insert_above, table.header)
+    if column not in table.columns:
+        raise ValueError(
+            f"tab {table.tab!r}: insert_above column {column!r} was not read; "
+            f"columns read: {table.columns}"
+        )
+    pushed = {cell.key: cell.local for cell in plan.pushes if cell.column == column}
+    for row in table.rows:
+        found = row_key(row, table.key)
+        if pushed.get(found, row[column]) in values:
+            return table.row_numbers[found]
+    return None
 
 
 def _check_plan(table: Table, plan: MergePlan) -> None:
@@ -168,7 +224,15 @@ def _reread(
         columns.append(also)
     stale = f"tab {table.tab!r} changed since it was read, so nothing was written"
     try:
-        fresh = read_tab(service, spreadsheet_id, table.tab, columns, table.key)
+        fresh = read_tab(
+            service,
+            spreadsheet_id,
+            table.tab,
+            columns,
+            table.key,
+            types=table.types,
+            blank_keys=table.blank_keys,
+        )
     except ValueError as e:
         raise SheetChangedError(f"{stale}: {e}") from e
     changes = _changes(table, fresh)
@@ -205,13 +269,18 @@ def _row_requests(
     row_count: int,
     at: int,
     insert: bool,
+    clear_links: bool = False,
 ) -> list[dict[str, Any]]:
     """The requests that open rows at 0-based row ``at`` and fill them.
 
     With ``insert`` the rows are inserted there, shifting the rows below down;
     otherwise they are written in place, after appending grid rows if they
-    would not fit.
+    would not fit. With ``clear_links`` the cell link is in the mask of the
+    write, so a URL is written with no link, in the same request.
     """
+    fields = "userEnteredValue"
+    if clear_links:
+        fields += f",{CELL_LINK_FIELD}"
     count = len(plan.appends)
     requests: list[dict[str, Any]] = []
     if insert:
@@ -224,8 +293,10 @@ def _row_requests(
                         "startIndex": at,
                         "endIndex": at + count,
                     },
-                    # Take the formatting of the row the new ones sit above.
-                    "inheritFromBefore": False,
+                    # Take the formatting of the row above, which is outside
+                    # the block the new rows are kept out of. Directly below
+                    # the header that row is the header, so inherit from below.
+                    "inheritFromBefore": at > 1,
                 }
             }
         )
@@ -258,11 +329,42 @@ def _row_requests(
                         }
                         for new in plan.appends
                     ],
-                    "fields": "userEnteredValue",
+                    "fields": fields,
                 }
             }
         )
     return requests
+
+
+def _links_left(tab: str, left: Sequence[LinkedCell], by: str) -> ReadBackError:
+    """The error for links that ``by`` (the run, the push) wrote and did not clear."""
+    return ReadBackError(
+        f"tab {tab!r}: the read-back found links the {by} did not clear: "
+        + "; ".join(
+            f"row {cell.row}, column {cell.column!r} still holds a link to "
+            f"{list(cell.targets)}"
+            for cell in left
+        )
+    )
+
+
+def _check_links(
+    service: Service, spreadsheet_id: str, fresh: Table, result: ApplyResult
+) -> None:
+    """Read the links of the cells a run wrote, raising if one holds any."""
+    written = {*result.pushed_cells}
+    written.update(
+        (row, column)
+        for row in result.appended_rows
+        for column in result.appended_columns
+    )
+    columns = sorted({column for _, column in written}, key=fresh.header.index)
+    found = linked_cells(
+        service, spreadsheet_id, fresh.tab, columns=columns, header=fresh.header
+    )
+    left = [cell for cell in found if (cell.row, cell.column) in written]
+    if left:
+        raise _links_left(fresh.tab, left, "run")
 
 
 def apply_plan(
@@ -272,6 +374,7 @@ def apply_plan(
     plan: MergePlan,
     *,
     insert_above: Mapping[str, Any] | None = None,
+    clear_links: bool = False,
 ) -> ApplyResult:
     """Write ``plan``'s pushed cells and new rows to ``table``'s tab, then verify.
 
@@ -285,8 +388,20 @@ def apply_plan(
     growing the grid in the same request when they would not fit. With
     ``insert_above={column: value or [values]}`` they are inserted directly
     above the first row whose ``column`` holds one of the values (compared as
-    canonical strings), or go after the last row when no row does. ``column``
-    may be any header column, in the projection or not.
+    canonical strings) once the plan's pushes are in, or go after the last
+    row when no row does (:func:`insert_point`). ``column`` may be any header
+    column, in the projection or not. Inserted rows take the formatting of
+    the row above them, or of the row below when that row is the header.
+
+    The Sheets API links text that is a URL or a bare domain when it is
+    written. ``clear_links`` leaves the cells this run writes, and no others,
+    with no link. New rows are written with the link in their mask, which
+    costs nothing. A pushed cell has its link and its text format runs
+    cleared in the run's ``spreadsheets.batchUpdate``, after the inserts, so
+    a run with pushes and no new rows sends one request more. The links of
+    the written cells are then read back
+    (:func:`~gdrives.sheets.structure.linked_cells`), and
+    :class:`ReadBackError` is raised when one remains.
 
     A plan with nothing to push or add makes no request at all. Raises
     ValueError, before any request, when the plan does not fit ``table`` (a
@@ -294,37 +409,50 @@ def apply_plan(
     already has) or ``insert_above`` names a column the header lacks.
     """
     _check_plan(table, plan)
-    target = (
-        _insert_target(insert_above, table.header) if insert_above is not None else None
+    column = (
+        _insert_target(insert_above, table.header)[0]
+        if insert_above is not None
+        else None
     )
     if not plan.pushes and not plan.appends:
         return ApplyResult(pushed=0, appended=0, pushed_rows=[], appended_rows=[])
 
-    fresh = _reread(
-        service, spreadsheet_id, table, target[0] if target is not None else None
-    )
+    fresh = _reread(service, spreadsheet_id, table, column)
     count = len(plan.appends)
     requests: list[dict[str, Any]] = []
     at = fresh.last_row  # 0-based: the row after the last one holding anything
     inserted = False
-    if count:
-        if target is not None:
-            column, values = target
-            above = next(
-                (
-                    fresh.row_numbers[row_key(row, fresh.key)]
-                    for row in fresh.rows
-                    if row[column] in values
-                ),
-                None,
-            )
-            if above is not None:
-                at, inserted = above - 1, True
+    if count and insert_above is not None:
+        above = insert_point(fresh, plan, insert_above)
+        if above is not None:
+            at, inserted = above - 1, True
+    shift = count if inserted else 0
+
+    def after(row: int) -> int:
+        """Where a row of the fresh read sits once the new rows are in."""
+        return row + shift if row > at else row
+
+    pushed_cells = [
+        (after(fresh.row_numbers[cell.key]), cell.column) for cell in plan.pushes
+    ]
+    if count or (clear_links and pushed_cells):
         # Read before any write, so a failed read leaves the tab untouched.
         grid = tab_grid(service, spreadsheet_id, fresh.tab)
-        requests = _row_requests(
-            fresh, plan, grid.sheet_id, grid.row_count, at, inserted
-        )
+        if count:
+            requests = _row_requests(
+                fresh, plan, grid.sheet_id, grid.row_count, at, inserted, clear_links
+            )
+        if clear_links:
+            # After the inserts, so by the rows as they are once those are in.
+            requests.extend(
+                link_clear(
+                    grid.sheet_id,
+                    f"{CELL_LINK_FIELD},{RUNS_FIELD}",
+                    (fresh.header.index(column), fresh.header.index(column) + 1),
+                    (row - 1, row),
+                )
+                for row, column in pushed_cells
+            )
 
     quoted = a1_quote(fresh.tab)
     data = [
@@ -342,14 +470,19 @@ def apply_plan(
         batch_update_spreadsheet(service, spreadsheet_id, requests)
     verify(service, spreadsheet_id, table, plan)
 
-    shift = count if inserted else 0
     pushed_rows = sorted({fresh.row_numbers[cell.key] for cell in plan.pushes})
-    return ApplyResult(
+    written = sorted(table.columns, key=fresh.header.index) if count else []
+    result = ApplyResult(
         pushed=len(plan.pushes),
         appended=count,
-        pushed_rows=[row + shift if row > at else row for row in pushed_rows],
+        pushed_rows=[after(row) for row in pushed_rows],
         appended_rows=list(range(at + 1, at + 1 + count)),
+        pushed_cells=pushed_cells,
+        appended_columns=written,
     )
+    if clear_links:
+        _check_links(service, spreadsheet_id, fresh, result)
+    return result
 
 
 def verify(
@@ -358,14 +491,23 @@ def verify(
     """Read ``table``'s tab back and check that ``plan``'s sheet writes landed.
 
     Rows are found by key, not by number, so rows inserted above them do not
-    matter. Every pushed cell must hold its ``local`` value, and every new row
+    matter. The tab is read with ``table``'s declared types, as it was read
+    for the plan. Every pushed cell must hold its ``local`` value, and every new row
     must exist with its projection cells as sent. Raises
     :class:`ReadBackError` listing every mismatch at once, or when the tab no
     longer reads cleanly (a key now blank or repeated, a column gone).
     """
     failed = f"tab {table.tab!r}: the read-back does not match the write"
     try:
-        after = read_tab(service, spreadsheet_id, table.tab, table.columns, table.key)
+        after = read_tab(
+            service,
+            spreadsheet_id,
+            table.tab,
+            table.columns,
+            table.key,
+            types=table.types,
+            blank_keys=table.blank_keys,
+        )
     except ValueError as e:
         raise ReadBackError(f"{failed}: {e}") from e
     rows = {row_key(row, table.key): row for row in after.rows}

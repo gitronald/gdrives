@@ -8,14 +8,21 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from gdrives.sheets import (
+    BLANK_KEYS,
     COLUMN_TYPES,
     ColumnSchema,
     Problem,
+    cell_problem,
+    column_type,
+    decode_rows,
+    encode_rows,
     from_cell,
     index_rows,
+    normalize_cell,
     normalize_key,
     problems,
     row_key,
+    serial_to_cell,
     to_cell,
 )
 
@@ -151,9 +158,329 @@ class TestFromCell:
         assert from_cell(to_cell(value), type_) == value
 
 
+class Flag(int):
+    """A subclass of a column class, which is not that class."""
+
+
+CLASSES = [
+    (str, "str"),
+    (int, "int"),
+    (float, "float"),
+    (bool, "bool"),
+    (date, "date"),
+    (datetime, "datetime"),
+]
+
+
 class TestColumnTypes:
     def test_declared_names(self):
         assert COLUMN_TYPES == {"str", "int", "float", "bool", "date", "datetime"}
+
+    @pytest.mark.parametrize("name", sorted(COLUMN_TYPES))
+    def test_a_name_is_its_own_type(self, name):
+        assert column_type(name) == name
+
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_a_class_maps_to_its_own_name(self, cls, name):
+        # bool subclasses int and datetime subclasses date: each is itself.
+        assert column_type(cls) == name
+
+    @pytest.mark.parametrize(
+        "given", ["number", "Int", "", Flag, bytes, type(None), object, 3, None, []]
+    )
+    def test_anything_else_is_refused(self, given):
+        with pytest.raises(ValueError, match="unknown column type"):
+            column_type(given)
+
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_from_cell_takes_a_class(self, cls, name):
+        value = {
+            "str": "x",
+            "int": 7,
+            "float": 2.5,
+            "bool": True,
+            "date": date(2026, 1, 15),
+            "datetime": datetime(2026, 1, 15, 10, 30),
+        }[name]
+        parsed = from_cell(to_cell(value), cls)
+        assert parsed == value and type(parsed) is cls
+
+    def test_from_cell_refuses_a_class_that_is_no_column_type(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            from_cell("1", bytes)
+
+
+class TestNormalizeCell:
+    @pytest.mark.parametrize(
+        ("text", "type_", "normal"),
+        [
+            ("true", "bool", "TRUE"),
+            ("False", bool, "FALSE"),
+            ("3.0", "float", "3"),
+            ("3", float, "3"),
+            ("2.50", "float", "2.5"),
+            ("1E-7", "float", "1e-07"),
+            ("007", "int", "7"),
+            ("-0", "int", "0"),
+            ("2026-01-15T10:30:00", "datetime", "2026-01-15 10:30:00"),
+            ("2026-01-15 10:30", "datetime", "2026-01-15 10:30:00"),
+            ("2026-01-15", "date", "2026-01-15"),
+            (" 007 ", "str", " 007 "),
+            ("", "int", ""),
+            ("", "str", ""),
+        ],
+    )
+    def test_a_cell_that_parses_takes_the_form_to_cell_writes(
+        self, text, type_, normal
+    ):
+        assert normalize_cell(text, type_) == normal
+        assert normalize_cell(normal, type_) == normal
+
+    @pytest.mark.parametrize(
+        ("text", "type_"),
+        [("3.0", "int"), ("yes", "bool"), (" 3", "float"), ("Jan 15", "date")],
+    )
+    def test_a_cell_that_does_not_parse_is_unchanged(self, text, type_):
+        assert normalize_cell(text, type_) == text
+
+    def test_str_is_the_default(self):
+        assert normalize_cell("TRUE ") == "TRUE "
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            normalize_cell("1", "number")
+
+
+class TestCellProblem:
+    def test_the_reason_a_cell_does_not_fit_or_none(self):
+        assert cell_problem("yes", ColumnSchema(type="bool")) == (
+            "'yes' is not a valid bool"
+        )
+        assert cell_problem("", ColumnSchema(required=True)) == "is required"
+        assert cell_problem("z", ColumnSchema(allowed=["x", "y"])) == (
+            "'z' is not one of ['x', 'y']"
+        )
+        assert cell_problem("", ColumnSchema(type="int")) is None
+        assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
+
+
+class TestSerialToCell:
+    """Serial numbers count days from 1899-12-30, as a live read confirmed."""
+
+    DAY = 46292  # 2026-09-27
+
+    @pytest.mark.parametrize(
+        ("number", "text"),
+        [
+            (46292, "2026-09-27"),
+            (46292.0, "2026-09-27"),
+            (0, "1899-12-30"),
+            (1, "1899-12-31"),
+            (-1, "1899-12-29"),
+            (45000, "2023-03-15"),
+        ],
+    )
+    def test_a_whole_serial_is_a_date(self, number, text):
+        assert serial_to_cell(number, "date") == text
+        assert serial_to_cell(number, date) == text
+
+    @pytest.mark.parametrize("number", [46292.5, 46292.43767361111, -0.25])
+    def test_a_date_refuses_a_time_of_day(self, number):
+        with pytest.raises(ValueError, match="is not a valid date serial"):
+            serial_to_cell(number, "date")
+
+    @pytest.mark.parametrize(
+        ("seconds", "text"),
+        [
+            (0, "2026-09-27 00:00:00"),
+            (10 * 3600 + 30 * 60 + 15, "2026-09-27 10:30:15"),
+            (10 * 3600 + 30 * 60 + 15.123, "2026-09-27 10:30:15.123000"),
+            (86399.999, "2026-09-27 23:59:59.999000"),
+            (43200, "2026-09-27 12:00:00"),
+        ],
+    )
+    def test_a_datetime_keeps_the_millisecond(self, seconds, text):
+        assert serial_to_cell(self.DAY + seconds / 86400, "datetime") == text
+        assert serial_to_cell(self.DAY + seconds / 86400, datetime) == text
+
+    def test_a_datetime_is_written_as_to_cell_writes_one(self):
+        moment = datetime(2026, 9, 27, 10, 30, 15, 123000)
+        assert serial_to_cell(46292 + 37815.123 / 86400, "datetime") == to_cell(moment)
+        assert serial_to_cell(46292.43767361111, "datetime") == "2026-09-27 10:30:15"
+
+    def test_below_a_millisecond_is_rounded_away(self):
+        assert serial_to_cell(46292 + 0.0004 / 86400, "datetime") == (
+            "2026-09-27 00:00:00"
+        )
+        assert serial_to_cell(46292 + 0.0004 / 86400, "date") == "2026-09-27"
+
+    def test_a_serial_before_the_epoch(self):
+        assert serial_to_cell(-1.5, "datetime") == "1899-12-28 12:00:00"
+        assert serial_to_cell(-693593, "date") == "0001-01-01"
+
+    @pytest.mark.parametrize(
+        "number", [True, False, "46292", None, 1e12, -1e12, float("inf"), float("nan")]
+    )
+    @pytest.mark.parametrize("type_", ["date", "datetime"])
+    def test_what_is_not_a_serial_is_refused(self, number, type_):
+        with pytest.raises(ValueError, match=f"is not a valid {type_} serial"):
+            serial_to_cell(number, type_)
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "bool", int])
+    def test_only_a_date_or_a_datetime_has_serials(self, type_):
+        with pytest.raises(ValueError, match="a serial number is a date or a datetime"):
+            serial_to_cell(46292, type_)
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            serial_to_cell(46292, "day")
+
+
+class TestEncodeRows:
+    def test_every_value_becomes_its_canonical_string(self):
+        rows = [
+            {
+                "id": 7,
+                "name": " Ada ",
+                "paid": True,
+                "amt": 3.0,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30),
+                "note": None,
+            }
+        ]
+        assert encode_rows(rows) == [
+            {
+                "id": "7",
+                "name": " Ada ",
+                "paid": "TRUE",
+                "amt": "3",
+                "on": "2026-01-15",
+                "at": "2026-01-15 10:30:00",
+                "note": "",
+            }
+        ]
+
+    def test_columns_default_to_every_key_in_first_seen_order(self):
+        rows = [{"b": 1, "a": None}, {"c": 2.0, "a": "x"}]
+        assert encode_rows(rows) == [
+            {"b": "1", "a": "", "c": ""},
+            {"b": "", "a": "x", "c": "2"},
+        ]
+
+    def test_columns_fix_the_order_and_fill_blanks(self):
+        assert encode_rows([{"a": 1}, {"b": 2}], ["b", "a"]) == [
+            {"b": "", "a": "1"},
+            {"b": "2", "a": ""},
+        ]
+
+    def test_names_are_used_as_given(self):
+        assert encode_rows([{" id ": 1}]) == [{" id ": "1"}]
+
+    def test_no_rows(self):
+        assert encode_rows([]) == []
+        assert encode_rows([], ["a"]) == []
+
+    def test_the_rows_given_are_not_changed(self):
+        rows = [{"a": 1}]
+        encode_rows(rows, ["a", "b"])
+        assert rows == [{"a": 1}]
+
+    def test_every_nested_value_and_unknown_column_is_listed(self):
+        rows = [
+            {"id": 1, "tags": ["a"]},
+            {"id": 2, "tags": None, "meta": {"k": 1}, "extra": "x"},
+        ]
+        with pytest.raises(ValueError) as refused:
+            encode_rows(rows, ["id", "tags", "meta"])
+        assert str(refused.value) == (
+            "row 1, column 'tags': nested values are not cells; "
+            "row 2, column 'meta': nested values are not cells; "
+            "row 2 has unknown columns ['extra']"
+        )
+
+
+class TestDecodeRows:
+    TYPES = {
+        "id": "int",
+        "amt": "float",
+        "paid": "bool",
+        "on": "date",
+        "at": "datetime",
+    }
+
+    def test_each_column_is_parsed_as_its_type_and_str_by_default(self):
+        records = [
+            {
+                "id": "007",
+                "name": " Ada ",
+                "amt": "3",
+                "paid": "true",
+                "on": "2026-01-15",
+                "at": "2026-01-15T10:30:00",
+            }
+        ]
+        assert decode_rows(records, self.TYPES) == [
+            {
+                "id": 7,
+                "name": " Ada ",
+                "amt": 3.0,
+                "paid": True,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30),
+            }
+        ]
+
+    def test_classes_are_types_too(self):
+        assert decode_rows([{"n": "1", "b": "TRUE"}], {"n": int, "b": bool}) == [
+            {"n": 1, "b": True}
+        ]
+
+    def test_a_type_for_a_column_no_record_has_is_ignored(self):
+        assert decode_rows([{"n": "1"}], {"n": "int", "gone": "date"}) == [{"n": 1}]
+
+    def test_every_cell_that_does_not_parse_is_listed(self):
+        records = [{"id": "1", "on": "Jan 15"}, {"id": "x", "on": "2026-01-15"}]
+        with pytest.raises(ValueError) as refused:
+            decode_rows(records, self.TYPES)
+        assert str(refused.value) == (
+            "row 1, column 'on': 'Jan 15' is not a valid date; "
+            "row 2, column 'id': 'x' is not a valid int"
+        )
+
+    @pytest.mark.parametrize("type_", ["number", bytes])
+    def test_an_unknown_type_is_refused_whatever_the_rows_hold(self, type_):
+        with pytest.raises(ValueError, match="column 'n': unknown column type"):
+            decode_rows([], {"n": type_})
+
+    def test_round_trip(self):
+        rows = [
+            {
+                "id": 7,
+                "name": "Ada",
+                "amt": 2.5,
+                "paid": False,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30, 5, 123000),
+            },
+            {
+                "id": None,
+                "name": None,
+                "amt": None,
+                "paid": None,
+                "on": None,
+                "at": None,
+            },
+        ]
+        assert decode_rows(encode_rows(rows), self.TYPES) == rows
+
+    def test_the_two_exceptions_to_the_round_trip(self):
+        # A blank string is a blank cell, and a column a row lacks is one too.
+        rows = [{"id": 1, "name": ""}, {"id": 2}]
+        assert decode_rows(encode_rows(rows), {"id": int}) == [
+            {"id": 1, "name": None},
+            {"id": 2, "name": None},
+        ]
 
 
 class TestRowKeys:
@@ -244,6 +571,46 @@ class TestIndexRows:
         with pytest.raises(ValueError, match="local: no key columns"):
             index_rows([{"id": "a"}], [], side="local")
 
+    def test_the_settings(self):
+        assert BLANK_KEYS == {"refuse", "partial"}
+
+    def test_partial_allows_a_blank_component_beside_one_that_is_not(self):
+        rows = [
+            {"y": "2026", "id": ""},
+            {"y": "", "id": "1"},
+            {"y": "2026", "id": "1"},
+            {"y": "2026"},
+        ]
+        with pytest.raises(ValueError, match="duplicate key"):
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+        found = index_rows(rows[:3], ["y", "id"], side="local", blank_keys="partial")
+        assert found == {("2026", ""): 1, ("", "1"): 2, ("2026", "1"): 3}
+
+    def test_partial_refuses_a_row_whose_every_component_is_blank(self):
+        rows = [{"y": "2026", "id": ""}, {"y": " ", "id": ""}, {"name": "x"}]
+        with pytest.raises(ValueError) as raised:
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+        assert str(raised.value) == "local: blank key ['y', 'id'] in rows [2, 3]"
+
+    def test_partial_compares_blank_components_in_duplicates(self):
+        rows = [{"y": "2026", "id": ""}, {"y": "2026 ", "id": " "}]
+        with pytest.raises(
+            ValueError, match=r"duplicate key \('2026', ''\) in rows \[1, 2\]"
+        ):
+            index_rows(rows, ["y", "id"], side="local", blank_keys="partial")
+
+    def test_with_a_one_column_key_the_settings_are_the_same(self):
+        rows = [{"id": ""}, {"id": "a"}]
+        for setting in sorted(BLANK_KEYS):
+            with pytest.raises(ValueError, match=r"blank key \['id'\] in rows \[1\]"):
+                index_rows(rows, ["id"], side="local", blank_keys=setting)
+
+    def test_an_unknown_setting_is_refused(self):
+        with pytest.raises(
+            ValueError, match=r"blank_keys must be one of \['partial', 'refuse'\]"
+        ):
+            index_rows([], ["id"], side="local", blank_keys="allow")
+
     def test_empty_rows(self):
         assert index_rows([], ["id"], side="local") == {}
 
@@ -256,6 +623,26 @@ class TestColumnSchema:
     def test_unknown_type_is_refused(self):
         with pytest.raises(ValueError, match="unknown column type 'money'"):
             ColumnSchema(type="money")
+
+
+class TestColumnSchemaOf:
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_a_class_is_stored_as_its_name(self, cls, name):
+        schema = ColumnSchema.of(cls, required=True, allowed=["x"])
+        assert schema == ColumnSchema(type=name, required=True, allowed=["x"])
+        assert schema.type == name
+
+    def test_a_name_and_the_defaults(self):
+        assert ColumnSchema.of("date") == ColumnSchema(type="date")
+        assert ColumnSchema.of() == ColumnSchema()
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            ColumnSchema.of(bytes)
+
+    def test_the_constructor_still_refuses_a_class(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            ColumnSchema(type=int)  # pyrefly: ignore[bad-argument-type]
 
 
 class TestProblems:

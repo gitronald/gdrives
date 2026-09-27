@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -71,6 +72,11 @@ class TestValidConfig:
                     "insert_above": {"status": ["closed"]},
                     "widths": {"notes": 320},
                     "bom": True,
+                    "newline": "crlf",
+                    "blank_keys": "partial",
+                    "on_invalid": "hold",
+                    "clear_links": True,
+                    "sheet_id": 0,
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -105,6 +111,11 @@ class TestValidConfig:
                             insert_above={"status": ("closed",)},
                             widths={"notes": 320},
                             bom=True,
+                            newline="crlf",
+                            blank_keys="partial",
+                            on_invalid="hold",
+                            clear_links=True,
+                            sheet_id=0,
                         ),
                         TabConfig(
                             title="Summary",
@@ -126,6 +137,11 @@ class TestValidConfig:
         )
         assert tab.columns is None
         assert tab.insert_above is None
+        assert tab.newline == "lf"
+        assert tab.blank_keys == "refuse"
+        assert tab.on_invalid == "refuse"
+        assert tab.clear_links is False
+        assert tab.sheet_id is None
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -187,7 +203,10 @@ class TestValidConfig:
 
     def test_extensions_are_matched_in_any_case(self):
         data = config({"T": members(local="data/T.CSV")})
-        assert parse_config(data, PATH).target("roster").tabs[0].local.name == "T.CSV"
+        assert (
+            local_file(parse_config(data, PATH).target("roster").tabs[0]).name
+            == "T.CSV"
+        )
 
 
 class TestLookups:
@@ -375,8 +394,10 @@ class TestTabProblems:
                 "owns_rows": True,
                 "bootstrap": "local",
                 "insert_above": {"a": "x"},
+                "on_invalid": "hold",
             },
-            "['local_owned', 'owns_rows', 'bootstrap', 'insert_above'] apply "
+            "['local_owned', 'owns_rows', 'bootstrap', 'insert_above', "
+            "'on_invalid'] apply "
             "only to a sync tab",
         )
 
@@ -410,6 +431,103 @@ class TestTabProblems:
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
         )
+
+    @pytest.mark.parametrize("sheet_id", ["0", 1.5, True, -1, [1]])
+    def test_sheet_id_not_a_whole_number(self, sheet_id):
+        self.tab_refused(
+            members(sheet_id=sheet_id),
+            f"'sheet_id' must be a whole number, the tab's sheetId, not {sheet_id!r}",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_sheet_id_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, sheet_id=1234567890)
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].sheet_id == 1234567890
+
+    def test_two_tabs_of_a_target_with_one_sheet_id(self):
+        tabs = {
+            "A": members(sheet_id=7, local="a.csv"),
+            "B": members(sheet_id=8, local="b.csv"),
+            "C": members(sheet_id=7, local="c.csv"),
+            "D": members(local="d.csv"),
+            "E": members(local="e.csv"),
+        }
+        with pytest.raises(ConfigError) as raised:
+            parse_config(config(tabs), PATH)
+        assert raised.value.problems == [
+            "target 'roster', tab 'C': 'sheet_id' 7 is tab 'A' too"
+        ]
+
+    def test_two_targets_may_name_one_sheet_id(self):
+        data = {
+            "one": config({"A": members(sheet_id=7, local="a.csv")})["roster"],
+            "two": config({"A": members(sheet_id=7, local="b.csv")})["roster"],
+        }
+        assert set(parse_config(data, PATH).targets) == {"one", "two"}
+
+    @pytest.mark.parametrize("clear_links", ["yes", 1, None])
+    def test_clear_links_not_a_bool(self, clear_links):
+        self.tab_refused(
+            members(clear_links=clear_links), "'clear_links' must be true or false"
+        )
+
+    @pytest.mark.parametrize("clear_links", [True, False])
+    def test_clear_links_on_a_pull_tab(self, clear_links):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "clear_links": clear_links},
+            "'clear_links' does not apply to a pull tab",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_clear_links_on_a_sync_or_a_push_tab(self, mode):
+        tab = members(mode=mode, clear_links=True)
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].clear_links is True
+
+    @pytest.mark.parametrize("on_invalid", ["skip", "Hold", "", True, None, 1])
+    def test_on_invalid_not_a_setting(self, on_invalid):
+        self.tab_refused(
+            members(on_invalid=on_invalid),
+            f"'on_invalid' must be one of ['hold', 'refuse'], not {on_invalid!r}",
+        )
+
+    @pytest.mark.parametrize("blank_keys", ["allow", "Partial", "", True, None, 1])
+    def test_blank_keys_not_a_setting(self, blank_keys):
+        self.tab_refused(
+            members(blank_keys=blank_keys),
+            f"'blank_keys' must be one of ['partial', 'refuse'], not {blank_keys!r}",
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_blank_keys_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, blank_keys="partial")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].blank_keys == "partial"
+
+    @pytest.mark.parametrize("newline", ["cr", "LF", "\n", True, None])
+    def test_newline_not_a_line_ending(self, newline):
+        self.tab_refused(
+            members(newline=newline),
+            f"'newline' must be one of ['crlf', 'lf'], not {newline!r}",
+        )
+
+    def test_newline_on_json(self):
+        self.tab_refused(
+            members(local="m.json", newline="crlf"),
+            "'newline' applies only to a .csv or .tsv file",
+        )
+
+    def test_newline_lf_on_json_is_what_a_json_file_gets(self):
+        tab = members(local="m.json", newline="lf")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].newline == "lf"
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_newline_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, newline="crlf")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].newline == "crlf"
 
     @pytest.mark.parametrize("key", [None, []])
     def test_sync_tab_without_a_key(self, key):

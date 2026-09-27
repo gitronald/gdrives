@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: done
+branch: feature/sheets-sync-adoption-e-stores
 ---
 
 # 007e — Put the local side and the base behind a store
@@ -106,3 +106,52 @@ the folded values wherever the computation reads them from.
 - The guide's library section gains the section on writing a store.
 - Changelog: `Store`, `FileStore`, `MemoryStore`, `TabConfig.store`, and
   `Target.base_stores` under Added; the type of `TabConfig.local` under Changed.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-e-stores`, cut from step d's branch, with a draft
+PR onto it. One commit, `2c8d5b1`: `stores.py`, `TabConfig.store` and `local_store`,
+`Target.base_stores` and `base_store`, the orchestration over stores,
+`TabReport.local_label`, the guide's section, and the changelog.
+
+**The check that the refactor kept behavior.** Every test of the suite before this
+step passes over `FileStore`, its messages included, with two kinds of edit to the
+tests and none to what they assert:
+
+- The two tests that make a file write fail patched `write_records` where `sync.py`
+  looked it up. `FileStore` looks it up in `stores.py`, so they patch it there.
+- `TabConfig.local` is `Path | None` (decision 8), and the type checker refused the 22
+  places where a test reads the file of `tab.local`. They go through `local_file` in
+  `tests/helpers.py`, which asserts the path is there. This is what a caller under a
+  strict type checker meets too, as the Compatibility table says.
+
+Decisions made during the work:
+
+- **`Store.label` is a read-only property of the protocol**, so a class attribute, an
+  instance attribute, and a property all satisfy it. `FileStore`'s is a property over
+  its path.
+- **`FileStore` is a frozen dataclass**, so two stores of one file with the same
+  settings are equal, and a `TabConfig` holding one still compares by value.
+  `MemoryStore` is a plain class and compares by identity.
+- **A `MemoryStore` made with no columns does not exist until it is written**, as a
+  file does not. It counts its writes, which the tests of the write order read.
+- **A store given with a file wins.** `TabConfig(local=..., store=...)` reads and
+  writes the store, and the report still names the file.
+- **Messages say `local file <path>` for a `FileStore` and `local store <label>` for
+  any other**, so a config-driven run prints what it printed. The report's line is
+  `local file:` when the tab has a file and `local store:` when it has only a label.
+- **The base file follows its tab's `newline`**, which step a did through
+  `write_records` and `Target.base_store` now does through the `FileStore` it builds.
+- **The protocol's methods raise `NotImplementedError`.** A class that names `Store`
+  as a base and leaves one out fails when it is called, and the coverage config
+  already leaves such lines out.
+
+The guide's example store, one tab of a JSON file that holds several, is a test
+(`TestGuideExample`), so the example runs.
+
+**Live suite.** No live case, as designed. One run of the whole suite, by the
+orchestrating session, to check the refactor against the API: 23 passed in 111
+seconds, with the counts where step c left them, at 68 writes and 84 reads (4 reads
+were refused on the quota and sent again).

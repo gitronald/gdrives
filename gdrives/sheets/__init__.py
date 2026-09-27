@@ -11,22 +11,26 @@ pull_values`` works regardless of which submodule defines a name:
 
 - ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
   lookups, and the structural ``spreadsheets.batchUpdate``
-- ``retry``: ``with_retry`` and the retryable status sets
-- ``cells``: canonical cell strings, column types, row keys, and schema checks
+- ``retry``: ``with_retry``, the retryable status sets, and ``retry_notices``
+- ``cells``: canonical cell strings, column types, typed rows, row keys, and
+  schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
-  records
+  records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
-  and read back
-- ``structure``: add and delete columns by header name, create missing tabs,
-  and set column widths
+  and read back, and ``insert_point``, the row its new rows go above
+- ``stores``: where a tab's local side and its base are kept (``Store``,
+  ``FileStore``, ``MemoryStore``)
+- ``structure``: add, place, and delete columns by header name, create
+  missing tabs, set column widths, and find and clear link formatting
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
-  ``pull_tab``, ``push_tab``, ``pull_all_tabs``, ``run_target``) and report it
+  ``pull_tab``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
+  ``run_target``) and report it
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -44,17 +48,27 @@ from gdrives.sheets.apply import (
     ReadBackError,
     SheetChangedError,
     apply_plan,
+    insert_point,
     verify,
 )
 from gdrives.sheets.cells import (
+    BLANK_KEYS,
     COLUMN_TYPES,
+    SERIAL_TYPES,
     ColumnSchema,
     Problem,
+    cell_problem,
+    check_blank_keys,
+    column_type,
+    decode_rows,
+    encode_rows,
     from_cell,
     index_rows,
+    normalize_cell,
     normalize_key,
     problems,
     row_key,
+    serial_to_cell,
     to_cell,
 )
 from gdrives.sheets.commands import (
@@ -70,6 +84,7 @@ from gdrives.sheets.commands import (
     run_set,
     run_sync,
     run_update,
+    run_widths,
 )
 from gdrives.sheets.config import (
     BOOTSTRAPS,
@@ -77,6 +92,7 @@ from gdrives.sheets.config import (
     INPUT_OPTIONS,
     LOCAL_EXTENSIONS,
     MODES,
+    ON_INVALID,
     Config,
     ConfigError,
     TabConfig,
@@ -86,6 +102,7 @@ from gdrives.sheets.config import (
     parse_config,
 )
 from gdrives.sheets.files import (
+    NEWLINES,
     Records,
     read_records,
     read_values_csv,
@@ -98,13 +115,20 @@ from gdrives.sheets.merge import (
     ROW_FLAGS,
     SIDES,
     Cell,
+    HeldCell,
     MergePlan,
     NewRow,
     Override,
     RowFlag,
     merge,
 )
-from gdrives.sheets.retry import IDEMPOTENT_STATUSES, RATE_LIMIT_STATUSES, with_retry
+from gdrives.sheets.retry import (
+    IDEMPOTENT_STATUSES,
+    RATE_LIMIT_STATUSES,
+    RetryNotice,
+    retry_notices,
+    with_retry,
+)
 from gdrives.sheets.rules import (
     add_conditional_rule,
     build_formula_rule,
@@ -116,13 +140,27 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
+    CELL_LINK_FIELD,
+    LINK_FIELDS,
+    RUNS_FIELD,
+    WIDTH_FIELDS,
+    LinkedCell,
     add_columns,
+    clear_link_format,
     delete_columns,
     ensure_tabs,
+    get_column_widths,
+    link_clear,
+    linked_cells,
+    place_columns,
     set_column_widths,
+    strip_links,
 )
 from gdrives.sheets.sync import (
+    STAGES,
+    CheckContext,
     Replacement,
     SyncReport,
     TabPlan,
@@ -132,11 +170,18 @@ from gdrives.sheets.sync import (
     plan_tab,
     pull_all_tabs,
     pull_tab,
+    push_rows,
     push_tab,
     run_target,
     sync_tab,
 )
-from gdrives.sheets.table import EmptyTabError, Table, parse_tab, read_tab
+from gdrives.sheets.table import (
+    EmptyTabError,
+    Table,
+    parse_tab,
+    pull_serials,
+    read_tab,
+)
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -145,62 +190,85 @@ from gdrives.sheets.values import (
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
     USER_ENTERED,
+    GridTooLargeError,
     TabGrid,
+    TabListing,
     append_values,
     batch_update_spreadsheet,
     batch_update_values,
     clear_values,
+    decode_errors,
     first_tab,
     list_tabs,
+    pull_grid,
     pull_many,
     pull_values,
     tab_grid,
+    tab_listing,
     tab_sheet_ids,
     update_values,
 )
 
 __all__ = [
+    "BLANK_KEYS",
     "ApplyError",
     "ApplyResult",
     "BOOTSTRAPS",
+    "CELL_LINK_FIELD",
     "COLUMN_TYPES",
     "CONFIG_NAME",
     "Cell",
+    "CheckContext",
     "ColumnSchema",
     "Config",
     "ConfigError",
     "EmptyTabError",
     "FORMATTED_STRING",
+    "FileStore",
     "FORMATTED_VALUE",
     "FORMULA",
+    "GridTooLargeError",
     "IDEMPOTENT_STATUSES",
+    "HeldCell",
     "INPUT_OPTIONS",
+    "LINK_FIELDS",
     "LOCAL_EXTENSIONS",
+    "LinkedCell",
     "MODES",
+    "MemoryStore",
     "MergePlan",
+    "NEWLINES",
     "NewRow",
+    "ON_INVALID",
     "OVERRIDE_REASONS",
     "Override",
     "Problem",
     "RATE_LIMIT_STATUSES",
     "RAW",
     "ROW_FLAGS",
+    "RUNS_FIELD",
+    "RetryNotice",
     "ReadBackError",
     "Records",
     "Replacement",
     "RowFlag",
     "SERIAL_NUMBER",
+    "SERIAL_TYPES",
     "SIDES",
+    "STAGES",
     "SheetChangedError",
+    "Store",
     "SyncReport",
     "TabConfig",
     "TabGrid",
+    "TabListing",
     "TabPlan",
     "TabReport",
     "Table",
     "Target",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
+    "WIDTH_FIELDS",
     "a1_quote",
     "a1_to_grid_range",
     "add_columns",
@@ -211,13 +279,20 @@ __all__ = [
     "batch_update_spreadsheet",
     "batch_update_values",
     "build_formula_rule",
+    "cell_problem",
+    "check_blank_keys",
+    "clear_link_format",
     "clear_values",
     "color_to_hex",
     "column_index",
     "column_letter",
+    "column_type",
+    "decode_rows",
+    "decode_errors",
     "delete_columns",
     "delete_conditional_rule",
     "describe_rule",
+    "encode_rows",
     "ensure_tabs",
     "find_config",
     "find_rows",
@@ -226,23 +301,32 @@ __all__ = [
     "format_rules",
     "format_values",
     "from_cell",
+    "get_column_widths",
     "grid_range_to_a1",
     "hex_to_color",
     "index_rows",
+    "insert_point",
+    "link_clear",
+    "linked_cells",
     "list_conditional_rules",
     "list_tabs",
     "load_config",
     "merge",
+    "normalize_cell",
     "normalize_key",
     "parse_config",
     "parse_pairs",
     "parse_tab",
+    "place_columns",
     "plan_tab",
     "problems",
     "pull_all_tabs",
+    "pull_grid",
     "pull_many",
+    "pull_serials",
     "pull_tab",
     "pull_values",
+    "push_rows",
     "push_tab",
     "read_records",
     "read_rule_json",
@@ -260,12 +344,17 @@ __all__ = [
     "run_set",
     "run_sync",
     "run_target",
+    "retry_notices",
     "run_update",
+    "run_widths",
+    "serial_to_cell",
     "set_by_match",
     "set_column_widths",
     "split_a1",
+    "strip_links",
     "sync_tab",
     "tab_grid",
+    "tab_listing",
     "tab_sheet_ids",
     "to_cell",
     "update_values",

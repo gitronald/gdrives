@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: done
+branch: feature/sheets-sync-adoption-f-push-rows-and-links
 ---
 
 # 007f — Add push_rows, written cells, and link formatting
@@ -178,3 +178,84 @@ reproducing it, in two parts (decision 14).
   one exception a tab can ask for.
 - Changelog: `push_rows`, `clear_link_format`, `linked_cells`, `clear_links`,
   `pull_grid`, `GridTooLargeError`, and the two `ApplyResult` fields under Added.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-f-push-rows-and-links`, cut from step e's branch,
+with a draft PR onto it.
+
+| Commit | Part |
+|---|---|
+| `48bf48c` | `push_rows`, with `push_tab` reading its store and calling it |
+| `8937fa5` | `ApplyResult.pushed_cells` and `appended_columns` |
+| `526fb09` | `pull_grid`, `GridTooLargeError`, and the fake's links, runs, `repeatCell`, and masked grid reads |
+| `2210f96` | `LinkedCell`, `linked_cells`, and `clear_link_format` |
+| `d420f7d` | `strip_links`, `clear_links` on `push_rows` and `apply_plan`, and the tab field |
+| `be233b5` | The guide, the changelog, and the live case |
+
+Every `push_tab` test passes unchanged over `push_rows`.
+
+Decisions made during the work:
+
+- **The two new `ApplyResult` fields are compared.** A result that wrote other cells
+  is another result. Nine tests compared a whole result built from four values, and
+  now give the two lists. It is in the changelog under Changed, for a caller that does
+  the same.
+- **`push_rows` with the default `label` says `no rows to push`**, since `rows has no
+  rows` does not read. With a label given it says what `push_tab` said:
+  `local file <path> has no rows`.
+- **`push_rows` takes the columns of the rows, for `CheckContext.columns`, from the
+  rows' own keys** in first-seen order. It refuses `columns` that are empty, blank, or
+  repeated, which a config's loader refuses for `push_tab`.
+- **`pull_grid` returns the `GridData` of its range**, the first `data` block of the
+  first sheet, and an empty dict when the range holds nothing the mask names.
+  `decode_errors` looks the two `httplib2` classes up by module name, which is what
+  the test of a release without them calls.
+- **`linked_cells` and `clear_link_format` take `header=`, and `clear_link_format`
+  takes `sheet_id=`**, each saving a read for a caller that has them. `linked_cells`
+  reads from the first wanted column to the last, not from column A.
+- **The header row is a row like any other** to both. A push writes the header too,
+  and a header cell that is a domain is linked.
+- **`clear_link_format(rows=)` takes 1-based spreadsheet rows**, in any order, and
+  sends one request per run of adjacent rows and columns.
+- **`strip_links` was added.** A run that clears what it wrote needs the links found,
+  the clear, and the links left, and `clear_link_format` followed by `linked_cells`
+  reads the grid three times for it. `strip_links` reads once when the write left no
+  link, and twice with one write when it left some.
+- **`link_clear` is public**, as the one place a clearing `repeatCell` is built.
+  `apply_plan` builds its own clears with it.
+- **A pushed cell has its runs cleared with its link**, in one `repeatCell` under the
+  mask of both. The push replaced the cell's text, so runs over the old text mean
+  nothing. `clear_link_format` keeps the runs of a cell that holds no link in them,
+  since it has not changed the text.
+- **`apply_plan(clear_links=True)` reads the grid size when it has pushes and no new
+  rows**, for the `sheetId` its clears need. It is one read more beside the read-back
+  of the links.
+
+**What the fake assumes and nothing probed.** A value that is not a URL, written over
+a linked cell, takes the link away. No library code rests on it: a run clears the
+cells it wrote and reads their links back.
+
+**Seen and left.** With `insert_above` on a column outside the projection, the
+re-read includes that column, and the write of the new rows covers it with blank
+cells. The rows are new, so nothing is lost, but the module's docstring says only the
+projection's columns are written. It is as 0.11.0 does it, and outside this plan.
+
+**Live suite.** One case, which passed at the first run against the API: it seeds a
+URL, a bare domain, a URL in a sentence, an email address, and a link on part of a
+cell's text with `RAW` input, reads the links (P1 and P5), pushes with `clear_links`,
+writes one value again, and reads the links once more (P3). One run of the whole
+suite, by the orchestrating session:
+
+| | Writes | Reads |
+|---|---|---|
+| Before this step | 68 | 84 |
+| The new case | 6 | 9 |
+| After | 74 | 93 |
+
+24 passed in 142 seconds. 5 reads were refused on the quota and sent again, which the
+counts above leave out. The case is over the 6 reads that subplan h budgets for one: a
+push costs 5, and the clear and its read-back 2. Both of the suite's counts are now
+over the limit of 60 a minute, so every run waits on refusals.

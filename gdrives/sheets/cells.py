@@ -1,4 +1,4 @@
-"""Canonical cell strings, declared column types, row keys, and schema checks.
+"""Canonical cell strings, declared column types, typed rows, row keys, and schemas.
 
 A record is ``dict[str, str]`` keyed by header name, and every value in it is a
 **canonical cell string**: the text the Sheets API returns for a value written
@@ -7,23 +7,51 @@ edit from a difference in representation (``3.0`` against ``"3"``, ``True``
 against ``"TRUE"``).
 
 Column types are declared, never inferred, because an all-blank column carries
-no type to infer. A blank cell is ``None`` under every type.
+no type to infer. A blank cell is ``None`` under every type. A type is
+declared by its name or by its class (:func:`column_type`), and
+:func:`encode_rows` and :func:`decode_rows` move whole rows of typed values to
+records and back.
 """
 
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 #: A typed cell value, as :func:`from_cell` returns it.
 CellValue = str | int | float | bool | date | datetime | None
 
+#: A column type as it is declared: by its name, or by its class.
+ColumnType = str | type
+
 #: The declarable column types. ``str`` is the default.
 COLUMN_TYPES = frozenset({"str", "int", "float", "bool", "date", "datetime"})
 
+# The class that declares each type. bool subclasses int and datetime
+# subclasses date, so a class is matched by identity.
+_CLASSES: tuple[tuple[type, str], ...] = (
+    (str, "str"),
+    (int, "int"),
+    (float, "float"),
+    (bool, "bool"),
+    (date, "date"),
+    (datetime, "datetime"),
+)
+
+#: How a blank key cell is taken: ``refuse`` refuses a row with any, and
+#: ``partial`` only a row whose every key cell is blank.
+BLANK_KEYS = frozenset({"refuse", "partial"})
+
+#: The column types a sheet holds as serial numbers.
+SERIAL_TYPES = frozenset({"date", "datetime"})
+
 # An integer as to_cell writes one: digits with an optional minus sign.
 _INTEGER = re.compile(r"-?\d+")
+
+# Day 0 of a sheet's serial numbers, and the milliseconds in one day.
+_SERIAL_EPOCH = datetime(1899, 12, 30)
+_DAY_MILLISECONDS = 86_400_000
 
 
 def to_cell(value: Any) -> str:
@@ -42,18 +70,59 @@ def to_cell(value: Any) -> str:
     return str(value)
 
 
-def _check_type(type_: str) -> None:
-    if type_ not in COLUMN_TYPES:
+def _header_row(grid: Sequence[Sequence[Any]]) -> list[str]:
+    """The header row of a grid as read: canonical strings, stripped."""
+    first: Sequence[Any] = grid[0] if grid else []
+    return [to_cell(cell).strip() for cell in first]
+
+
+def _check_type(type_: Any) -> None:
+    if not isinstance(type_, str) or type_ not in COLUMN_TYPES:
         raise ValueError(
             f"unknown column type {type_!r}; expected one of {sorted(COLUMN_TYPES)}"
         )
 
 
-def from_cell(text: str, type_: str = "str") -> CellValue:
-    """Parse a canonical cell string as the declared ``type_``.
+def column_type(type_: ColumnType) -> str:
+    """The name of a column type declared by its name or by its class.
+
+    ``"int"`` and ``int`` are both ``"int"``. The classes are ``str``,
+    ``int``, ``float``, ``bool``, ``date``, and ``datetime``, matched by
+    identity: ``bool`` is ``"bool"`` and not ``"int"``, and a subclass of one
+    of them is none of them. Raises ValueError for anything else.
+    """
+    for declared, name in _CLASSES:
+        if type_ is declared:
+            return name
+    _check_type(type_)
+    return str(type_)
+
+
+def _declared(types: Mapping[str, ColumnType] | None, who: str = "") -> dict[str, str]:
+    """Each declared type by name, refusing any that is not a column type.
+
+    Every unknown type is listed in one ValueError, each by its column.
+    ``who`` starts each message, for a caller that names itself in its
+    errors (``"merge: "``).
+    """
+    declared: dict[str, str] = {}
+    found: list[str] = []
+    for column, type_ in (types or {}).items():
+        try:
+            declared[column] = column_type(type_)
+        except ValueError as e:
+            found.append(f"{who}column {column!r}: {e}")
+    if found:
+        raise ValueError("; ".join(found))
+    return declared
+
+
+def from_cell(text: str, type_: ColumnType = "str") -> CellValue:
+    """Parse a canonical cell string as the declared ``type_``, a name or a class.
 
     A blank cell is ``None`` under every type. ``from_cell(to_cell(v), t)``
-    returns ``v`` for any ``v`` of type ``t``. Raises ValueError when ``text``
+    returns ``v`` for any ``v`` of type ``t`` but the empty string, which is a
+    blank cell and comes back ``None``. Raises ValueError when ``text``
     is not a value of that type: surrounding whitespace, digit-group
     underscores, and a fractional ``int`` are refused rather than coerced, so a
     cell never silently changes meaning.
@@ -64,7 +133,7 @@ def from_cell(text: str, type_: str = "str") -> CellValue:
     - ``date`` / ``datetime``: ISO 8601, as ``date.isoformat`` and ``str`` of a
       datetime write them
     """
-    _check_type(type_)
+    type_ = column_type(type_)
     if text == "":
         return None
     if type_ == "str":
@@ -91,6 +160,127 @@ def from_cell(text: str, type_: str = "str") -> CellValue:
         raise ValueError(problem) from None
 
 
+def serial_to_cell(number: float, type_: ColumnType) -> str:
+    """The canonical cell string of a date or datetime given as a serial number.
+
+    A sheet holds a date as the count of days since 1899-12-30, with the time
+    of day as the fraction, and returns that number under the
+    ``SERIAL_NUMBER`` render. A ``datetime`` is rounded to the millisecond,
+    which a serial keeps exactly, and written as :func:`to_cell` writes one. A
+    ``date`` takes a serial with no time of day. The value is naive: a serial
+    carries no time zone, and is in the spreadsheet's own.
+
+    Raises ValueError for a type that is neither, a ``date`` serial holding a
+    time of day, a value that is not a number (a boolean is not one here), and
+    a number no date can hold.
+    """
+    name = column_type(type_)
+    if name not in SERIAL_TYPES:
+        raise ValueError(f"a serial number is a date or a datetime, not {name!r}")
+    problem = f"{number!r} is not a valid {name} serial"
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        raise ValueError(problem)
+    try:
+        elapsed = timedelta(milliseconds=round(number * _DAY_MILLISECONDS))
+        moment = _SERIAL_EPOCH + elapsed
+    except (ValueError, OverflowError):
+        raise ValueError(problem) from None
+    if name == "datetime":
+        return to_cell(moment)
+    if moment.time() != time():
+        raise ValueError(f"{problem}: it holds a time of day")
+    return to_cell(moment.date())
+
+
+def normalize_cell(text: str, type_: ColumnType = "str") -> str:
+    """``text`` as :func:`to_cell` writes its value, for comparing two cells.
+
+    Two cell strings can differ and mean one value: ``true`` and ``TRUE`` in
+    a ``bool`` column, ``3.0`` and ``3`` in a ``float`` column. A cell that
+    parses as ``type_`` is returned in the one form its value has; a cell that
+    does not is returned unchanged, to be compared as text. Parsing is as
+    strict as :func:`from_cell`: nothing is coerced. Only comparisons use
+    this form; the stored text is never rewritten.
+    """
+    name = column_type(type_)
+    try:
+        return to_cell(from_cell(text, name))
+    except ValueError:
+        return text
+
+
+# -- typed rows --
+
+
+def encode_rows(
+    rows: Sequence[Mapping[str, Any]], columns: Sequence[str] | None = None
+) -> list[dict[str, str]]:
+    """Turn rows of typed values into records of canonical cell strings.
+
+    Every value goes through :func:`to_cell`. Each record holds ``columns``
+    in that order, with a column its row lacks blank; ``columns=None`` takes
+    every key of every row, in first-seen order. Column names are used as
+    given: a row built in code has the names its code gave it.
+
+    Raises one ValueError listing every problem, each by the row's 1-based
+    position: a ``list`` or ``dict`` value, which is not a cell, and a column
+    that ``columns`` does not name, which would be dropped.
+    """
+    if columns is None:
+        names = list(dict.fromkeys(column for row in rows for column in row))
+    else:
+        names = list(columns)
+    known = set(names)
+    found: list[str] = []
+    records: list[dict[str, str]] = []
+    for position, row in enumerate(rows, start=1):
+        found.extend(
+            f"row {position}, column {column!r}: nested values are not cells"
+            for column, value in row.items()
+            if column in known and isinstance(value, (list, dict))
+        )
+        unknown = [column for column in row if column not in known]
+        if unknown:
+            found.append(f"row {position} has unknown columns {unknown}")
+        records.append({column: to_cell(row.get(column)) for column in names})
+    if found:
+        raise ValueError("; ".join(found))
+    return records
+
+
+def decode_rows(
+    records: Sequence[Mapping[str, str]], types: Mapping[str, ColumnType]
+) -> list[dict[str, CellValue]]:
+    """Parse records of canonical cell strings into rows of typed values.
+
+    Each cell is parsed by :func:`from_cell` as its column's type in
+    ``types``, a name or a class, and as ``str`` for a column ``types`` does
+    not name. A blank cell is ``None``.
+
+    ``decode_rows(encode_rows(rows), types) == rows`` for rows whose values
+    match ``types``, with two exceptions: a value of ``""`` comes back
+    ``None``, and so does a column a row lacked.
+
+    Raises one ValueError listing every cell that does not parse, each by the
+    row's 1-based position and its column, and an unknown type in ``types``
+    whatever the records hold.
+    """
+    declared = _declared(types)
+    found: list[str] = []
+    rows: list[dict[str, CellValue]] = []
+    for position, record in enumerate(records, start=1):
+        row: dict[str, CellValue] = {}
+        for column, text in record.items():
+            try:
+                row[column] = from_cell(text, declared.get(column, "str"))
+            except ValueError as e:
+                found.append(f"row {position}, column {column!r}: {e}")
+        rows.append(row)
+    if found:
+        raise ValueError("; ".join(found))
+    return rows
+
+
 # -- row keys --
 
 
@@ -112,12 +302,21 @@ def row_key(record: Mapping[str, str], key: Sequence[str]) -> tuple[str, ...]:
     return tuple(normalize_key(record.get(column, "")) for column in key)
 
 
+def check_blank_keys(blank_keys: str) -> None:
+    """Refuse a ``blank_keys`` setting that is not one of :data:`BLANK_KEYS`."""
+    if blank_keys not in BLANK_KEYS:
+        raise ValueError(
+            f"blank_keys must be one of {sorted(BLANK_KEYS)}, not {blank_keys!r}"
+        )
+
+
 def index_rows(
     rows: Sequence[Mapping[str, str]],
     key: Sequence[str],
     *,
     side: str,
     numbers: Sequence[int] | None = None,
+    blank_keys: str = "refuse",
 ) -> dict[tuple[str, ...], int]:
     """Map each row's normalized key to its row number, refusing bad keys.
 
@@ -126,7 +325,14 @@ def index_rows(
     ValueError naming ``side`` (``"local"``, ``"tab 'Members'"``) when any row
     has a blank key cell, or when two rows share a key, listing every such
     row at once so a single run shows everything to fix.
+
+    ``blank_keys="partial"`` is for a composite key of which a component is
+    absent on some rows, where the others still identify the row: a row is
+    refused only when its every key cell is blank. Two rows share a key when
+    their components agree, blank ones included. With a one-column key the
+    two settings are the same.
     """
+    check_blank_keys(blank_keys)
     if not key:
         raise ValueError(f"{side}: no key columns to index rows by")
     labels = list(numbers) if numbers is not None else list(range(1, len(rows) + 1))
@@ -135,7 +341,7 @@ def index_rows(
     duplicates: dict[tuple[str, ...], list[int]] = {}
     for label, row in zip(labels, rows, strict=True):
         found = row_key(row, key)
-        if "" in found:
+        if not any(found) or (blank_keys == "refuse" and "" in found):
             blank.append(label)
         elif found in index:
             duplicates.setdefault(found, [index[found]]).append(label)
@@ -161,7 +367,8 @@ class ColumnSchema:
     """What one column must hold: its type, whether it may be blank, its values.
 
     ``allowed`` lists the permitted values, compared as canonical strings; a
-    blank cell is checked by ``required``, never by ``allowed``.
+    blank cell is checked by ``required``, never by ``allowed``. ``type`` is
+    the type's name; :meth:`of` takes a class as well.
     """
 
     type: str = "str"
@@ -170,6 +377,21 @@ class ColumnSchema:
 
     def __post_init__(self) -> None:
         _check_type(self.type)
+
+    @classmethod
+    def of(
+        cls,
+        type_: ColumnType = "str",
+        *,
+        required: bool = False,
+        allowed: Collection[Any] | None = None,
+    ) -> "ColumnSchema":
+        """A schema whose type is given by name or by class (``int``, ``date``).
+
+        The name is what is stored, so the result equals the schema built
+        from the name.
+        """
+        return cls(type=column_type(type_), required=required, allowed=allowed)
 
 
 @dataclass(frozen=True)
@@ -188,8 +410,11 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
-def _cell_problem(text: str, schema: ColumnSchema) -> str | None:
-    """Why ``text`` does not fit ``schema``, or None when it does."""
+def cell_problem(text: str, schema: ColumnSchema) -> str | None:
+    """Why ``text`` does not fit ``schema``, or None when it does.
+
+    The reason is the text :func:`problems` reports for the cell.
+    """
     if text == "":
         return "is required" if schema.required else None
     try:
@@ -221,7 +446,7 @@ def problems(
     for position, row in enumerate(rows, start=1):
         for column, spec in schema.items():
             text = row.get(column, "")
-            reason = _cell_problem(text, spec)
+            reason = cell_problem(text, spec)
             if reason is not None:
                 found.append(
                     Problem(

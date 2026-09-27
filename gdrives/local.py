@@ -10,6 +10,7 @@ that become local file names are made safe to join onto a directory.
 import os
 import re
 import stat
+import unicodedata
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -118,6 +119,27 @@ def printable(text: str) -> str:
     the clipboard (OSC 52). Each control character is shown as ``\\xNN``.
     """
     return CONTROL_CHARACTERS.sub(_escape_control, text)
+
+
+def slug(title: str) -> str:
+    """A title as a lower-case file stem of letters, digits, and hyphens.
+
+    Each run of characters other than letters and digits becomes one hyphen,
+    and hyphens are trimmed from the ends: ``Form responses 1`` is
+    ``form-responses-1``. Letters and digits of any script are kept, and a
+    combining mark stays with the letter it follows, so a title is one stem
+    whether its accents are composed or not. Raises ValueError for a title
+    that leaves nothing.
+    """
+    kept: list[str] = []
+    # Composed after lower-casing, which can decompose a letter.
+    for ch in unicodedata.normalize("NFC", title.lower()):
+        marks = bool(kept) and kept[-1] != "-" and unicodedata.category(ch)[0] == "M"
+        kept.append(ch if ch.isalnum() or marks else "-")
+    stem = re.sub(r"-+", "-", "".join(kept)).strip("-")
+    if not stem:
+        raise ValueError(f"{title!r} has no letter or digit to make a slug of")
+    return stem
 
 
 def safe_filename(name: str) -> str:
