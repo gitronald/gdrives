@@ -121,7 +121,7 @@ not check them. The table below is the status of record for the pieces.
 | [`e-stores.md`](subplans/e-stores.md) | The store protocol for the local side and the base | 6 | R2, R5, R12, D9 | active |
 | [`f-push-rows-and-links.md`](subplans/f-push-rows-and-links.md) | `push_rows`, the cells a run wrote, and link formatting | 7, 8, 16 | R3, R7, R8, D11 to D14, P1 to P8 | active |
 | [`g-tabs-and-tools.md`](subplans/g-tabs-and-tools.md) | Tabs by `sheetId`, one tab listing per run, column widths, `--all-tabs` options, and the retry notice | 17, 18 | M7, M8, M12, D8 | active |
-| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15, P13 | draft |
+| [`h-docs-and-release.md`](subplans/h-docs-and-release.md) | The guide, the changelog, the exports, and the live suite's request budget | 19 | D5, D7, D10, M6, M9, R15, P13 | active |
 
 Each subplan keeps its own Log. Entries that concern the whole effort go in this file's
 Log.

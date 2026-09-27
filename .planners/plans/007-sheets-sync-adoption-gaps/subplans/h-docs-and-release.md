@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-h-docs-and-release
 ---
 
 # 007h — Write the guide sections, check the exports, and state the live budget
