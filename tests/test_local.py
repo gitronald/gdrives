@@ -245,7 +245,33 @@ class TestSlug:
         assert slug(title) == stem
         assert slug(stem) == stem
 
-    @pytest.mark.parametrize("title", ["", "   ", "!!!", "--", "../.."])
+    @pytest.mark.parametrize(
+        ("title", "stem"),
+        [
+            # Decomposed accents, as some exports write them.
+            ("re\u0301sume\u0301 list", "r\u00e9sum\u00e9-list"),
+            ("Cafe\u0301", "caf\u00e9"),
+            # Lower-casing a dotted capital I leaves a mark with no composed form.
+            ("\u0130stanbul", "i\u0307stanbul"),
+            # A vowel sign is a mark, and not a letter by itself.
+            (
+                "\u0939\u093f\u0902\u0926\u0940 2026",
+                "\u0939\u093f\u0902\u0926\u0940-2026",
+            ),
+        ],
+    )
+    def test_a_combining_mark_stays_with_its_letter(self, title, stem):
+        assert slug(title) == stem
+        assert slug(stem) == stem
+
+    def test_composed_and_decomposed_titles_are_one_stem(self):
+        assert slug("R\u00e9sum\u00e9") == slug("Re\u0301sume\u0301")
+
+    def test_a_mark_with_no_letter_before_it_is_dropped(self):
+        assert slug("\u0301a") == "a"
+        assert slug("a - \u0301b") == "a-b"
+
+    @pytest.mark.parametrize("title", ["", "   ", "!!!", "--", "../..", "\u0301"])
     def test_a_title_that_leaves_nothing_is_refused(self, title):
         with pytest.raises(ValueError, match="has no letter or digit"):
             slug(title)
