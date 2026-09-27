@@ -199,3 +199,29 @@ the orchestrating session, after the case had passed by itself:
 25 passed in 76 seconds. 3 reads were refused on the quota and sent again, which the
 counts above leave out. The live suite runs one tab at a time, so the listing saves
 it little: the saving is one read per tab after the first of a run.
+
+### 2026-09-27 — plan 008 merged in
+
+Plan [008](../../008-oauth-token-and-consent-safety/plan.md) merged into `dev` and
+shipped as 0.12.0 after this step was pushed, so this plan resolved the overlap. `dev`
+was merged into the umbrella branch and carried up the stack, and reached this branch
+as `acc7289`. The umbrella's Log has the whole merge.
+
+- **Nothing conflicted here.** `gdrives/cli.py`, `gdrives/sheets/commands.py`, and
+  `tests/test_sheets_commands.py` merged by themselves: 008 took
+  `_announce_credentials` out of `commands.py` and changed the two calls to it, and
+  this step's edits are elsewhere in the file.
+- **`sheets-widths` announces a wait with no edit.** 008 put the announcement in
+  `_cli_errors`, which every command enters, this step's one included.
+- **No expectation of this step's tests changed.** They compare the whole of stderr,
+  and 008 prints the credential line on a preview only when the authentication is
+  about to wait on a consent or a token refresh. The tests run on a service that is
+  patched in, so neither is pending and stderr is what it was.
+- **Two tests were added** to 008's `TestAWaitIsAnnounced`, for what neither plan had
+  tested alone: `sheets-widths` with a token that is refreshed first, and the order
+  of stderr when such a run also retries a call, which is the spreadsheet ID, the
+  credential line, then the retry notice.
+
+Ruff and pyrefly are clean, and 2189 unit tests pass at 100% coverage. The live suite
+was not run for the merge: 008 has no live tests and changed no request. Step h runs
+it.
