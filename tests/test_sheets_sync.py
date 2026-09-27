@@ -6,6 +6,8 @@ base file bytes, and the calls made. A preview must make no write of any
 kind, and a failed step must leave every later artifact untouched.
 """
 
+from datetime import date, datetime
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
@@ -293,6 +295,111 @@ class TestSync:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         run(grid, target, apply=True)
         assert grid.values("T") == [HEADER, ROWS[0], ["c", "Cy", "3"], ROWS[1]]
+
+
+class TestTypedDates:
+    """A column declared a date reads as ISO 8601 whatever the sheet displays."""
+
+    HEADER = ["id", "on", "at"]
+    SCHEMA = {"on": {"type": "date"}, "at": {"type": "datetime"}}
+    SHEET = [
+        ["a", date(2026, 9, 27), datetime(2026, 9, 27, 10, 30, 15)],
+        ["b", "2026-09-28", "2026-09-28 01:02:03"],
+    ]
+    ISO = [
+        ["a", "2026-09-27", "2026-09-27 10:30:15"],
+        ["b", "2026-09-28", "2026-09-28 01:02:03"],
+    ]
+
+    def scene(self, tmp_path, local=None, base=None, **fields):
+        target = make_target(tmp_path, schema=self.SCHEMA, **fields)
+        write_local(target, *(local or self.ISO), header=self.HEADER)
+        write_base(target, *(base or self.ISO), header=self.HEADER)
+        return FakeSheetGrid({"T": [self.HEADER, *self.SHEET]}), target
+
+    def test_date_cells_are_in_sync_with_iso_text(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        before = snapshot(target)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0 and report.problems == []
+        assert not (report.wrote_sheet or report.wrote_local or report.wrote_base)
+        assert snapshot(target) == before
+        assert grid.methods == ["spreadsheets.get", "values.get", "values.batchGet"]
+        (_, kwargs) = grid.calls[-1]
+        assert kwargs["ranges"] == ["'T'!B:B", "'T'!C:C"]
+        assert kwargs["dateTimeRenderOption"] == "SERIAL_NUMBER"
+
+    def test_a_tab_with_no_declared_date_makes_the_reads_it_made(self, tmp_path):
+        target = make_target(tmp_path, schema={"amt": {"type": "int"}})
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        run(grid, target, apply=True)
+        assert grid.methods == ["spreadsheets.get", "values.get"]
+
+    def test_a_base_saved_from_display_text_folds_the_iso_value_once(self, tmp_path):
+        # The sheet showed whole seconds, which is what 0.11.0 read and saved.
+        grid, target = self.scene(tmp_path)
+        grid.tab("T").cells[1][2] = datetime(2026, 9, 27, 10, 30, 15, 123000)
+        report = run(grid, target, apply=True)
+        assert [(c.key, c.column, c.sheet) for c in plan_of(report).fold_cells] == [
+            (("a",), "at", "2026-09-27 10:30:15.123000")
+        ]
+        assert report.wrote_local and report.wrote_base and not report.wrote_sheet
+        again = run(grid, target, apply=True)
+        assert not (again.wrote_local or again.wrote_base or again.wrote_sheet)
+
+    def test_a_local_edit_is_pushed_as_text_and_reads_back(self, tmp_path):
+        local = [
+            ["a", "2026-10-01", "2026-09-27 10:30:15"],
+            ["b", "2026-09-28", "2026-09-28 01:02:03"],
+            ["c", "2026-09-29", ""],
+        ]
+        grid, target = self.scene(tmp_path, local=local)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", "2026-10-01", datetime(2026, 9, 27, 10, 30, 15)],
+            ["b", "2026-09-28", "2026-09-28 01:02:03"],
+            ["c", "2026-09-29"],
+        ]
+        assert base_rows(target) == local
+        again = run(grid, target, apply=True)
+        assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
+
+    def test_a_sheet_edit_folds_in_as_iso(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        grid.tab("T").cells[1][1] = date(2026, 12, 25)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert local_rows(target)[0] == ["a", "2026-12-25", "2026-09-27 10:30:15"]
+
+    def test_a_time_of_day_in_a_date_column_is_a_problem(self, tmp_path):
+        grid, target = self.scene(tmp_path)
+        grid.tab("T").cells[1][1] = datetime(2026, 9, 27, 12, 0)
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (merged): key ('a',), column 'on': '9/27/2026 12:00:00' is not a "
+            "valid date"
+        ]
+        assert writes(grid) == []
+
+    def test_insert_above_a_date_outside_the_projection(self, tmp_path):
+        header = ["id", "at"]
+        target = make_target(
+            tmp_path,
+            schema={"at": {"type": "datetime"}},
+            insert_above={"on": "9/27/2026"},
+        )
+        rows = [[row[0], row[2]] for row in self.ISO]
+        write_local(target, *rows, ["n", ""], header=header)
+        write_base(target, *rows, header=header)
+        grid = FakeSheetGrid({"T": [self.HEADER, *self.SHEET]})
+        preview = run(grid, target)
+        assert preview.insert_row == 2
+        report = run(grid, target, apply=True)
+        assert applied_of(report).appended_rows == [2]
 
 
 class TestInsertRow:

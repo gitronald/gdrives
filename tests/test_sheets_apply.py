@@ -7,6 +7,8 @@ The table a plan was computed from is read from a separate fake holding the
 same cells, so the working fake's call log starts at the apply.
 """
 
+from datetime import date
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
@@ -533,6 +535,63 @@ class TestInsertAbove:
             ["b", "old", "Bo"],
             ["c", "", "Cyd"],
         ]
+
+
+class TestTypedDates:
+    """The re-read guard and the read-back read a typed table as it was read."""
+
+    HEADER = ["id", "on", "name"]
+    ROWS = [["a", date(2026, 9, 27), "Ada"], ["b", "2026-09-28", "Bo"]]
+    SERIALS = "values.batchGet"
+
+    def sheet(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        table = read_tab(
+            FakeSheetGrid(tabs), "S", "T", self.HEADER, ["id"], types={"on": "date"}
+        )
+        return FakeSheetGrid(tabs), table
+
+    def test_a_date_cell_does_not_read_as_a_change(self):
+        grid, table = self.sheet()
+        assert [row["on"] for row in table.rows] == ["2026-09-27", "2026-09-28"]
+        result = apply_plan(
+            grid,
+            "S",
+            table,
+            plan(
+                [push("a", "name", "Al"), push("b", "on", "2026-10-01")],
+                [NewRow(("c",), {"id": "c", "on": "2026-09-29", "name": "Cy"})],
+            ),
+        )
+        assert result == ApplyResult(2, 1, [2, 3], [4])
+        assert grid.values("T") == [
+            self.HEADER,
+            ["a", date(2026, 9, 27), "Al"],
+            ["b", "2026-10-01", "Bo"],
+            ["c", "2026-09-29", "Cy"],
+        ]
+        assert grid.methods == [
+            READ,
+            self.SERIALS,
+            GRID,
+            PUSH,
+            STRUCTURE,
+            READ,
+            self.SERIALS,
+        ]
+
+    def test_a_date_changed_on_the_sheet_is_a_change(self):
+        grid, table = self.sheet()
+        grid.write("T", [[date(2026, 9, 26)]], row=2)
+        grid.tab("T").cells[1][:2] = ["a", date(2026, 9, 26)]
+        with pytest.raises(SheetChangedError, match=r"rows edited: \[\('a',\)\]"):
+            apply_plan(grid, "S", table, plan([push("a", "name", "Al")]))
+        assert PUSH not in grid.methods
+
+    def test_verify_reads_the_dates_the_same_way(self):
+        grid, table = self.sheet()
+        verify(grid, "S", table, plan([push("a", "on", "2026-09-27")]))
+        assert grid.methods == [READ, self.SERIALS]
 
 
 class TestInsertPoint:

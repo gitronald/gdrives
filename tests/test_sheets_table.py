@@ -6,11 +6,12 @@ JSON values under the unformatted render ``read_tab`` asks for.
 """
 
 from dataclasses import FrozenInstanceError
+from datetime import date, datetime
 
 import pytest
-from helpers import FakeSheetsService
+from helpers import FakeSheetGrid, FakeSheetsService
 
-from gdrives.sheets import EmptyTabError, Table, parse_tab, read_tab
+from gdrives.sheets import EmptyTabError, Table, parse_tab, pull_serials, read_tab
 
 
 def tab_of(*rows):
@@ -233,6 +234,228 @@ class TestParseTab:
     def test_an_empty_grid_has_no_header(self):
         with pytest.raises(EmptyTabError):
             parse_tab("T", [], None)
+
+
+class TestSerials:
+    """A declared date column is read from the serial numbers of a second read."""
+
+    TYPES = {"on": "date", "at": "datetime", "n": "int"}
+    # As an unformatted read with formatted dates returns the tab ...
+    GRID = [
+        ["id", "on", "note", "at"],
+        ["a", "9/27/2026", "x", "9/27/2026 10:30:15"],
+        ["b", "2026-09-27", "", "2026-09-27T10:30:15"],
+        [],
+        ["c", "9/28/2026", "", "9/28/2026 0:00:00"],
+    ]
+    # ... and as a serial read returns its two declared columns.
+    SERIALS = {
+        "on": [["on"], [46292], ["2026-09-27"], [], [46293]],
+        "at": [
+            ["at"],
+            [46292.43767361111],
+            ["2026-09-27T10:30:15"],
+            [],
+            [46292.999999988424],
+        ],
+    }
+
+    def parse(self, grid=None, serials=None, types=None, columns=None):
+        return parse_tab(
+            "T",
+            grid if grid is not None else self.GRID,
+            columns,
+            ["id"],
+            types=types if types is not None else self.TYPES,
+            serials=serials if serials is not None else self.SERIALS,
+        )
+
+    def test_serials_and_text_both_arrive_as_iso(self):
+        table = self.parse()
+        assert table.rows == [
+            {"id": "a", "on": "2026-09-27", "note": "x", "at": "2026-09-27 10:30:15"},
+            {"id": "b", "on": "2026-09-27", "note": "", "at": "2026-09-27T10:30:15"},
+            # The display text named the next day; the serial has the moment.
+            {
+                "id": "c",
+                "on": "2026-09-28",
+                "note": "",
+                "at": "2026-09-27 23:59:59.999000",
+            },
+        ]
+        assert table.row_numbers == {("a",): 2, ("b",): 3, ("c",): 5}
+
+    def test_the_table_records_the_types_of_the_columns_read(self):
+        assert self.parse().types == {"on": "date", "at": "datetime"}
+        assert self.parse(types={"on": date, "at": datetime}).types == {
+            "on": "date",
+            "at": "datetime",
+        }
+        assert self.parse(columns=["id", "on"]).types == {"on": "date"}
+        assert parse_tab("T", self.GRID, None).types == {}
+
+    def test_a_boolean_is_not_a_serial_and_a_plain_number_is(self):
+        grid = [["id", "on"], ["a", True], ["b", 45000]]
+        serials = {"on": [["on"], [True], [45000]]}
+        assert self.parse(grid, serials).rows == [
+            {"id": "a", "on": "TRUE"},
+            {"id": "b", "on": "2023-03-15"},
+        ]
+
+    def test_text_from_the_serial_read_never_replaces_the_first_read(self):
+        grid = [["id", "on"], ["a", "first"]]
+        assert self.parse(grid, {"on": [["on"], ["second"]]}).rows == [
+            {"id": "a", "on": "first"}
+        ]
+
+    def test_a_serial_that_does_not_fit_its_type_keeps_the_first_read(self):
+        # A time of day in a date column: the schema check reports the text.
+        grid = [["id", "on"], ["a", "9/27/2026 12:00:00"], ["b", "far"]]
+        serials = {"on": [["on"], [46292.5], [1e12]]}
+        assert self.parse(grid, serials).rows == [
+            {"id": "a", "on": "9/27/2026 12:00:00"},
+            {"id": "b", "on": "far"},
+        ]
+
+    def test_a_serials_grid_shorter_than_the_tab(self):
+        grid = [["id", "on"], ["a", "9/27/2026"], ["b", "9/28/2026"], ["c", ""]]
+        serials = {"on": [["on"], [46292]]}
+        assert self.parse(grid, serials).rows == [
+            {"id": "a", "on": "2026-09-27"},
+            {"id": "b", "on": "9/28/2026"},
+            {"id": "c", "on": ""},
+        ]
+
+    def test_a_blank_serial_row_keeps_the_first_read(self):
+        grid = [["id", "on"], ["a", "9/27/2026"]]
+        assert self.parse(grid, {"on": [["on"], []]}).rows == [
+            {"id": "a", "on": "9/27/2026"}
+        ]
+
+    def test_a_typed_column_with_no_serials_is_read_as_before(self):
+        table = self.parse(serials={"on": self.SERIALS["on"]})
+        assert [row["at"] for row in table.rows] == [
+            "9/27/2026 10:30:15",
+            "2026-09-27T10:30:15",
+            "9/28/2026 0:00:00",
+        ]
+        assert parse_tab("T", self.GRID, None, types=self.TYPES).rows == (
+            parse_tab("T", self.GRID, None).rows
+        )
+
+    def test_serials_for_a_column_not_declared_a_date_are_ignored(self):
+        grid = [["id", "n"], ["a", 46292]]
+        serials = {"n": [["n"], [46292]], "gone": [["gone"], [1]]}
+        assert self.parse(grid, serials).rows == [{"id": "a", "n": "46292"}]
+
+    def test_a_typed_column_the_tab_lacks(self):
+        grid = [["id", "note"], ["a", "x"]]
+        assert self.parse(grid, {}).types == {}
+        with pytest.raises(ValueError, match=r"has no column\(s\) \['on'\]"):
+            self.parse(grid, {}, columns=["id", "on"])
+
+    def test_a_typed_key_column_is_keyed_by_its_iso_date(self):
+        grid = [["on", "v"], ["9/27/2026", "x"]]
+        table = parse_tab(
+            "T",
+            grid,
+            None,
+            ["on"],
+            types={"on": "date"},
+            serials={"on": [["on"], [46292]]},
+        )
+        assert table.row_numbers == {("2026-09-27",): 2}
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type 'day'"):
+            self.parse(types={"on": "day"})
+
+
+class TestReadTabTypes:
+    ROWS = [
+        ["id", "note", "on", "", "at"],
+        ["a", "x", date(2026, 9, 27), "", datetime(2026, 9, 27, 23, 59, 59, 999000)],
+        ["b", "", "2026-09-28", "", "2026-09-28T01:02:03"],
+    ]
+    TYPES = {"on": "date", "at": "datetime"}
+
+    def test_the_declared_date_columns_cost_one_second_read(self):
+        grid = FakeSheetGrid({"My Tab": self.ROWS})
+        table = read_tab(grid, "S", "My Tab", None, ["id"], types=self.TYPES)
+        assert table.rows == [
+            {
+                "id": "a",
+                "note": "x",
+                "on": "2026-09-27",
+                "at": "2026-09-27 23:59:59.999000",
+            },
+            {"id": "b", "note": "", "on": "2026-09-28", "at": "2026-09-28T01:02:03"},
+        ]
+        assert table.types == self.TYPES
+        assert grid.calls == [
+            (
+                "values.get",
+                {
+                    "spreadsheetId": "S",
+                    "range": "'My Tab'",
+                    "valueRenderOption": "UNFORMATTED_VALUE",
+                    "dateTimeRenderOption": "FORMATTED_STRING",
+                },
+            ),
+            (
+                "values.batchGet",
+                {
+                    "spreadsheetId": "S",
+                    "ranges": ["'My Tab'!C:C", "'My Tab'!E:E"],
+                    "valueRenderOption": "UNFORMATTED_VALUE",
+                    "dateTimeRenderOption": "SERIAL_NUMBER",
+                },
+            ),
+        ]
+
+    def test_without_types_the_tab_reads_as_displayed_in_one_request(self):
+        grid = FakeSheetGrid({"T": self.ROWS})
+        table = read_tab(grid, "S", "T", ["id", "on", "at"], ["id"])
+        assert table.rows[0] == {
+            "id": "a",
+            "on": "9/27/2026",
+            "at": "9/28/2026 0:00:00",
+        }
+        assert grid.methods == ["values.get"]
+
+    @pytest.mark.parametrize(
+        "types",
+        [{}, {"note": "str", "id": "int"}, {"gone": "date"}],
+    )
+    def test_no_declared_date_column_on_the_tab_makes_one_read(self, types):
+        grid = FakeSheetGrid({"T": self.ROWS})
+        read_tab(grid, "S", "T", ["id", "note"], ["id"], types=types)
+        assert grid.methods == ["values.get"]
+
+    def test_only_the_columns_read_are_read_again(self):
+        grid = FakeSheetGrid({"T": self.ROWS})
+        table = read_tab(grid, "S", "T", ["id", "on"], ["id"], types=self.TYPES)
+        assert table.types == {"on": "date"}
+        (_, kwargs) = grid.calls[1]
+        assert kwargs["ranges"] == ["'T'!C:C"]
+
+    def test_an_unknown_type_is_refused_without_a_request(self):
+        grid = FakeSheetGrid({"T": self.ROWS})
+        with pytest.raises(ValueError, match="unknown column type"):
+            read_tab(grid, "S", "T", None, ["id"], types={"on": "day"})
+        assert grid.calls == []
+
+    def test_pull_serials_returns_each_declared_column_as_read(self):
+        grid = FakeSheetGrid({"T": self.ROWS})
+        first = read_tab(grid, "S", "T", None).header
+        serials = pull_serials(grid, "S", "T", [first], {"on": date, "note": "str"})
+        assert serials == {"on": [["on"], [46292], ["2026-09-28"]]}
+
+    @pytest.mark.parametrize("rows", [[], [[]], [["", ""]], [["id", "on", "on"]]])
+    def test_pull_serials_of_a_tab_with_no_such_column_asks_nothing(self, rows):
+        grid = FakeSheetGrid({"T": []})
+        assert pull_serials(grid, "S", "T", rows, {"at": "date"}) == {}
+        assert grid.calls == []
 
 
 class TestTable:

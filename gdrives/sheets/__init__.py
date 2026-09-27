@@ -20,7 +20,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
-  records
+  records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back, and ``insert_point``, the row its new rows go above
@@ -50,6 +50,7 @@ from gdrives.sheets.apply import (
 )
 from gdrives.sheets.cells import (
     COLUMN_TYPES,
+    SERIAL_TYPES,
     ColumnSchema,
     Problem,
     column_type,
@@ -60,6 +61,7 @@ from gdrives.sheets.cells import (
     normalize_key,
     problems,
     row_key,
+    serial_to_cell,
     to_cell,
 )
 from gdrives.sheets.commands import (
@@ -143,7 +145,13 @@ from gdrives.sheets.sync import (
     run_target,
     sync_tab,
 )
-from gdrives.sheets.table import EmptyTabError, Table, parse_tab, read_tab
+from gdrives.sheets.table import (
+    EmptyTabError,
+    Table,
+    parse_tab,
+    pull_serials,
+    read_tab,
+)
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -198,6 +206,7 @@ __all__ = [
     "Replacement",
     "RowFlag",
     "SERIAL_NUMBER",
+    "SERIAL_TYPES",
     "SIDES",
     "SheetChangedError",
     "SyncReport",
@@ -254,6 +263,7 @@ __all__ = [
     "problems",
     "pull_all_tabs",
     "pull_many",
+    "pull_serials",
     "pull_tab",
     "pull_values",
     "push_tab",
@@ -274,6 +284,7 @@ __all__ = [
     "run_sync",
     "run_target",
     "run_update",
+    "serial_to_cell",
     "set_by_match",
     "set_column_widths",
     "split_a1",

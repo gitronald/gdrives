@@ -19,6 +19,7 @@ from gdrives.sheets import (
     normalize_key,
     problems,
     row_key,
+    serial_to_cell,
     to_cell,
 )
 
@@ -204,6 +205,78 @@ class TestColumnTypes:
     def test_from_cell_refuses_a_class_that_is_no_column_type(self):
         with pytest.raises(ValueError, match="unknown column type"):
             from_cell("1", bytes)
+
+
+class TestSerialToCell:
+    """Serial numbers count days from 1899-12-30, as a live read confirmed."""
+
+    DAY = 46292  # 2026-09-27
+
+    @pytest.mark.parametrize(
+        ("number", "text"),
+        [
+            (46292, "2026-09-27"),
+            (46292.0, "2026-09-27"),
+            (0, "1899-12-30"),
+            (1, "1899-12-31"),
+            (-1, "1899-12-29"),
+            (45000, "2023-03-15"),
+        ],
+    )
+    def test_a_whole_serial_is_a_date(self, number, text):
+        assert serial_to_cell(number, "date") == text
+        assert serial_to_cell(number, date) == text
+
+    @pytest.mark.parametrize("number", [46292.5, 46292.43767361111, -0.25])
+    def test_a_date_refuses_a_time_of_day(self, number):
+        with pytest.raises(ValueError, match="is not a valid date serial"):
+            serial_to_cell(number, "date")
+
+    @pytest.mark.parametrize(
+        ("seconds", "text"),
+        [
+            (0, "2026-09-27 00:00:00"),
+            (10 * 3600 + 30 * 60 + 15, "2026-09-27 10:30:15"),
+            (10 * 3600 + 30 * 60 + 15.123, "2026-09-27 10:30:15.123000"),
+            (86399.999, "2026-09-27 23:59:59.999000"),
+            (43200, "2026-09-27 12:00:00"),
+        ],
+    )
+    def test_a_datetime_keeps_the_millisecond(self, seconds, text):
+        assert serial_to_cell(self.DAY + seconds / 86400, "datetime") == text
+        assert serial_to_cell(self.DAY + seconds / 86400, datetime) == text
+
+    def test_a_datetime_is_written_as_to_cell_writes_one(self):
+        moment = datetime(2026, 9, 27, 10, 30, 15, 123000)
+        assert serial_to_cell(46292 + 37815.123 / 86400, "datetime") == to_cell(moment)
+        assert serial_to_cell(46292.43767361111, "datetime") == "2026-09-27 10:30:15"
+
+    def test_below_a_millisecond_is_rounded_away(self):
+        assert serial_to_cell(46292 + 0.0004 / 86400, "datetime") == (
+            "2026-09-27 00:00:00"
+        )
+        assert serial_to_cell(46292 + 0.0004 / 86400, "date") == "2026-09-27"
+
+    def test_a_serial_before_the_epoch(self):
+        assert serial_to_cell(-1.5, "datetime") == "1899-12-28 12:00:00"
+        assert serial_to_cell(-693593, "date") == "0001-01-01"
+
+    @pytest.mark.parametrize(
+        "number", [True, False, "46292", None, 1e12, -1e12, float("inf"), float("nan")]
+    )
+    @pytest.mark.parametrize("type_", ["date", "datetime"])
+    def test_what_is_not_a_serial_is_refused(self, number, type_):
+        with pytest.raises(ValueError, match=f"is not a valid {type_} serial"):
+            serial_to_cell(number, type_)
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "bool", int])
+    def test_only_a_date_or_a_datetime_has_serials(self, type_):
+        with pytest.raises(ValueError, match="a serial number is a date or a datetime"):
+            serial_to_cell(46292, type_)
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            serial_to_cell(46292, "day")
 
 
 class TestEncodeRows:

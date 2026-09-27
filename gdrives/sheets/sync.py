@@ -67,7 +67,13 @@ from gdrives.sheets.structure import (
     place_columns,
     set_column_widths,
 )
-from gdrives.sheets.table import EmptyTabError, Table, parse_tab
+from gdrives.sheets.table import (
+    EmptyTabError,
+    Serials,
+    Table,
+    parse_tab,
+    pull_serials,
+)
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     RAW,
@@ -327,6 +333,8 @@ def plan_tab(
     The local rows are checked against the tab's schema and ``validate``
     first; with any problem the plan stops there (``plan`` is None and the
     report lists the problems). The merged result is checked the same way.
+    The tab is read with the schema's types: a column declared ``date`` or
+    ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
 
     With no base file yet, the tab is **bootstrapped**: the local file's
     projection is taken as the base, so sheet-only edits and rows fold in, a
@@ -426,6 +434,7 @@ def _plan(
 
     table: Table | None = None
     grid: list[list[Any]] = []
+    serials: Serials = {}
     remote: list[dict[str, str]] = []
     fresh = set(added)
     if tab.title not in list_tabs(service, spreadsheet_id):
@@ -443,7 +452,10 @@ def _plan(
             report.tab_state = "empty"
         else:
             report.tab_state = "present"
-            table, remote = _sheet_side(tab, columns, grid, whole, report, options)
+            serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
+            table, remote = _sheet_side(
+                tab, columns, grid, serials, whole, report, options
+            )
             fresh.update(report.add_columns)
     if report.tab_state != "present" and base is not None:
         raise ValueError(
@@ -489,7 +501,7 @@ def _plan(
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
     if table is not None and tab.insert_above is not None:
-        above = _insert_row(tab, table, grid, plan, report.add_columns)
+        above = _insert_row(tab, table, grid, serials, plan, report.add_columns)
         if plan.appends:
             report.insert_row, report.last_row = above, table.last_row
     if check:
@@ -501,6 +513,7 @@ def _sheet_side(
     tab: TabConfig,
     columns: Sequence[str],
     grid: Sequence[Sequence[Any]],
+    serials: Serials,
     whole: Table,
     report: TabReport,
     options: Mapping[str, Any],
@@ -508,7 +521,8 @@ def _sheet_side(
     """Read the projection from a tab that has a header, and note its structure.
 
     Returns the keyed table over the projection columns the tab has, and its
-    rows with any column still to be added as blank.
+    rows with any column still to be added as blank. ``serials`` holds the
+    serial read of the tab's declared date columns.
     """
     missing = [column for column in columns if column not in whole.header]
     keyed = [column for column in missing if column in tab.key]
@@ -529,7 +543,9 @@ def _sheet_side(
         else {}
     )
     present = [column for column in columns if column not in missing]
-    table = parse_tab(tab.title, grid, present, tab.key)
+    table = parse_tab(
+        tab.title, grid, present, tab.key, types=tab.types, serials=serials
+    )
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
 
@@ -538,6 +554,7 @@ def _insert_row(
     tab: TabConfig,
     table: Table,
     grid: Sequence[Sequence[Any]],
+    serials: Serials,
     plan: MergePlan,
     missing: Sequence[str],
 ) -> int | None:
@@ -559,7 +576,14 @@ def _insert_row(
             rows=[row | {column: ""} for row in table.rows],
         )
     elif column in table.header and column not in table.columns:
-        table = parse_tab(tab.title, grid, [*table.columns, column], tab.key)
+        table = parse_tab(
+            tab.title,
+            grid,
+            [*table.columns, column],
+            tab.key,
+            types=tab.types,
+            serials=serials,
+        )
     return insert_point(table, plan, insert_above)
 
 
@@ -807,8 +831,10 @@ def pull_tab(
 ) -> TabReport:
     """Replace ``tab``'s local file with the tab's records (with ``apply``).
 
-    The tab is read with :func:`~gdrives.sheets.table.read_tab`, over the
-    configured columns (every named column by default) and key. A missing
+    The tab is read as :func:`~gdrives.sheets.table.read_tab` reads, over the
+    configured columns (every named column by default) and key, and with the
+    schema's types, so a column declared ``date`` or ``datetime`` arrives as
+    ISO 8601 at the cost of a second read. A missing
     tab, a tab with no header row, or one with no rows is refused, and the
     local file is left alone. The records are checked against the schema and
     ``validate`` before anything is written. The report's ``replacement``
@@ -823,8 +849,11 @@ def pull_tab(
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; the local file is left alone")
     grid = _read_grid(service, spreadsheet_id, tab.title)
+    serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
     try:
-        table = parse_tab(tab.title, grid, tab.columns, tab.key)
+        table = parse_tab(
+            tab.title, grid, tab.columns, tab.key, types=tab.types, serials=serials
+        )
     except EmptyTabError:
         report.tab_state = "empty"
         raise ValueError(

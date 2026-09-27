@@ -16,7 +16,7 @@ records and back.
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 #: A typed cell value, as :func:`from_cell` returns it.
@@ -39,8 +39,15 @@ _CLASSES: tuple[tuple[type, str], ...] = (
     (datetime, "datetime"),
 )
 
+#: The column types a sheet holds as serial numbers.
+SERIAL_TYPES = frozenset({"date", "datetime"})
+
 # An integer as to_cell writes one: digits with an optional minus sign.
 _INTEGER = re.compile(r"-?\d+")
+
+# Day 0 of a sheet's serial numbers, and the milliseconds in one day.
+_SERIAL_EPOCH = datetime(1899, 12, 30)
+_DAY_MILLISECONDS = 86_400_000
 
 
 def to_cell(value: Any) -> str:
@@ -122,6 +129,38 @@ def from_cell(text: str, type_: ColumnType = "str") -> CellValue:
         return datetime.fromisoformat(text)
     except ValueError:
         raise ValueError(problem) from None
+
+
+def serial_to_cell(number: float, type_: ColumnType) -> str:
+    """The canonical cell string of a date or datetime given as a serial number.
+
+    A sheet holds a date as the count of days since 1899-12-30, with the time
+    of day as the fraction, and returns that number under the
+    ``SERIAL_NUMBER`` render. A ``datetime`` is rounded to the millisecond,
+    which a serial keeps exactly, and written as :func:`to_cell` writes one. A
+    ``date`` takes a serial with no time of day. The value is naive: a serial
+    carries no time zone, and is in the spreadsheet's own.
+
+    Raises ValueError for a type that is neither, a ``date`` serial holding a
+    time of day, a value that is not a number (a boolean is not one here), and
+    a number no date can hold.
+    """
+    name = column_type(type_)
+    if name not in SERIAL_TYPES:
+        raise ValueError(f"a serial number is a date or a datetime, not {name!r}")
+    problem = f"{number!r} is not a valid {name} serial"
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        raise ValueError(problem)
+    try:
+        elapsed = timedelta(milliseconds=round(number * _DAY_MILLISECONDS))
+        moment = _SERIAL_EPOCH + elapsed
+    except (ValueError, OverflowError):
+        raise ValueError(problem) from None
+    if name == "datetime":
+        return to_cell(moment)
+    if moment.time() != time():
+        raise ValueError(f"{problem}: it holds a time of day")
+    return to_cell(moment.date())
 
 
 # -- typed rows --

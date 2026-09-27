@@ -7,6 +7,8 @@ so a fake that drifted would fail here rather than let a wrong write pass. The
 live tests in test_sheets_integration.py pin the same points against the API.
 """
 
+from datetime import date, datetime
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error
@@ -21,8 +23,10 @@ def batch(grid, *requests):
     )
 
 
-def get(grid, range_, render=None):
+def get(grid, range_, render=None, date_time=None):
     options = {"valueRenderOption": render} if render else {}
+    if date_time:
+        options["dateTimeRenderOption"] = date_time
     return (
         grid.spreadsheets()
         .values()
@@ -69,6 +73,60 @@ class TestReads:
             [3, 2.5, True, 4.0, "007"]
         ]
         assert get(grid, "'T'")["values"] == [["3", "2.5", "TRUE", "4", "007"]]
+
+    # The first two rows hold what a live read returned for such cells: 46292
+    # and 46292.43767361111, and the text as text.
+    DATES = [
+        [date(2026, 9, 27), "2026-09-27"],
+        [datetime(2026, 9, 27, 10, 30, 15), "2026-09-27T10:30:15"],
+        [datetime(2026, 9, 27, 23, 59, 59, 999000), 45000],
+        [datetime(2026, 9, 27), True],
+    ]
+
+    def test_a_date_cell_reads_as_its_serial_number(self):
+        grid = FakeSheetGrid({"T": self.DATES})
+        for date_time in (None, "SERIAL_NUMBER"):
+            rows = get(grid, "'T'", "UNFORMATTED_VALUE", date_time)["values"]
+            assert rows == [
+                [46292, "2026-09-27"],
+                [46292.43767361111, "2026-09-27T10:30:15"],
+                [46292.999999988424, 45000],
+                [46292, True],
+            ]
+            assert type(rows[0][0]) is int and type(rows[3][0]) is int
+
+    def test_a_date_cell_reads_as_its_display_text(self):
+        grid = FakeSheetGrid({"T": self.DATES})
+        shown = [
+            ["9/27/2026", "2026-09-27"],
+            ["9/27/2026 10:30:15", "2026-09-27T10:30:15"],
+            # The display rounds to the whole second, into the next day.
+            ["9/28/2026 0:00:00", 45000],
+            ["9/27/2026 0:00:00", True],
+        ]
+        rows = get(grid, "'T'", "UNFORMATTED_VALUE", "FORMATTED_STRING")["values"]
+        assert rows == shown
+        # The default render ignores the date-time option.
+        formatted = get(grid, "'T'", None, "SERIAL_NUMBER")["values"]
+        assert formatted == [[a, str(b).upper()] for a, b in shown]
+
+    def test_batch_get_passes_the_date_time_option(self):
+        grid = FakeSheetGrid({"T": self.DATES})
+        result = (
+            grid.spreadsheets()
+            .values()
+            .batchGet(
+                spreadsheetId="S",
+                ranges=["'T'!A:A", "'T'!B:B"],
+                valueRenderOption="UNFORMATTED_VALUE",
+                dateTimeRenderOption="SERIAL_NUMBER",
+            )
+            .execute()
+        )
+        assert [block["values"][0] for block in result["valueRanges"]] == [
+            [46292],
+            ["2026-09-27"],
+        ]
 
     def test_batch_get_reads_each_range(self):
         grid = FakeSheetGrid({"T": [["a", "b"]], "U": []})

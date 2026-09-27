@@ -7,7 +7,9 @@ plan's pushed cells and new rows to the tab, in this order:
 1. **Re-read the tab** and compare its header, rows, and row numbers with the
    table. Any difference raises :class:`SheetChangedError` with nothing
    written. The Sheets API has no revision precondition, so this re-read is
-   the only tie between the plan and the write.
+   the only tie between the plan and the write. The tab is read as the table
+   was, with the table's declared types, so a date cell of a typed column
+   compares as the ISO 8601 it was read as.
 2. **Push changed cells** in one ``values.batchUpdate`` call, with ``RAW``
    input, each cell addressed by its header position and its row number in
    the fresh read.
@@ -202,7 +204,9 @@ def _reread(
         columns.append(also)
     stale = f"tab {table.tab!r} changed since it was read, so nothing was written"
     try:
-        fresh = read_tab(service, spreadsheet_id, table.tab, columns, table.key)
+        fresh = read_tab(
+            service, spreadsheet_id, table.tab, columns, table.key, types=table.types
+        )
     except ValueError as e:
         raise SheetChangedError(f"{stale}: {e}") from e
     changes = _changes(table, fresh)
@@ -388,14 +392,22 @@ def verify(
     """Read ``table``'s tab back and check that ``plan``'s sheet writes landed.
 
     Rows are found by key, not by number, so rows inserted above them do not
-    matter. Every pushed cell must hold its ``local`` value, and every new row
+    matter. The tab is read with ``table``'s declared types, as it was read
+    for the plan. Every pushed cell must hold its ``local`` value, and every new row
     must exist with its projection cells as sent. Raises
     :class:`ReadBackError` listing every mismatch at once, or when the tab no
     longer reads cleanly (a key now blank or repeated, a column gone).
     """
     failed = f"tab {table.tab!r}: the read-back does not match the write"
     try:
-        after = read_tab(service, spreadsheet_id, table.tab, table.columns, table.key)
+        after = read_tab(
+            service,
+            spreadsheet_id,
+            table.tab,
+            table.columns,
+            table.key,
+            types=table.types,
+        )
     except ValueError as e:
         raise ReadBackError(f"{failed}: {e}") from e
     rows = {row_key(row, table.key): row for row in after.rows}

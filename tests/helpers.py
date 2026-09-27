@@ -5,6 +5,7 @@ Drive API response shapes based on docs/drive-api.md.
 
 import re
 import tempfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -573,8 +574,38 @@ def _split_range(range_: str) -> tuple[str, str]:
 _SPAN_RE = re.compile(r"([A-Za-z]*)(\d*)(?::([A-Za-z]*)(\d*))?")
 
 
+def _as_moment(value: date) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime(value.year, value.month, value.day)
+
+
+def _serial(value: date) -> int | float:
+    """A date cell's serial number: days since 1899-12-30, whole for a date.
+
+    Worked out here, independently of ``gdrives.sheets.cells``, for the same
+    reason the fake parses A1 itself.
+    """
+    days = (_as_moment(value) - datetime(1899, 12, 30)) / timedelta(days=1)
+    return int(days) if days == int(days) else days
+
+
+def _shown_date(value: date) -> str:
+    """A date cell as displayed: ``m/d/yyyy``, and whole seconds for a date-time.
+
+    The display rounds to what its format shows, as the Sheets UI does, so
+    ``23:59:59.999`` shows as midnight of the next day.
+    """
+    if not isinstance(value, datetime):
+        return f"{value.month}/{value.day}/{value.year}"
+    shown = (value + timedelta(milliseconds=500)).replace(microsecond=0)
+    return f"{shown.month}/{shown.day}/{shown.year} {shown.hour}:{shown:%M:%S}"
+
+
 def _displayed(value: Any) -> str:
     """How the Sheets UI shows a stored value (the FORMATTED_VALUE render)."""
+    if isinstance(value, date):
+        return _shown_date(value)
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, float) and value.is_integer():
@@ -676,6 +707,11 @@ class FakeSheetGrid:
       dropped. ``UNFORMATTED_VALUE`` returns what was stored (a number seeded
       as a number, a RAW-written string as that string); the default
       ``FORMATTED_VALUE`` returns the displayed string.
+    - A cell seeded with a ``date`` or a ``datetime`` is a date cell. It reads
+      as its display text (``m/d/yyyy``, to the whole second), or under
+      ``UNFORMATTED_VALUE`` with ``SERIAL_NUMBER``, which is the API's default
+      ``dateTimeRenderOption``, as its serial number. A string that looks like
+      a date is a string under every option.
     - ``values.update`` / ``values.batchUpdate`` store each value as given (an
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
@@ -831,11 +867,18 @@ class FakeSheetGrid:
             )
         return tab, start_row, end_row, start_col, end_col
 
-    def _read(self, range_: str, render: str | None) -> dict[str, Any]:
+    def _read(
+        self, range_: str, render: str | None, date_time: str | None = None
+    ) -> dict[str, Any]:
         tab, r1, r2, c1, c2 = self._span(range_)
         rows = self._truncated([row[c1:c2] for row in tab.cells[r1:r2]])
         if render != "UNFORMATTED_VALUE":
             rows = [[_displayed(v) for v in row] for row in rows]
+        else:
+            shown = _shown_date if date_time == "FORMATTED_STRING" else _serial
+            rows = [
+                [shown(v) if isinstance(v, date) else v for v in row] for row in rows
+            ]
         result: dict[str, Any] = {"range": range_, "majorDimension": "ROWS"}
         if rows:  # the API omits "values" for an empty range
             result["values"] = rows
@@ -844,11 +887,18 @@ class FakeSheetGrid:
     # -- handlers --
 
     def _values_get(self, **kwargs: Any) -> dict[str, Any]:
-        return self._read(kwargs["range"], kwargs.get("valueRenderOption"))
+        return self._read(
+            kwargs["range"],
+            kwargs.get("valueRenderOption"),
+            kwargs.get("dateTimeRenderOption"),
+        )
 
     def _values_batch_get(self, **kwargs: Any) -> dict[str, Any]:
         render = kwargs.get("valueRenderOption")
-        return {"valueRanges": [self._read(r, render) for r in kwargs["ranges"]]}
+        date_time = kwargs.get("dateTimeRenderOption")
+        return {
+            "valueRanges": [self._read(r, render, date_time) for r in kwargs["ranges"]]
+        }
 
     def _store(self, range_: str, values: list[list[Any]]) -> int:
         tab, r1, r2, c1, c2 = self._span(range_)
