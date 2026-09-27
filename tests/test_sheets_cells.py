@@ -11,6 +11,9 @@ from gdrives.sheets import (
     COLUMN_TYPES,
     ColumnSchema,
     Problem,
+    column_type,
+    decode_rows,
+    encode_rows,
     from_cell,
     index_rows,
     normalize_key,
@@ -151,9 +154,203 @@ class TestFromCell:
         assert from_cell(to_cell(value), type_) == value
 
 
+class Flag(int):
+    """A subclass of a column class, which is not that class."""
+
+
+CLASSES = [
+    (str, "str"),
+    (int, "int"),
+    (float, "float"),
+    (bool, "bool"),
+    (date, "date"),
+    (datetime, "datetime"),
+]
+
+
 class TestColumnTypes:
     def test_declared_names(self):
         assert COLUMN_TYPES == {"str", "int", "float", "bool", "date", "datetime"}
+
+    @pytest.mark.parametrize("name", sorted(COLUMN_TYPES))
+    def test_a_name_is_its_own_type(self, name):
+        assert column_type(name) == name
+
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_a_class_maps_to_its_own_name(self, cls, name):
+        # bool subclasses int and datetime subclasses date: each is itself.
+        assert column_type(cls) == name
+
+    @pytest.mark.parametrize(
+        "given", ["number", "Int", "", Flag, bytes, type(None), object, 3, None, []]
+    )
+    def test_anything_else_is_refused(self, given):
+        with pytest.raises(ValueError, match="unknown column type"):
+            column_type(given)
+
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_from_cell_takes_a_class(self, cls, name):
+        value = {
+            "str": "x",
+            "int": 7,
+            "float": 2.5,
+            "bool": True,
+            "date": date(2026, 1, 15),
+            "datetime": datetime(2026, 1, 15, 10, 30),
+        }[name]
+        parsed = from_cell(to_cell(value), cls)
+        assert parsed == value and type(parsed) is cls
+
+    def test_from_cell_refuses_a_class_that_is_no_column_type(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            from_cell("1", bytes)
+
+
+class TestEncodeRows:
+    def test_every_value_becomes_its_canonical_string(self):
+        rows = [
+            {
+                "id": 7,
+                "name": " Ada ",
+                "paid": True,
+                "amt": 3.0,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30),
+                "note": None,
+            }
+        ]
+        assert encode_rows(rows) == [
+            {
+                "id": "7",
+                "name": " Ada ",
+                "paid": "TRUE",
+                "amt": "3",
+                "on": "2026-01-15",
+                "at": "2026-01-15 10:30:00",
+                "note": "",
+            }
+        ]
+
+    def test_columns_default_to_every_key_in_first_seen_order(self):
+        rows = [{"b": 1, "a": None}, {"c": 2.0, "a": "x"}]
+        assert encode_rows(rows) == [
+            {"b": "1", "a": "", "c": ""},
+            {"b": "", "a": "x", "c": "2"},
+        ]
+
+    def test_columns_fix_the_order_and_fill_blanks(self):
+        assert encode_rows([{"a": 1}, {"b": 2}], ["b", "a"]) == [
+            {"b": "", "a": "1"},
+            {"b": "2", "a": ""},
+        ]
+
+    def test_names_are_used_as_given(self):
+        assert encode_rows([{" id ": 1}]) == [{" id ": "1"}]
+
+    def test_no_rows(self):
+        assert encode_rows([]) == []
+        assert encode_rows([], ["a"]) == []
+
+    def test_the_rows_given_are_not_changed(self):
+        rows = [{"a": 1}]
+        encode_rows(rows, ["a", "b"])
+        assert rows == [{"a": 1}]
+
+    def test_every_nested_value_and_unknown_column_is_listed(self):
+        rows = [
+            {"id": 1, "tags": ["a"]},
+            {"id": 2, "tags": None, "meta": {"k": 1}, "extra": "x"},
+        ]
+        with pytest.raises(ValueError) as refused:
+            encode_rows(rows, ["id", "tags", "meta"])
+        assert str(refused.value) == (
+            "row 1, column 'tags': nested values are not cells; "
+            "row 2, column 'meta': nested values are not cells; "
+            "row 2 has unknown columns ['extra']"
+        )
+
+
+class TestDecodeRows:
+    TYPES = {
+        "id": "int",
+        "amt": "float",
+        "paid": "bool",
+        "on": "date",
+        "at": "datetime",
+    }
+
+    def test_each_column_is_parsed_as_its_type_and_str_by_default(self):
+        records = [
+            {
+                "id": "007",
+                "name": " Ada ",
+                "amt": "3",
+                "paid": "true",
+                "on": "2026-01-15",
+                "at": "2026-01-15T10:30:00",
+            }
+        ]
+        assert decode_rows(records, self.TYPES) == [
+            {
+                "id": 7,
+                "name": " Ada ",
+                "amt": 3.0,
+                "paid": True,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30),
+            }
+        ]
+
+    def test_classes_are_types_too(self):
+        assert decode_rows([{"n": "1", "b": "TRUE"}], {"n": int, "b": bool}) == [
+            {"n": 1, "b": True}
+        ]
+
+    def test_a_type_for_a_column_no_record_has_is_ignored(self):
+        assert decode_rows([{"n": "1"}], {"n": "int", "gone": "date"}) == [{"n": 1}]
+
+    def test_every_cell_that_does_not_parse_is_listed(self):
+        records = [{"id": "1", "on": "Jan 15"}, {"id": "x", "on": "2026-01-15"}]
+        with pytest.raises(ValueError) as refused:
+            decode_rows(records, self.TYPES)
+        assert str(refused.value) == (
+            "row 1, column 'on': 'Jan 15' is not a valid date; "
+            "row 2, column 'id': 'x' is not a valid int"
+        )
+
+    @pytest.mark.parametrize("type_", ["number", bytes])
+    def test_an_unknown_type_is_refused_whatever_the_rows_hold(self, type_):
+        with pytest.raises(ValueError, match="column 'n': unknown column type"):
+            decode_rows([], {"n": type_})
+
+    def test_round_trip(self):
+        rows = [
+            {
+                "id": 7,
+                "name": "Ada",
+                "amt": 2.5,
+                "paid": False,
+                "on": date(2026, 1, 15),
+                "at": datetime(2026, 1, 15, 10, 30, 5, 123000),
+            },
+            {
+                "id": None,
+                "name": None,
+                "amt": None,
+                "paid": None,
+                "on": None,
+                "at": None,
+            },
+        ]
+        assert decode_rows(encode_rows(rows), self.TYPES) == rows
+
+    def test_the_two_exceptions_to_the_round_trip(self):
+        # A blank string is a blank cell, and a column a row lacks is one too.
+        rows = [{"id": 1, "name": ""}, {"id": 2}]
+        assert decode_rows(encode_rows(rows), {"id": int}) == [
+            {"id": 1, "name": None},
+            {"id": 2, "name": None},
+        ]
 
 
 class TestRowKeys:
@@ -256,6 +453,26 @@ class TestColumnSchema:
     def test_unknown_type_is_refused(self):
         with pytest.raises(ValueError, match="unknown column type 'money'"):
             ColumnSchema(type="money")
+
+
+class TestColumnSchemaOf:
+    @pytest.mark.parametrize(("cls", "name"), CLASSES)
+    def test_a_class_is_stored_as_its_name(self, cls, name):
+        schema = ColumnSchema.of(cls, required=True, allowed=["x"])
+        assert schema == ColumnSchema(type=name, required=True, allowed=["x"])
+        assert schema.type == name
+
+    def test_a_name_and_the_defaults(self):
+        assert ColumnSchema.of("date") == ColumnSchema(type="date")
+        assert ColumnSchema.of() == ColumnSchema()
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            ColumnSchema.of(bytes)
+
+    def test_the_constructor_still_refuses_a_class(self):
+        with pytest.raises(ValueError, match="unknown column type"):
+            ColumnSchema(type=int)  # pyrefly: ignore[bad-argument-type]
 
 
 class TestProblems:

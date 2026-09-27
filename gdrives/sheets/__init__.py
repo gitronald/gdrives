@@ -12,7 +12,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
   lookups, and the structural ``spreadsheets.batchUpdate``
 - ``retry``: ``with_retry`` and the retryable status sets
-- ``cells``: canonical cell strings, column types, row keys, and schema checks
+- ``cells``: canonical cell strings, column types, typed rows, row keys, and
+  schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
@@ -51,6 +52,9 @@ from gdrives.sheets.cells import (
     COLUMN_TYPES,
     ColumnSchema,
     Problem,
+    column_type,
+    decode_rows,
+    encode_rows,
     from_cell,
     index_rows,
     normalize_key,
@@ -219,9 +223,12 @@ __all__ = [
     "color_to_hex",
     "column_index",
     "column_letter",
+    "column_type",
+    "decode_rows",
     "delete_columns",
     "delete_conditional_rule",
     "describe_rule",
+    "encode_rows",
     "ensure_tabs",
     "find_config",
     "find_rows",

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from gdrives.local import write_text
-from gdrives.sheets.cells import from_cell, to_cell
+from gdrives.sheets.cells import ColumnType, decode_rows, encode_rows
 
 # The record file formats, by lower-cased extension; the value is the delimiter
 # for a delimited format, None for JSON.
@@ -161,7 +161,7 @@ def _read_json(path: str | Path) -> Records:
             columns.setdefault(name, None)
         items.append(named)
     _check_columns(path, list(columns))
-    rows = [{column: to_cell(item.get(column)) for column in columns} for item in items]
+    rows = encode_rows(items, list(columns))
     return Records(list(columns), [row for row in rows if not _is_blank(row)])
 
 
@@ -184,16 +184,6 @@ def read_records(path: str | Path) -> Records:
     return _read_delimited(path, delimiter)
 
 
-def _json_value(text: str, type_: str) -> Any:
-    """The JSON value for one canonical cell string under its declared type.
-
-    Dates have no JSON type, so a date or datetime column keeps its canonical
-    string, once it has been checked to parse.
-    """
-    value = from_cell(text, type_)
-    return text if isinstance(value, date) else value
-
-
 def _row_cells(
     path: str | Path, columns: Sequence[str], rows: Sequence[Mapping[str, str]]
 ) -> list[list[str]]:
@@ -213,7 +203,7 @@ def write_records(
     columns: Sequence[str],
     rows: Sequence[Mapping[str, str]],
     *,
-    types: Mapping[str, str] | None = None,
+    types: Mapping[str, ColumnType] | None = None,
     bom: bool = False,
     newline: str = "lf",
 ) -> None:
@@ -225,7 +215,10 @@ def write_records(
     starts it with a UTF-8 byte-order mark, and ``newline`` ends its lines
     with ``"lf"`` (the default) or ``"crlf"``. A JSON file gets one object per row
     with keys in ``columns`` order and each value parsed as its column's type
-    in ``types`` (default ``str``); a blank cell is ``null``. A JSON array
+    in ``types``, a name or a class (default ``str``); a blank cell is
+    ``null``, and a date or datetime keeps its canonical string, since JSON
+    has no date type. Every cell that does not parse as its type is listed in
+    one ValueError, by row position and column. A JSON array
     has no header, so a JSON file with no rows does not record its columns. It
     is written with LF, and refuses ``bom`` and any other ``newline``.
     """
@@ -246,14 +239,15 @@ def write_records(
         raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
     if newline != "lf":
         raise ValueError(f"{path}: newline applies only to .csv and .tsv")
-    declared = types or {}
+    cells = [dict(zip(columns, row, strict=True)) for row in grid]
     try:
+        # Dates have no JSON type, so a parsed one keeps its canonical string.
         records = [
             {
-                column: _json_value(text, declared.get(column, "str"))
-                for column, text in zip(columns, cells, strict=True)
+                column: row[column] if isinstance(value, date) else value
+                for column, value in typed.items()
             }
-            for cells in grid
+            for row, typed in zip(cells, decode_rows(cells, types or {}), strict=True)
         ]
         # allow_nan=False: NaN and Infinity are not JSON, so refuse to write them.
         text = json.dumps(records, indent=2, ensure_ascii=False, allow_nan=False)
