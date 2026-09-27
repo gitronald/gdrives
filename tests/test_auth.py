@@ -26,15 +26,13 @@ class TestConfigDir:
         assert auth._config_dir() == Path("/tmp/cfg")
 
 
-class TestTokenAndCredentialsPaths:
+class TestCredentialsPath:
     def test_none_when_config_unset(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
-        assert auth._token_path() is None
         assert auth._credentials_path() is None
 
-    def test_paths_under_config_dir(self, monkeypatch):
+    def test_path_under_config_dir(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
-        assert auth._token_path() == Path("/tmp/cfg/gdrives_token.json")
         assert auth._credentials_path() == Path("/tmp/cfg/gdrives_credentials.json")
 
 
@@ -100,43 +98,53 @@ class TestAuthenticateServiceAccount:
 class TestAuthenticate:
     def test_prefers_oauth(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: sentinel)
+        monkeypatch.setattr(
+            auth, "authenticate_oauth", lambda scopes=None, **kwargs: sentinel
+        )
         monkeypatch.setattr(
             auth,
             "authenticate_service_account",
-            lambda scopes=None: pytest.fail("must not reach service account"),
+            lambda scopes=None, **kwargs: pytest.fail("must not reach service account"),
         )
         assert auth.authenticate() is sentinel
 
     def test_falls_back_to_service_account(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
         monkeypatch.setattr(
-            auth, "authenticate_service_account", lambda scopes=None: sentinel
+            auth, "authenticate_oauth", lambda scopes=None, **kwargs: None
+        )
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None, **kwargs: sentinel
         )
         monkeypatch.setattr(
             auth,
             "authenticate_adc",
-            lambda scopes=None: pytest.fail("must not reach adc"),
+            lambda scopes=None, **kwargs: pytest.fail("must not reach adc"),
         )
         assert auth.authenticate() is sentinel
 
     def test_falls_through_to_adc(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
         monkeypatch.setattr(
-            auth, "authenticate_service_account", lambda scopes=None: None
+            auth, "authenticate_oauth", lambda scopes=None, **kwargs: None
         )
-        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: sentinel)
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None, **kwargs: None
+        )
+        monkeypatch.setattr(
+            auth, "authenticate_adc", lambda scopes=None, **kwargs: sentinel
+        )
         assert auth.authenticate() is sentinel
 
     def test_helpful_error_when_no_credentials(self, monkeypatch):
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
         monkeypatch.setattr(
-            auth, "authenticate_service_account", lambda scopes=None: None
+            auth, "authenticate_oauth", lambda scopes=None, **kwargs: None
+        )
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None, **kwargs: None
         )
 
-        def raise_default_error(scopes=None):
+        def raise_default_error(scopes=None, **kwargs):
             raise google.auth.exceptions.DefaultCredentialsError("none found")
 
         monkeypatch.setattr(auth, "authenticate_adc", raise_default_error)
@@ -146,12 +154,14 @@ class TestAuthenticate:
     def test_helpful_error_on_any_google_auth_error_from_adc(self, monkeypatch):
         # Not only DefaultCredentialsError — any google.auth error (e.g. a stale
         # ADC refresh failure) yields the helpful message, not a raw traceback.
-        monkeypatch.setattr(auth, "authenticate_oauth", lambda scopes=None: None)
         monkeypatch.setattr(
-            auth, "authenticate_service_account", lambda scopes=None: None
+            auth, "authenticate_oauth", lambda scopes=None, **kwargs: None
+        )
+        monkeypatch.setattr(
+            auth, "authenticate_service_account", lambda scopes=None, **kwargs: None
         )
 
-        def raise_refresh_error(scopes=None):
+        def raise_refresh_error(scopes=None, **kwargs):
             raise google.auth.exceptions.RefreshError("stale adc")
 
         monkeypatch.setattr(auth, "authenticate_adc", raise_refresh_error)
@@ -280,11 +290,13 @@ class TestAuthenticateOauthFlow:
         )
         assert auth.authenticate_oauth() is None
 
-    def test_token_lacking_requested_scopes_is_discarded_and_reconsented(
-        self, monkeypatch, tmp_path
+    def test_token_lacking_requested_scopes_is_passed_over_and_reconsented(
+        self, monkeypatch, tmp_path, caplog
     ):
         # A token granted for another scope set must not be loaded (it would
-        # 403 on first use); the flow runs again and the new grant is saved.
+        # 403 on first use), so the flow runs again. Its file is the only
+        # place a documents token has, and it holds a grant the new one does
+        # not include: the new token is used for this run and not saved.
         monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(auth, "_is_interactive", lambda: True)
         token = tmp_path / "gdrives_token_documents.json"
@@ -303,7 +315,12 @@ class TestAuthenticateOauthFlow:
             lambda path, scopes=None: flow,
         )
         assert auth.authenticate_oauth(auth.DOCS_WRITE_SCOPES) is new_creds
-        assert json.loads(token.read_text())["scopes"] == auth.DOCS_WRITE_SCOPES
+        assert json.loads(token.read_text())["scopes"] == auth.SHEETS_WRITE_SCOPES
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "gdrives_credentials.json",
+            "gdrives_token_documents.json",
+        ]
+        assert f"OAuth token not saved: {token} holds a grant" in caplog.text
 
     def test_token_lacking_requested_scopes_headless_returns_none(
         self, monkeypatch, tmp_path
@@ -342,7 +359,9 @@ class TestAuthenticateOauthFlow:
 class TestAuthenticateAdc:
     def test_returns_default_credentials(self, monkeypatch):
         creds = object()
-        monkeypatch.setattr("google.auth.default", lambda scopes=None: (creds, "proj"))
+        monkeypatch.setattr(
+            "google.auth.default", lambda scopes=None, **kwargs: (creds, "proj")
+        )
         assert auth.authenticate_adc() is creds
 
 
@@ -353,7 +372,7 @@ class TestBuildDriveService:
     def test_builds_v3_with_authenticated_creds(self, monkeypatch):
         creds = object()
         service = object()
-        monkeypatch.setattr(auth, "authenticate", lambda scopes=None: creds)
+        monkeypatch.setattr(auth, "authenticate", lambda scopes=None, **kwargs: creds)
         rec = {}
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
@@ -370,7 +389,9 @@ class TestBuildSheetsService:
         service = object()
         rec = {}
         monkeypatch.setattr(
-            auth, "authenticate", lambda scopes=None: rec.update(scopes=scopes) or creds
+            auth,
+            "authenticate",
+            lambda scopes=None, **kwargs: rec.update(scopes=scopes) or creds,
         )
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
@@ -388,7 +409,9 @@ class TestBuildDocsService:
         service = object()
         rec = {}
         monkeypatch.setattr(
-            auth, "authenticate", lambda scopes=None: rec.update(scopes=scopes) or creds
+            auth,
+            "authenticate",
+            lambda scopes=None, **kwargs: rec.update(scopes=scopes) or creds,
         )
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
@@ -406,7 +429,9 @@ class TestBuildService:
         # reads with a Sheets client: one authentication serves both.
         calls = []
         monkeypatch.setattr(
-            auth, "authenticate", lambda scopes=None: calls.append(scopes) or object()
+            auth,
+            "authenticate",
+            lambda scopes=None, **kwargs: calls.append(scopes) or object(),
         )
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
@@ -422,7 +447,7 @@ class TestBuildService:
 
     def test_all_builders_share_one_path(self, monkeypatch):
         rec = []
-        monkeypatch.setattr(auth, "authenticate", lambda scopes=None: "creds")
+        monkeypatch.setattr(auth, "authenticate", lambda scopes=None, **kwargs: "creds")
         monkeypatch.setattr(
             "googleapiclient.discovery.build",
             lambda api, version, credentials: rec.append((api, version, credentials)),
@@ -437,28 +462,20 @@ class TestBuildService:
         ]
 
 
-# -- _token_path scope split --
+# -- _token_name scope split --
 
 
-class TestTokenPathScopes:
-    def test_readonly_default_uses_shared_token(self, monkeypatch):
-        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
-        assert auth._token_path() == Path("/tmp/cfg/gdrives_token.json")
-        assert auth._token_path(auth.SCOPES) == Path("/tmp/cfg/gdrives_token.json")
-
-    def test_write_scope_uses_separate_token(self, monkeypatch):
+class TestTokenName:
+    def test_known_scope_sets_keep_their_historical_names(self):
+        assert auth._token_name(auth.SCOPES) == "gdrives_token.json"
         # Write access must not clobber (or re-consent) the read-only token.
-        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
-        assert auth._token_path(auth.SHEETS_WRITE_SCOPES) == Path(
-            "/tmp/cfg/gdrives_token_rw.json"
-        )
+        assert auth._token_name(auth.SHEETS_WRITE_SCOPES) == "gdrives_token_rw.json"
 
-    def test_docs_scope_uses_its_own_token(self, monkeypatch):
+    def test_docs_scope_uses_its_own_token(self):
         # A Sheets-consented token does not carry the Docs scope; sharing one
         # file would 403 (or re-consent and clobber the Sheets grant).
-        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
-        assert auth._token_path(auth.DOCS_WRITE_SCOPES) == Path(
-            "/tmp/cfg/gdrives_token_documents.json"
+        assert (
+            auth._token_name(auth.DOCS_WRITE_SCOPES) == "gdrives_token_documents.json"
         )
 
     def test_unknown_scope_set_gets_stable_sorted_name(self):
@@ -469,47 +486,67 @@ class TestTokenPathScopes:
         assert auth._token_name(scopes) == "gdrives_token_documents_drive-file.json"
         assert auth._token_name(list(reversed(scopes))) == auth._token_name(scopes)
 
-    def test_none_when_config_unset(self, monkeypatch):
-        monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
-        assert auth._token_path(auth.SHEETS_WRITE_SCOPES) is None
+
+# -- _recorded_scopes (the grant a token file records) --
 
 
-# -- _token_covers (granted-scope check) --
-
-
-class TestTokenCovers:
+class TestRecordedScopes:
     def _write(self, tmp_path, payload):
         token = tmp_path / "token.json"
         token.write_text(payload)
         return token
 
-    def test_granted_superset_covers(self, tmp_path):
-        token = self._write(
-            tmp_path, json.dumps({"scopes": auth.DOCS_WRITE_SCOPES + auth.SCOPES})
-        )
-        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
-
-    def test_mismatch_does_not_cover(self, tmp_path):
-        token = self._write(tmp_path, json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
-        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is False
+    def test_a_list_of_scopes(self, tmp_path):
+        granted = auth.DOCS_WRITE_SCOPES + auth.SCOPES
+        token = self._write(tmp_path, json.dumps({"scopes": granted}))
+        assert auth._recorded_scopes(token) == granted
 
     def test_space_separated_scopes_string(self, tmp_path):
-        token = self._write(
-            tmp_path, json.dumps({"scopes": " ".join(auth.DOCS_WRITE_SCOPES)})
-        )
-        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
+        granted = auth.DOCS_WRITE_SCOPES + auth.SCOPES
+        token = self._write(tmp_path, json.dumps({"scopes": " ".join(granted)}))
+        assert auth._recorded_scopes(token) == granted
 
     @pytest.mark.parametrize(
         "payload",
         ["{}", json.dumps({"scopes": 5}), "not json", "[]"],
         ids=["no-scopes-entry", "non-list-scopes", "unparseable", "non-object"],
     )
-    def test_unknown_grant_is_left_to_the_loader(self, tmp_path, payload):
-        token = self._write(tmp_path, payload)
-        assert auth._token_covers(token, auth.DOCS_WRITE_SCOPES) is True
+    def test_unknown_grant_records_none(self, tmp_path, payload):
+        assert auth._recorded_scopes(self._write(tmp_path, payload)) is None
 
-    def test_missing_file_is_left_to_the_loader(self, tmp_path):
-        assert auth._token_covers(tmp_path / "absent.json", auth.SCOPES) is True
+    def test_missing_file_records_none(self, tmp_path):
+        assert auth._recorded_scopes(tmp_path / "absent.json") is None
+
+
+class TestLoadTokenChecksTheGrant:
+    """``_load_token`` passes over a grant that misses the request, and only that."""
+
+    @pytest.fixture
+    def loaded(self, monkeypatch):
+        creds = MagicMock()
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        return creds
+
+    def test_mismatch_is_passed_over(self, tmp_path, loaded, caplog):
+        token = tmp_path / "token.json"
+        token.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        assert auth._load_token(token, auth.DOCS_WRITE_SCOPES) is None
+        assert "does not cover the requested scopes" in caplog.text
+
+    @pytest.mark.parametrize(
+        "payload",
+        [json.dumps({"scopes": auth.DOCS_WRITE_SCOPES + auth.SCOPES}), "{}", "[]"],
+        ids=["superset", "no-scopes-entry", "non-object"],
+    )
+    def test_a_covering_or_unknown_grant_is_left_to_the_loader(
+        self, tmp_path, loaded, payload
+    ):
+        token = tmp_path / "token.json"
+        token.write_text(payload)
+        assert auth._load_token(token, auth.DOCS_WRITE_SCOPES) is loaded
 
 
 def test_token_write_does_not_follow_a_planted_scratch_symlink(tmp_path, monkeypatch):
@@ -536,7 +573,7 @@ def test_invalid_oauth_cache_falls_back_without_deleting_it(
     token.write_text(payload)
     sentinel = object()
     monkeypatch.setattr(
-        auth, "authenticate_service_account", lambda scopes=None: sentinel
+        auth, "authenticate_service_account", lambda scopes=None, **kwargs: sentinel
     )
     assert auth.authenticate() is sentinel
     assert token.read_text() == payload
@@ -546,7 +583,7 @@ def test_invalid_oauth_cache_falls_back_without_deleting_it(
 def test_unhashable_cached_scope_does_not_crash_scope_check(tmp_path):
     token = tmp_path / "token.json"
     token.write_text(json.dumps({"scopes": [{}]}))
-    assert auth._token_covers(token, auth.SCOPES)
+    assert auth._recorded_scopes(token) is None
 
 
 def test_env_file_is_found_from_the_working_directory(tmp_path, monkeypatch):
@@ -762,7 +799,532 @@ class TestDescribeCredentials:
             "google.oauth2.service_account.Credentials.from_service_account_file",
             lambda path, scopes=None: "service_account",
         )
-        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: "adc")
+        monkeypatch.setattr(
+            auth, "authenticate_adc", lambda scopes=None, **kwargs: "adc"
+        )
         used = auth.authenticate()
         actual = used if isinstance(used, str) else "oauth"
         assert described == expected == actual
+
+
+# -- a broader grant covers a narrower request --
+
+AUTH = "https://www.googleapis.com/auth/"
+IMPLIED_PAIRS = [
+    (broad, narrow) for broad, served in auth._IMPLIES.items() for narrow in served
+]
+
+
+class TestImpliedScopes:
+    def test_the_table_is_the_confirmed_pairs(self):
+        assert {
+            broad.removeprefix(AUTH): sorted(n.removeprefix(AUTH) for n in served)
+            for broad, served in auth._IMPLIES.items()
+        } == {
+            "drive": [
+                "documents",
+                "documents.readonly",
+                "drive.file",
+                "drive.metadata",
+                "drive.metadata.readonly",
+                "drive.readonly",
+                "spreadsheets",
+                "spreadsheets.readonly",
+            ],
+            "drive.metadata": ["drive.metadata.readonly"],
+            "spreadsheets": ["spreadsheets.readonly"],
+            "documents": ["documents.readonly"],
+        }
+
+    @pytest.mark.parametrize(("broad", "narrow"), IMPLIED_PAIRS)
+    def test_a_grant_covers_each_scope_it_implies(self, broad, narrow):
+        assert auth._covers([broad], [narrow]) is True
+        assert auth._covers([narrow], [broad]) is False
+
+    def test_a_grant_covers_itself_and_a_mixed_request(self):
+        assert auth._covers(auth.SCOPES, auth.SCOPES) is True
+        assert auth._covers(
+            auth.DRIVE_WRITE_SCOPES, auth.SHEETS_WRITE_SCOPES + auth.DOCS_WRITE_SCOPES
+        )
+
+    @pytest.mark.parametrize(
+        ("granted", "requested"),
+        [
+            (auth.SHEETS_WRITE_SCOPES, auth.DOCS_WRITE_SCOPES),
+            (auth.SCOPES, auth.SHEETS_WRITE_SCOPES),
+            # Accepted by the Sheets methods, but only for the app's own files.
+            ([AUTH + "drive.file"], auth.SHEETS_WRITE_SCOPES),
+            (auth.SHEETS_WRITE_SCOPES, auth.SHEETS_WRITE_SCOPES + auth.SCOPES),
+        ],
+    )
+    def test_a_grant_that_does_not_cover(self, granted, requested):
+        assert auth._covers(granted, requested) is False
+
+
+def grant(path: Path, scopes: list[str] | None) -> str:
+    """Write a token file recording ``scopes`` at ``path``; return its content."""
+    content = json.dumps({"refresh_token": "theirs", "scopes": scopes})
+    path.write_text(content)
+    return content
+
+
+@pytest.fixture
+def oauth(monkeypatch, tmp_path):
+    """A config dir with client secrets, a terminal, and recorded fakes.
+
+    ``loaded`` lists each ``(file name, scopes)`` a token was loaded with, and
+    ``tokens`` maps a file name to the credentials loading it returns (valid
+    ones by default). ``flow`` is the consent flow; its token is ``consented``.
+    """
+    monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+    monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+    (tmp_path / "gdrives_credentials.json").write_text("{}")
+    env = MagicMock()
+    env.dir = tmp_path
+    env.loaded = []
+    env.tokens = {}
+    env.consented.to_json.return_value = json.dumps({"refresh_token": "new"})
+    env.flow.run_local_server.return_value = env.consented
+
+    def load(path, scopes=None):
+        name = Path(path).name
+        env.loaded.append((name, scopes))
+        return env.tokens.get(name, MagicMock(valid=True, expired=False))
+
+    def start(path, scopes=None):
+        env.flow_scopes = scopes
+        return env.flow
+
+    monkeypatch.setattr(
+        "google.oauth2.credentials.Credentials.from_authorized_user_file", load
+    )
+    monkeypatch.setattr(
+        "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file", start
+    )
+    monkeypatch.setattr("google.auth.transport.requests.Request", lambda: None)
+    return env
+
+
+def dead_token() -> MagicMock:
+    """Credentials whose refresh Google refuses: the grant was revoked."""
+    creds = MagicMock(valid=False, expired=True, refresh_token="rt")
+    creds.refresh.side_effect = google.auth.exceptions.RefreshError("revoked")
+    return creds
+
+
+class TestBroaderGrantIsUsed:
+    def test_a_callers_drive_token_serves_a_sheets_request(self, oauth):
+        # The upgrade hazard: a caller wrote its own token, granted `drive`,
+        # under the name gdrives later claimed for the `spreadsheets` scope.
+        token = oauth.dir / "gdrives_token_rw.json"
+        content = grant(token, auth.DRIVE_WRITE_SCOPES)
+        creds = auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES)
+        assert creds is not oauth.consented
+        oauth.flow.run_local_server.assert_not_called()
+        assert token.read_text() == content
+        # Loaded with the scopes it records, not the ones requested.
+        assert oauth.loaded == [("gdrives_token_rw.json", auth.DRIVE_WRITE_SCOPES)]
+
+    def test_a_grant_that_lists_the_request_is_loaded_with_the_request(self, oauth):
+        grant(oauth.dir / "gdrives_token.json", auth.SCOPES + auth.DOCS_WRITE_SCOPES)
+        auth.authenticate_oauth()
+        assert oauth.loaded == [("gdrives_token.json", auth.SCOPES)]
+
+    def test_described_without_a_consent(self, oauth):
+        token = oauth.dir / "gdrives_token_rw.json"
+        grant(token, auth.DRIVE_WRITE_SCOPES)
+        info = auth.describe_credentials(auth.SHEETS_WRITE_SCOPES)
+        assert info == auth.CredentialInfo(kind="oauth", source=token)
+
+
+# -- no consent overwrites a grant it does not include --
+
+
+class TestTokenPaths:
+    def test_historical_name_then_derived_name(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
+        assert auth._token_paths(auth.SHEETS_WRITE_SCOPES) == [
+            Path("/tmp/cfg/gdrives_token_rw.json"),
+            Path("/tmp/cfg/gdrives_token_spreadsheets.json"),
+        ]
+        assert auth._token_paths(auth.SCOPES) == [
+            Path("/tmp/cfg/gdrives_token.json"),
+            Path("/tmp/cfg/gdrives_token_drive-readonly.json"),
+        ]
+
+    def test_one_place_when_the_name_is_the_derived_one(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", "/tmp/cfg")
+        assert auth._token_paths(auth.DOCS_WRITE_SCOPES) == [
+            Path("/tmp/cfg/gdrives_token_documents.json")
+        ]
+
+    def test_none_when_config_unset(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
+        assert auth._token_paths(auth.SCOPES) == []
+
+
+class TestConsentKeepsOtherGrants:
+    """A consent for ``spreadsheets`` and what ``gdrives_token_rw.json`` holds."""
+
+    def consent(self, oauth):
+        assert auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES) is oauth.consented
+        return {
+            path.name: path.read_text()
+            for path in oauth.dir.iterdir()
+            if path.name.startswith("gdrives_token")
+        }
+
+    @pytest.mark.parametrize(
+        "held",
+        [
+            json.dumps({"refresh_token": "theirs", "scopes": [AUTH + "drive"]}),
+            json.dumps({"refresh_token": "theirs", "scopes": [AUTH + "documents"]}),
+            json.dumps({"refresh_token": "theirs"}),
+            "not json",
+        ],
+        ids=["broader", "unrelated", "no-recorded-scopes", "unparseable"],
+    )
+    def test_a_grant_it_does_not_include_is_left_alone(self, oauth, caplog, held):
+        historical = oauth.dir / "gdrives_token_rw.json"
+        historical.write_text(held)
+        oauth.tokens["gdrives_token_rw.json"] = dead_token()
+        assert self.consent(oauth) == {
+            "gdrives_token_rw.json": held,
+            "gdrives_token_spreadsheets.json": '{"refresh_token": "new"}',
+        }
+        derived = oauth.dir / "gdrives_token_spreadsheets.json"
+        assert stat.S_IMODE(derived.stat().st_mode) == 0o600
+        assert f"OAuth token written to {derived}: {historical} holds a grant" in (
+            caplog.text
+        )
+
+    @pytest.mark.parametrize(
+        "held", [[AUTH + "spreadsheets"], [AUTH + "spreadsheets.readonly"], []]
+    )
+    def test_a_grant_it_includes_is_replaced(self, oauth, caplog, held):
+        grant(oauth.dir / "gdrives_token_rw.json", held)
+        oauth.tokens["gdrives_token_rw.json"] = dead_token()
+        assert self.consent(oauth) == {
+            "gdrives_token_rw.json": '{"refresh_token": "new"}'
+        }
+        assert "holds a grant" not in caplog.text
+
+    def test_no_file_yet_takes_the_historical_name(self, oauth):
+        assert self.consent(oauth) == {
+            "gdrives_token_rw.json": '{"refresh_token": "new"}'
+        }
+
+    def test_both_places_taken_saves_nothing(self, oauth, caplog):
+        theirs = grant(oauth.dir / "gdrives_token_rw.json", [AUTH + "documents"])
+        also = grant(oauth.dir / "gdrives_token_spreadsheets.json", [AUTH + "drive"])
+        oauth.tokens["gdrives_token_spreadsheets.json"] = dead_token()
+        assert self.consent(oauth) == {
+            "gdrives_token_rw.json": theirs,
+            "gdrives_token_spreadsheets.json": also,
+        }
+        assert "OAuth token not saved" in caplog.text
+
+
+class TestTokenLookupOrder:
+    def test_the_historical_name_is_used_first(self, oauth):
+        grant(oauth.dir / "gdrives_token_rw.json", auth.SHEETS_WRITE_SCOPES)
+        grant(oauth.dir / "gdrives_token_spreadsheets.json", auth.SHEETS_WRITE_SCOPES)
+        auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES)
+        assert [name for name, _ in oauth.loaded] == ["gdrives_token_rw.json"]
+
+    def test_a_token_written_under_the_derived_name_is_found(self, oauth):
+        # The run after a consent that left the historical file alone.
+        theirs = grant(oauth.dir / "gdrives_token_rw.json", [AUTH + "documents"])
+        derived = oauth.dir / "gdrives_token_spreadsheets.json"
+        grant(derived, auth.SHEETS_WRITE_SCOPES)
+        ours = oauth.tokens["gdrives_token_spreadsheets.json"] = MagicMock(
+            valid=True, expired=False
+        )
+        assert auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES) is ours
+        assert [name for name, _ in oauth.loaded] == ["gdrives_token_spreadsheets.json"]
+        oauth.flow.run_local_server.assert_not_called()
+        assert (oauth.dir / "gdrives_token_rw.json").read_text() == theirs
+        info = auth.describe_credentials(auth.SHEETS_WRITE_SCOPES)
+        assert info == auth.CredentialInfo(kind="oauth", source=derived)
+
+    def test_a_refused_refresh_moves_on_to_the_derived_name(self, oauth):
+        theirs = grant(oauth.dir / "gdrives_token_rw.json", auth.DRIVE_WRITE_SCOPES)
+        grant(oauth.dir / "gdrives_token_spreadsheets.json", auth.SHEETS_WRITE_SCOPES)
+        oauth.tokens["gdrives_token_rw.json"] = dead_token()
+        ours = oauth.tokens["gdrives_token_spreadsheets.json"] = MagicMock(
+            valid=True, expired=False
+        )
+        assert auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES) is ours
+        oauth.flow.run_local_server.assert_not_called()
+        assert (oauth.dir / "gdrives_token_rw.json").read_text() == theirs
+
+    def test_a_refreshed_token_goes_back_to_the_file_it_came_from(self, oauth):
+        grant(oauth.dir / "gdrives_token_rw.json", [AUTH + "documents"])
+        derived = oauth.dir / "gdrives_token_spreadsheets.json"
+        grant(derived, auth.SHEETS_WRITE_SCOPES)
+        stale = MagicMock(valid=True, expired=True, refresh_token="rt")
+        stale.to_json.return_value = '{"refreshed": true}'
+        oauth.tokens["gdrives_token_spreadsheets.json"] = stale
+        assert auth.authenticate_oauth(auth.SHEETS_WRITE_SCOPES) is stale
+        assert derived.read_text() == '{"refreshed": true}'
+
+    def test_a_token_that_cannot_be_used_or_refreshed_is_passed_over(self, oauth):
+        grant(oauth.dir / "gdrives_token.json", auth.SCOPES)
+        oauth.tokens["gdrives_token.json"] = MagicMock(
+            valid=False, expired=True, refresh_token=None
+        )
+        assert auth.authenticate_oauth() is oauth.consented
+
+
+# -- a consent without a terminal --
+
+
+class TestForce:
+    @pytest.fixture(autouse=True)
+    def headless(self, monkeypatch, oauth):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+
+    def test_the_consent_runs_without_a_terminal(self, oauth):
+        assert auth.authenticate_oauth(force=True) is oauth.consented
+        assert oauth.flow_scopes == auth.SCOPES
+        oauth.flow.run_local_server.assert_called_once_with(
+            port=0, open_browser=False, timeout_seconds=None
+        )
+        assert (oauth.dir / "gdrives_token.json").exists()
+
+    def test_the_consent_runs_with_a_terminal(self, monkeypatch, oauth):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        assert auth.authenticate_oauth(force=True) is oauth.consented
+
+    def test_without_force_there_is_no_consent(self, oauth):
+        assert auth.authenticate_oauth() is None
+        oauth.flow.run_local_server.assert_not_called()
+
+    def test_a_cached_token_is_still_used(self, oauth):
+        grant(oauth.dir / "gdrives_token.json", auth.SCOPES)
+        assert auth.authenticate_oauth(force=True) is not oauth.consented
+        oauth.flow.run_local_server.assert_not_called()
+
+    def test_no_client_secrets_is_an_error(self, oauth):
+        secrets = oauth.dir / "gdrives_credentials.json"
+        secrets.unlink()
+        with pytest.raises(auth.ConsentError, match="no OAuth client secrets at"):
+            auth.authenticate_oauth(force=True)
+
+    def test_no_config_dir_is_an_error(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CONFIG_DIR")
+        with pytest.raises(auth.ConsentError, match="GOOGLE_CONFIG_DIR is not set"):
+            auth.authenticate_oauth(force=True)
+
+    def test_authenticate_does_not_fall_through(self, monkeypatch, oauth):
+        (oauth.dir / "gdrives_credentials.json").unlink()
+        monkeypatch.setattr(
+            auth,
+            "authenticate_service_account",
+            lambda scopes=None: pytest.fail("must not reach service account"),
+        )
+        with pytest.raises(auth.ConsentError):
+            auth.authenticate(force=True)
+
+    def test_authenticate_and_the_builders_pass_it_on(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            auth,
+            "authenticate_oauth",
+            lambda scopes=None, *, force=False: seen.append((scopes, force)) or "creds",
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda api, version, credentials: (api, credentials),
+        )
+        assert auth.authenticate(auth.SCOPES, force=True) == "creds"
+        assert auth.build_drive_service(force=True) == ("drive", "creds")
+        assert auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES, force=True)
+        assert auth.build_docs_service(auth.DOCS_WRITE_SCOPES, force=True)
+        # Not served from the credentials an unforced call cached, or the reverse.
+        assert auth.build_drive_service() == ("drive", "creds")
+        assert seen == [
+            (auth.SCOPES, True),
+            (auth.SCOPES, True),
+            (auth.SHEETS_WRITE_SCOPES, True),
+            (auth.DOCS_WRITE_SCOPES, True),
+            (auth.SCOPES, False),
+        ]
+
+    def test_described_as_a_consent(self, oauth):
+        assert auth.describe_credentials().kind == "adc"
+        info = auth.describe_credentials(force=True)
+        assert (info.kind, info.consent) == ("oauth", True)
+
+    @pytest.mark.parametrize("missing", ["client secrets", "config dir"])
+    def test_described_as_the_error_authenticate_raises(
+        self, monkeypatch, oauth, missing
+    ):
+        # Not as the service account or ADC a forced call never falls through to.
+        if missing == "config dir":
+            monkeypatch.delenv("GOOGLE_CONFIG_DIR")
+        else:
+            (oauth.dir / "gdrives_credentials.json").unlink()
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_PATH", str(oauth.dir / "sa.json"))
+        (oauth.dir / "sa.json").write_text("{}")
+        assert auth.describe_credentials().kind == "service_account"
+        with pytest.raises(auth.ConsentError) as described:
+            auth.describe_credentials(force=True)
+        with pytest.raises(auth.ConsentError) as raised:
+            auth.authenticate(force=True)
+        assert str(described.value) == str(raised.value)
+
+
+class TestConsentPrompt:
+    def test_the_url_is_flushed_before_the_flow_waits(self, monkeypatch, oauth):
+        # With no terminal stdout is block-buffered: unflushed, the URL would
+        # reach the person only after the flow had stopped waiting for them.
+        events = []
+        stdout = MagicMock()
+        stdout.write.side_effect = lambda text: events.append(text) or len(text)
+        stdout.flush.side_effect = lambda: events.append("(flush)")
+        monkeypatch.setattr(sys, "stdout", stdout)
+
+        def run(**kwargs):
+            sys.stdout.write("Please visit this URL")
+            events.append("(waiting)")
+            sys.stdout.flush()
+            return oauth.consented
+
+        oauth.flow.run_local_server.side_effect = run
+        assert auth.authenticate_oauth(force=True) is oauth.consented
+        assert events == ["Please visit this URL", "(flush)", "(waiting)", "(flush)"]
+        assert sys.stdout is stdout
+
+
+class TestConsentTimeout:
+    def test_the_timeout_is_handed_to_the_flow(self, oauth):
+        auth.authenticate_oauth(timeout=90)
+        oauth.flow.run_local_server.assert_called_once_with(
+            port=0, open_browser=False, timeout_seconds=90
+        )
+
+    @pytest.mark.parametrize("error", ["WSGITimeoutError", "AttributeError"])
+    def test_running_out_raises_and_touches_no_token(self, monkeypatch, oauth, error):
+        import google_auth_oauthlib.flow
+
+        theirs = grant(oauth.dir / "gdrives_token.json", [AUTH + "documents"])
+        if error == "AttributeError":
+            # A release up to 1.2.1, which has no WSGITimeoutError to raise.
+            monkeypatch.delattr(
+                google_auth_oauthlib.flow, "WSGITimeoutError", raising=False
+            )
+        raised = getattr(google_auth_oauthlib.flow, error, AttributeError)
+        oauth.flow.run_local_server.side_effect = raised("timed out")
+        with pytest.raises(auth.ConsentError, match="no consent within 5 seconds"):
+            auth.authenticate_oauth(force=True, timeout=5)
+        assert sorted(path.name for path in oauth.dir.iterdir()) == [
+            "gdrives_credentials.json",
+            "gdrives_token.json",
+        ]
+        assert (oauth.dir / "gdrives_token.json").read_text() == theirs
+
+    def test_an_attribute_error_without_a_timeout_is_not_one(self, oauth):
+        oauth.flow.run_local_server.side_effect = AttributeError("a bug")
+        with pytest.raises(AttributeError, match="a bug"):
+            auth.authenticate_oauth()
+
+    def test_another_attribute_error_is_not_reported_as_a_timeout(self, oauth):
+        import google_auth_oauthlib.flow
+
+        assert hasattr(google_auth_oauthlib.flow, "WSGITimeoutError")
+        oauth.flow.run_local_server.side_effect = AttributeError("a bug")
+        with pytest.raises(AttributeError, match="a bug"):
+            auth.authenticate_oauth(force=True, timeout=5)
+        assert not (oauth.dir / "gdrives_token.json").exists()
+
+    def test_a_timeout_error_without_a_timeout_is_raised_as_it_is(self, oauth):
+        import google_auth_oauthlib.flow
+
+        error = google_auth_oauthlib.flow.WSGITimeoutError("timed out")
+        oauth.flow.run_local_server.side_effect = error
+        with pytest.raises(AttributeError, match="timed out"):
+            auth.authenticate_oauth()
+
+
+# -- announce_credentials --
+
+STATES = [
+    (auth.CredentialInfo(kind="oauth", source=Path("token.json")), False),
+    (auth.CredentialInfo(kind="oauth", refresh=True, source=Path("token.json")), True),
+    (auth.CredentialInfo(kind="oauth", consent=True, source=Path("c.json")), True),
+    (auth.CredentialInfo(kind="service_account", identity="sa@example.com"), False),
+    (auth.CredentialInfo(kind="adc"), False),
+]
+
+
+class TestAnnounceCredentials:
+    @pytest.fixture
+    def described(self, monkeypatch):
+        """Fix what describe_credentials reports; record what it was asked."""
+        state = MagicMock()
+        state.info = auth.CredentialInfo(kind="adc")
+        state.asked = []
+
+        def describe(scopes=None, *, force=False):
+            state.asked.append((scopes, force))
+            return state.info
+
+        monkeypatch.setattr(auth, "describe_credentials", describe)
+        monkeypatch.setattr(
+            auth, "authenticate", lambda scopes=None, *, force=False: "creds"
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build", lambda api, version, credentials: api
+        )
+        return state
+
+    @pytest.mark.parametrize(("info", "waits"), STATES)
+    def test_said_when_a_consent_or_a_refresh_is_coming(
+        self, described, capsys, info, waits
+    ):
+        described.info = info
+        auth.announce_credentials(auth.SHEETS_WRITE_SCOPES)
+        assert capsys.readouterr() == ("", f"Credential: {info}\n" if waits else "")
+        assert described.asked == [(auth.SHEETS_WRITE_SCOPES, False)]
+
+    @pytest.mark.parametrize(("info", "waits"), STATES)
+    def test_always_says_it(self, described, capsys, info, waits):
+        described.info = info
+        auth.announce_credentials(always=True, force=True)
+        assert capsys.readouterr() == ("", f"Credential: {info}\n")
+        assert described.asked == [(None, True)]
+
+    def test_a_library_caller_hears_nothing_from_a_builder(self, described, capsys):
+        described.info = auth.CredentialInfo(kind="oauth", consent=True)
+        auth.build_drive_service()
+        assert capsys.readouterr() == ("", "")
+        assert described.asked == []
+
+    def test_a_builder_announces_inside_the_block(self, described, capsys):
+        described.info = info = auth.CredentialInfo(kind="oauth", consent=True)
+        with auth.announcing_credentials():
+            auth.build_drive_service()
+            auth.build_sheets_service()  # the same scopes: authenticated once
+            auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES, force=True)
+        assert capsys.readouterr().err == f"Credential: {info}\n" * 2
+        assert described.asked == [
+            (auth.SCOPES, False),
+            (auth.SHEETS_WRITE_SCOPES, True),
+        ]
+        auth.build_docs_service(auth.DOCS_WRITE_SCOPES)  # the block is over
+        assert capsys.readouterr().err == ""
+
+    def test_a_builder_says_nothing_when_nothing_waits(self, described, capsys):
+        with auth.announcing_credentials():
+            auth.build_drive_service()
+        assert capsys.readouterr() == ("", "")
+
+    def test_a_line_already_printed_is_not_printed_again(self, described, capsys):
+        described.info = info = auth.CredentialInfo(kind="oauth", refresh=True)
+        with auth.announcing_credentials():
+            auth.announce_credentials(auth.SHEETS_WRITE_SCOPES, always=True)
+            auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES)
+            auth.announce_credentials(auth.SHEETS_WRITE_SCOPES, always=True)
+        assert capsys.readouterr().err == f"Credential: {info}\n"
