@@ -166,9 +166,13 @@ def serial_to_cell(number: float, type_: ColumnType) -> str:
     A sheet holds a date as the count of days since 1899-12-30, with the time
     of day as the fraction, and returns that number under the
     ``SERIAL_NUMBER`` render. A ``datetime`` is rounded to the millisecond,
-    which a serial keeps exactly, and written as :func:`to_cell` writes one. A
-    ``date`` takes a serial with no time of day. The value is naive: a serial
-    carries no time zone, and is in the spreadsheet's own.
+    which a serial keeps exactly, and written in one fixed-width form,
+    ``YYYY-MM-DD HH:MM:SS.mmm``, whole seconds included, so every cell of a
+    column has one width. :func:`from_cell` reads it back, and it compares
+    equal to :func:`to_cell`'s form of the same moment under
+    :func:`normalize_cell`. A ``date`` takes a serial with no time of day.
+    The value is naive: a serial carries no time zone, and is in the
+    spreadsheet's own.
 
     Raises ValueError for a type that is neither, a ``date`` serial holding a
     time of day, a value that is not a number (a boolean is not one here), and
@@ -186,7 +190,7 @@ def serial_to_cell(number: float, type_: ColumnType) -> str:
     except (ValueError, OverflowError):
         raise ValueError(problem) from None
     if name == "datetime":
-        return to_cell(moment)
+        return moment.isoformat(sep=" ", timespec="milliseconds")
     if moment.time() != time():
         raise ValueError(f"{problem}: it holds a time of day")
     return to_cell(moment.date())

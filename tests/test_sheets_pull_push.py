@@ -909,8 +909,8 @@ class TestPull:
         report = pull_tab(grid, "S", tab, apply=True)
         assert report.problems == [] and report.wrote_local
         assert rows_of(tab.local) == [
-            ["a", "2026-09-27", "2026-09-27 23:59:59.999000"],
-            ["b", "2026-09-28", "2026-09-28 00:00:00"],
+            ["a", "2026-09-27", "2026-09-27 23:59:59.999"],
+            ["b", "2026-09-28", "2026-09-28 00:00:00.000"],
         ]
         assert grid.methods == ["spreadsheets.get", "values.get", "values.batchGet"]
 
