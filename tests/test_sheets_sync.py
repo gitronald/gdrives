@@ -786,3 +786,25 @@ class TestRefusals:
         write_local(target, ROWS[0], ROWS[0])
         with pytest.raises(ValueError, match="duplicate key"):
             run(grid, target)
+
+
+class TestPaths:
+    def test_a_title_with_a_slash_and_dots_gets_a_safe_base_file(self, tmp_path):
+        data = {
+            "t": {
+                "spreadsheet": "S",
+                "base": "snap/../snapshots",
+                "tabs": {"../a/b": {"local": "data/x.csv", "key": ["id"]}},
+            }
+        }
+        target = parse_config(data, tmp_path / "cfg" / CONFIG_NAME).target("t")
+        tab = target.tabs[0]
+        tab.local.parent.mkdir(parents=True)
+        write_values_csv(str(tab.local), [HEADER, *ROWS])
+        grid = FakeSheetGrid({"../a/b": [HEADER, *ROWS]})
+        sync_tab(grid, "S", target, tab, apply=True)
+        base = tmp_path / "cfg" / "snapshots" / ".._a_b.csv"
+        assert base.read_bytes() == b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
+        assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
+            ".._a_b.csv"
+        ]

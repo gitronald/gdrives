@@ -25,7 +25,7 @@ each naming its target and tab, so a single run shows everything to fix. The
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -212,6 +212,7 @@ def parse_config(data: Any, path: Path) -> Config:
             target = checker.target(name, raw)
             if target is not None:
                 targets[name] = target
+        checker.collisions(targets.values())
     if checker.problems:
         raise ConfigError(str(path), checker.problems)
     return Config(path=path, targets=targets)
@@ -306,7 +307,6 @@ class _Checker:
                         f"USER_ENTERED rewrites values, so they would never "
                         f"read back as written"
                     )
-        self._collisions(where, tabs)
         if len(problems) > start:
             return None
         return Target(
@@ -317,26 +317,33 @@ class _Checker:
             input_option=str(input_option),
         )
 
-    def _collisions(self, where: str, tabs: Sequence[TabConfig]) -> None:
-        """Refuse two tabs sharing a local file, or a base file name."""
-        by_local: dict[Path, list[str]] = {}
-        by_base: dict[str, list[str]] = {}
-        for tab in tabs:
-            by_local.setdefault(tab.local, []).append(tab.title)
-            if tab.mode == "sync":
-                # Case-folded: on a case-insensitive filesystem these collide.
-                by_base.setdefault(safe_filename(tab.title).casefold(), []).append(
-                    tab.title
-                )
-        for local, titles in by_local.items():
-            if len(titles) > 1:
+    def collisions(self, targets: Iterable[Target]) -> None:
+        """Refuse a file that two tabs would write, across the whole config.
+
+        A sync or pull tab writes its local file, and a sync tab its base file;
+        a push tab only reads its local file, so push tabs may share one. Paths
+        are compared case-folded, since on a case-insensitive filesystem
+        ``Notes.csv`` and ``notes.csv`` are one file.
+        """
+        writers: dict[str, list[str]] = {}
+        paths: dict[str, Path] = {}
+        for target in targets:
+            for tab in target.tabs:
+                where = f"target {target.name!r}, tab {tab.title!r}"
+                files: list[tuple[Path, str]] = []
+                if tab.mode != "push":
+                    files.append((tab.local, f"{where} (local file)"))
+                if tab.mode == "sync":
+                    files.append((target.base_path(tab), f"{where} (base)"))
+                for path, role in files:
+                    folded = str(path).casefold()
+                    writers.setdefault(folded, []).append(role)
+                    paths.setdefault(folded, path)
+        for folded, roles in writers.items():
+            if len(roles) > 1:
                 self.problems.append(
-                    f"{where}, tabs {titles}: all write the same local file {local}"
-                )
-        for titles in by_base.values():
-            if len(titles) > 1:
-                self.problems.append(
-                    f"{where}, tabs {titles}: their base files would have the same name"
+                    f"{paths[folded]} would be written by more than one tab: "
+                    + "; ".join(roles)
                 )
 
     def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:

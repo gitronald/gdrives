@@ -287,26 +287,61 @@ class TestTargetProblems:
             config(
                 {
                     "A": members(local="data/x.csv"),
-                    "B": {"mode": "pull", "local": "data/../data/x.csv"},
+                    "B": {"mode": "pull", "local": "data/../data/X.CSV"},
                 }
             ),
-            f"target 'roster', tabs ['A', 'B']: all write the same local file "
-            f"{ROOT / 'data' / 'x.csv'}",
+            f"{ROOT / 'data' / 'x.csv'} would be written by more than one tab: "
+            "target 'roster', tab 'A' (local file); "
+            "target 'roster', tab 'B' (local file)",
         )
+
+    def test_push_tabs_may_share_a_local_file(self):
+        push = {"mode": "push", "local": "data/x.csv"}
+        data = config({"A": push, "B": push, "C": members(local="data/y.csv")})
+        assert len(parse_config(data, PATH).target("roster").tabs) == 3
 
     @pytest.mark.parametrize(("first", "second"), [("a/b", "a\\b"), ("Notes", "NOTES")])
     def test_two_sync_tabs_whose_base_files_collide(self, first, second):
+        base = ROOT / "sheets-base" / "roster" / f"{first.replace('/', '_')}.csv"
         refused(
             config({first: members(local="1.csv"), second: members(local="2.csv")}),
-            f"target 'roster', tabs [{first!r}, {second!r}]: their base files "
-            "would have the same name",
+            f"{base} would be written by more than one tab: "
+            f"target 'roster', tab {first!r} (base); "
+            f"target 'roster', tab {second!r} (base)",
         )
 
     def test_base_names_of_pull_and_push_tabs_do_not_collide(self):
         data = config(
-            {"a/b": members(local="1.csv"), "a\\b": {"mode": "push", "local": "2.csv"}}
+            {
+                "a/b": members(local="1.csv"),
+                "a\\b": {"mode": "push", "local": "2.csv"},
+                "a_b": {"mode": "pull", "local": "3.csv"},
+            }
         )
-        assert len(parse_config(data, PATH).target("roster").tabs) == 2
+        assert len(parse_config(data, PATH).target("roster").tabs) == 3
+
+    def test_two_targets_sharing_a_base_file(self):
+        one = config(base="shared")["roster"]
+        two = config({"Members": members(local="other.csv")}, base="shared")
+        refused(
+            {"one": one, "two": two["roster"]},
+            f"{ROOT / 'shared' / 'Members.csv'} would be written by more than one "
+            "tab: target 'one', tab 'Members' (base); target 'two', tab 'Members' "
+            "(base)",
+        )
+
+    def test_a_local_file_that_is_a_base_file(self):
+        refused(
+            config(
+                {
+                    "Members": members(),
+                    "Copy": {"mode": "pull", "local": "sheets-base/roster/Members.csv"},
+                }
+            ),
+            f"{ROOT / 'sheets-base/roster/Members.csv'} would be written by more "
+            "than one tab: target 'roster', tab 'Members' (base); "
+            "target 'roster', tab 'Copy' (local file)",
+        )
 
 
 class TestTabProblems:
