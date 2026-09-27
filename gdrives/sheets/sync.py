@@ -37,6 +37,7 @@ next run sees a partial sheet write as already in sync.
 
 A **pull** tab (:func:`pull_tab`) replaces its local file with the tab, and a
 **push** tab (:func:`push_tab`) replaces the tab's values with its local file.
+:func:`push_rows` is the push of rows held in memory, with no config.
 :func:`pull_all_tabs` dumps every tab of a spreadsheet with no config.
 :func:`run_target` runs every tab of one mode of a target and collects a
 :class:`SyncReport`, whose ``exit_code`` tells success, failure, and work
@@ -60,7 +61,13 @@ from gdrives.sheets.apply import (
     apply_plan,
     insert_point,
 )
-from gdrives.sheets.cells import index_rows, problems, row_key, to_cell
+from gdrives.sheets.cells import (
+    ColumnSchema,
+    index_rows,
+    problems,
+    row_key,
+    to_cell,
+)
 from gdrives.sheets.config import (
     LOCAL_EXTENSIONS,
     MODES,
@@ -369,11 +376,21 @@ def _check(
     validate: Validate | None,
     check: Check | None,
 ) -> list[str]:
+    """Every schema, ``validate``, and ``check`` problem of a tab at one stage."""
+    return _problems(tab.schema, tab.key, context, validate, check)
+
+
+def _problems(
+    schema: Mapping[str, ColumnSchema],
+    key: Sequence[str],
+    context: CheckContext,
+    validate: Validate | None,
+    check: Check | None,
+) -> list[str]:
     """Every schema, ``validate``, and ``check`` problem at one stage, as messages."""
-    label = f"{tab.title} ({context.stage})"
+    label = f"{context.tab} ({context.stage})"
     found = [
-        str(problem)
-        for problem in problems(context.rows, tab.schema, tab=label, key=tab.key)
+        str(problem) for problem in problems(context.rows, schema, tab=label, key=key)
     ]
     if validate is not None:
         found.extend(f"{label}: {text}" for text in validate(context.rows))
@@ -1060,23 +1077,13 @@ def push_tab(
 ) -> TabReport:
     """Replace ``tab``'s values with its local file (with ``apply``).
 
-    The header row and every local row are written in the local file's column
-    order (the configured columns only, when there are some). The write is
-    one ``values.update`` over the old extent of the tab, padded with blanks
-    where the new data is smaller, so a failure cannot leave the tab empty;
-    the grid is grown first when the data does not fit. A missing tab is
-    created. An empty local file is refused, and the rows are checked against
-    the schema, ``validate``, and ``check`` first, before any request, at the
-    stage ``"local"``; ``warn`` runs when they pass.
-
-    The report's ``replacement`` says what the sheet holds that the local
-    file does not: rows by key when there is a key, and always row and cell
-    counts and the columns dropped. On apply the tab is read again and must
-    be unchanged since the preview read (:class:`SheetChangedError`), and it
-    is read back after the write (:class:`ReadBackError`). Under ``RAW`` the
-    read-back compares every cell; under ``USER_ENTERED`` the sheet rewrites
-    values on entry, so only the header and the row count are checked. A tab
-    already holding exactly the local file is not written.
+    The local side is read from the tab's store, and pushed by
+    :func:`push_rows`, which says what is checked, written, and refused. The
+    header row and every local row are written in the local file's column
+    order (the configured columns only, when there are some), and the tab's
+    ``key``, ``blank_keys``, ``schema``, and ``widths`` are passed on. A
+    local side that does not exist, holds no rows, or lacks a configured
+    column is refused.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
@@ -1086,36 +1093,110 @@ def push_tab(
         raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
     _projection(tab, local)  # refuses a configured column the file lacks
     wanted = tab.columns if tab.columns is not None else local.columns
-    out = [column for column in local.columns if column in wanted]
+    return push_rows(
+        service,
+        spreadsheet_id,
+        tab.title,
+        [column for column in local.columns if column in wanted],
+        local.rows,
+        key=tab.key,
+        blank_keys=tab.blank_keys,
+        input_option=input_option,
+        apply=apply,
+        schema=tab.schema,
+        validate=validate,
+        check=check,
+        warn=warn,
+        widths=tab.widths,
+        label=_named(store),
+        report=report,
+    )
+
+
+def push_rows(
+    service: Service,
+    spreadsheet_id: str,
+    title: str,
+    columns: Sequence[str],
+    rows: Sequence[Mapping[str, str]],
+    *,
+    key: Sequence[str] = (),
+    blank_keys: str = "refuse",
+    input_option: str = RAW,
+    apply: bool = False,
+    schema: Mapping[str, ColumnSchema] | None = None,
+    validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
+    widths: Mapping[str, int] | None = None,
+    label: str = "rows",
+    report: TabReport | None = None,
+) -> TabReport:
+    """Replace the values of the tab ``title`` with ``rows`` (with ``apply``).
+
+    A whole-tab push of records held in memory: :func:`push_tab` without the
+    config and the store. ``rows`` are records of canonical cell strings
+    (:func:`~gdrives.sheets.cells.encode_rows` makes them from typed rows),
+    and ``columns`` the columns to write, in order. A column a row lacks is
+    written blank, and a column of the rows outside ``columns`` is not
+    written. ``label`` is what the messages call the rows, where
+    :func:`push_tab` names its local file.
+
+    The header row and every row are written in one ``values.update`` over
+    the old extent of the tab, padded with blanks where the new data is
+    smaller, so a failure cannot leave the tab empty; the grid is grown first
+    when the data does not fit. A missing tab is created. An empty list of
+    rows is refused, and the rows are checked against ``schema``,
+    ``validate``, and ``check`` first, before any request, at the stage
+    ``"local"``; ``warn`` runs when they pass. With a ``key`` the rows are
+    indexed by it, which refuses a blank or repeated key (``blank_keys`` as
+    for :func:`~gdrives.sheets.cells.index_rows`).
+
+    The report's ``replacement`` says what the sheet holds that the rows do
+    not: rows by key when there is a key, and always row and cell counts and
+    the columns dropped. On apply the tab is read again and must be unchanged
+    since the preview read (:class:`SheetChangedError`), and it is read back
+    after the write (:class:`ReadBackError`). Under ``RAW`` the read-back
+    compares every cell; under ``USER_ENTERED`` the sheet rewrites values on
+    entry, so only the header and the row count are checked. A tab already
+    holding exactly the rows is not written. ``widths`` are set after a
+    write. ``report`` is filled in place when given, so a caller keeps a
+    partial report on an error.
+    """
+    report = report if report is not None else TabReport(tab=title, mode="push")
+    report.apply = apply
+    out = list(columns)
+    if not out or "" in out or len(set(out)) != len(out):
+        raise ValueError(
+            f"tab {title!r}: columns must be one or more names, each once: {out}"
+        )
+    if not rows:
+        named = "no rows to push" if label == "rows" else f"{label} has no rows"
+        raise ValueError(f"tab {title!r}: {named}")
     context = CheckContext(
-        tab=tab.title,
+        tab=title,
         stage="local",
-        rows=local.rows,
-        columns=tuple(local.columns),
+        rows=rows,
+        columns=tuple(dict.fromkeys(column for row in rows for column in row)),
         projection=tuple(out),
     )
     report.warnings = list[str]()
-    report.problems = _check(tab, context, validate, check)
+    report.problems = _problems(schema or {}, key, context, validate, check)
     if report.problems:
         return report
     _warn(report, context, warn)
-    if tab.key:
-        index_rows(
-            local.rows,
-            tab.key,
-            side=_named(store),
-            blank_keys=tab.blank_keys,
-        )
-    expected = [out, *([row[column] for column in out] for row in local.rows)]
+    if key:
+        index_rows(rows, key, side=label, blank_keys=blank_keys)
+    expected = [out, *([row.get(column, "") for column in out] for row in rows)]
 
-    exists = tab.title in list_tabs(service, spreadsheet_id)
-    grid = _read_grid(service, spreadsheet_id, tab.title) if exists else []
+    exists = title in list_tabs(service, spreadsheet_id)
+    grid = _read_grid(service, spreadsheet_id, title) if exists else []
     if not exists:
         report.tab_state = "missing"
-    records = _sheet_records(tab.title, grid)
+    records = _sheet_records(title, grid)
     before_rows, before_cells = _grid_counts(grid)
     report.replacement = replace(
-        _compare(records or Records([], []), out, local.rows, tab.key),
+        _compare(records or Records([], []), out, rows, key),
         before_rows=before_rows,
         before_cells=before_cells,
         unchanged=_canonical(grid) == _canonical(expected),
@@ -1129,17 +1210,18 @@ def push_tab(
         return report
 
     if exists:
-        again = _read_grid(service, spreadsheet_id, tab.title)
+        again = _read_grid(service, spreadsheet_id, title)
         if again != grid:
             raise SheetChangedError(
-                f"tab {tab.title!r} changed since it was read, so nothing was written"
+                f"tab {title!r} changed since it was read, so nothing was written"
             )
     else:
-        ensure_tabs(service, spreadsheet_id, [tab.title])
+        ensure_tabs(service, spreadsheet_id, [title])
         report.wrote_sheet = True
     height = max(len(grid), len(expected))
     width = max(max((len(row) for row in grid), default=0), len(out))
-    _grow(service, spreadsheet_id, tab.title, height, width)
+    # The grid is grown first: a write outside it fails.
+    _grow(service, spreadsheet_id, title, height, width)
     padded = [
         [*row, *[""] * (width - len(row))]
         for row in [*expected, *[list[str]()] * (height - len(expected))]
@@ -1147,14 +1229,14 @@ def push_tab(
     update_values(
         service,
         spreadsheet_id,
-        f"{a1_quote(tab.title)}!A1:{column_letter(width - 1)}{height}",
+        f"{a1_quote(title)}!A1:{column_letter(width - 1)}{height}",
         padded,
         input_option=input_option,
     )
     report.wrote_sheet = True
-    _check_push(service, spreadsheet_id, tab.title, expected, input_option)
-    if tab.widths:
-        set_column_widths(service, spreadsheet_id, tab.title, tab.widths)
+    _check_push(service, spreadsheet_id, title, expected, input_option)
+    if widths:
+        set_column_widths(service, spreadsheet_id, title, widths)
         report.wrote_widths = True
     return report
 

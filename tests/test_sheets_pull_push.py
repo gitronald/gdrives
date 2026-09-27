@@ -16,6 +16,7 @@ from gdrives.sheets import (
     ApplyResult,
     Cell,
     CheckContext,
+    ColumnSchema,
     HeldCell,
     MergePlan,
     NewRow,
@@ -30,6 +31,7 @@ from gdrives.sheets import (
     parse_config,
     pull_all_tabs,
     pull_tab,
+    push_rows,
     push_tab,
     read_records,
     run_target,
@@ -336,6 +338,189 @@ class TestPushRefusals:
             "T (local): bad",
         ]
         assert grid.calls == [] and report.exit_code == 1
+
+
+def as_records(*rows, header=HEADER):
+    return [dict(zip(header, row, strict=True)) for row in rows]
+
+
+class TestPushRows:
+    """``push_rows`` is ``push_tab`` for rows held in memory, with no config."""
+
+    def test_a_preview_writes_nothing(self):
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "9"], ["z", "Zed", "0"]]})
+        report = push_rows(grid, "S", "T", HEADER, as_records(*ROWS), key=["id"])
+        assert report.mode == "push" and report.apply is False
+        assert report.local is None and report.local_label is None
+        assert replacement_of(report) == Replacement(
+            before_rows=2,
+            after_rows=2,
+            before_cells=6,
+            keyed=True,
+            added=[("b",)],
+            removed=[("z",)],
+            changed=[("a",)],
+        )
+        assert writes(grid) == []
+
+    def test_apply_replaces_the_tab_and_sets_the_widths(self):
+        grid = FakeSheetGrid({"T": [["old"], ["x"], ["y"], ["z"]]})
+        report = push_rows(
+            grid,
+            "S",
+            "T",
+            HEADER,
+            as_records(*ROWS),
+            apply=True,
+            widths={"name": 150},
+        )
+        assert grid.values("T") == [HEADER, *ROWS]
+        assert report.wrote_sheet and report.wrote_widths
+        assert grid.tab("T").widths[1] == 150
+        assert report.exit_code == 0
+
+    def test_the_grid_is_grown_before_the_write(self):
+        grid = FakeSheetGrid({"T": [["old"]]}, rows=1, columns=1)
+        push_rows(grid, "S", "T", HEADER, as_records(*ROWS), apply=True)
+        assert writes(grid) == ["spreadsheets.batchUpdate", "values.update"]
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_a_missing_tab_is_created(self):
+        grid = FakeSheetGrid({"Other": []})
+        report = push_rows(grid, "S", "T", HEADER, as_records(*ROWS), apply=True)
+        assert report.tab_state == "missing"
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_only_the_named_columns_are_written_blank_where_a_row_lacks_one(self):
+        rows = [{"id": "a", "name": "Ada", "memo": "m"}, {"id": "b", "amt": "2"}]
+        grid = FakeSheetGrid({"T": []})
+        push_rows(grid, "S", "T", ["amt", "id"], rows, apply=True)
+        assert grid.values("T") == [["amt", "id"], ["", "a"], ["2", "b"]]
+
+    def test_a_tab_already_holding_the_rows_is_not_written(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_rows(grid, "S", "T", HEADER, as_records(*ROWS), apply=True)
+        assert replacement_of(report).unchanged and writes(grid) == []
+
+    @pytest.mark.parametrize(
+        ("columns", "rows", "options", "message"),
+        [
+            (HEADER, [], {}, "tab 'T': no rows to push"),
+            (HEADER, [], {"label": "the cases"}, "tab 'T': the cases has no rows"),
+            ([], [{"id": "a"}], {}, "columns must be one or more names, each once"),
+            (["id", ""], [{"id": "a"}], {}, "columns must be one or more names"),
+            (["id", "id"], [{"id": "a"}], {}, "columns must be one or more names"),
+            (
+                HEADER,
+                as_records(ROWS[0], ROWS[0]),
+                {"key": ["id"]},
+                r"^rows: duplicate key \('a',\) in rows \[1, 2\]",
+            ),
+            (
+                HEADER,
+                as_records(ROWS[0], ROWS[0]),
+                {"key": ["id"], "label": "the cases"},
+                r"^the cases: duplicate key",
+            ),
+            (
+                ["y", "id"],
+                [{"y": "2026", "id": ""}],
+                {"key": ["y", "id"]},
+                r"rows: blank key \['y', 'id'\] in rows \[1\]",
+            ),
+        ],
+    )
+    def test_refusals_make_no_request(self, columns, rows, options, message):
+        grid = FakeSheetGrid({"T": []})
+        with pytest.raises(ValueError, match=message):
+            push_rows(grid, "S", "T", columns, rows, apply=True, **options)
+        assert grid.calls == []
+
+    def test_partial_keys(self):
+        rows = [{"y": "2026", "id": ""}, {"y": "", "id": "1"}]
+        grid = FakeSheetGrid({"T": []})
+        push_rows(
+            grid,
+            "S",
+            "T",
+            ["y", "id"],
+            rows,
+            key=["y", "id"],
+            blank_keys="partial",
+            apply=True,
+        )
+        assert grid.values("T") == [["y", "id"], ["2026"], ["", "1"]]
+
+    def test_the_schema_and_the_hooks_are_checked_before_any_request(self):
+        grid = FakeSheetGrid({"T": []})
+        seen = []
+        report = push_rows(
+            grid,
+            "S",
+            "T",
+            ["id", "amt"],
+            as_records(["a", "Ada", "x"]),
+            key=["id"],
+            apply=True,
+            schema={"amt": ColumnSchema(type="int")},
+            validate=lambda rows: ["from validate"],
+            check=lambda context: seen.append(context) or ["from check"],
+            warn=lambda context: ["a warning"],
+        )
+        assert report.problems == [
+            "T (local): key ('a',), column 'amt': 'x' is not a valid int",
+            "T (local): from validate",
+            "T (local): from check",
+        ]
+        assert seen == [
+            CheckContext(
+                tab="T",
+                stage="local",
+                rows=as_records(["a", "Ada", "x"]),
+                columns=tuple(HEADER),
+                projection=("id", "amt"),
+            )
+        ]
+        assert report.warnings == [] and grid.calls == []
+        assert report.exit_code == 1
+
+    def test_warn_runs_when_the_checks_pass(self):
+        grid = FakeSheetGrid({"T": []})
+        report = push_rows(
+            grid,
+            "S",
+            "T",
+            HEADER,
+            as_records(*ROWS),
+            apply=True,
+            warn=lambda context: [f"{len(context.rows)} rows"],
+        )
+        assert report.warnings == ["2 rows"] and report.wrote_sheet
+
+    def test_user_entered_is_noted(self):
+        grid = FakeSheetGrid({"T": []})
+        report = push_rows(
+            grid, "S", "T", HEADER, as_records(*ROWS), input_option="USER_ENTERED"
+        )
+        assert report.notes == [
+            "USER_ENTERED rewrites values on entry, so the read-back checks the "
+            "header and the row count only"
+        ]
+
+    def test_a_report_given_is_kept_on_an_error(self):
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "9"]]})
+        grid.edit_externally(
+            lambda g: g.write("T", [["a", "Ada", "8"]], row=2),
+            before="values.get",
+            occurrence=2,
+        )
+        report = TabReport(tab="T", mode="push", local_label="the cases")
+        with pytest.raises(SheetChangedError):
+            push_rows(
+                grid, "S", "T", HEADER, as_records(*ROWS), apply=True, report=report
+            )
+        assert report.apply and replacement_of(report).before_rows == 1
+        assert report.local_label == "the cases" and not report.wrote_sheet
 
 
 class TestHooks:
