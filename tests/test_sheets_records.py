@@ -24,12 +24,31 @@ class TestDelimited:
     def test_csv_bytes(self, tmp_path):
         path = tmp_path / "m.csv"
         write_records(path, ["id", "note"], [{"id": "1", "note": "a, b"}])
-        assert path.read_bytes() == b'id,note\r\n1,"a, b"\r\n'
+        assert path.read_bytes() == b'id,note\n1,"a, b"\n'
 
     def test_tsv_uses_tabs(self, tmp_path):
         path = tmp_path / "m.tsv"
         write_records(path, ["id", "note"], [{"id": "1", "note": "x"}])
-        assert path.read_bytes() == b"id\tnote\r\n1\tx\r\n"
+        assert path.read_bytes() == b"id\tnote\n1\tx\n"
+
+    def test_crlf_on_request(self, tmp_path):
+        path = tmp_path / "m.csv"
+        write_records(path, ["id", "note"], [{"id": "1", "note": "x"}], newline="crlf")
+        assert path.read_bytes() == b"id,note\r\n1,x\r\n"
+        assert read_records(path) == Records(["id", "note"], [{"id": "1", "note": "x"}])
+
+    def test_a_line_break_inside_a_cell_is_kept_as_written(self, tmp_path):
+        path = tmp_path / "m.csv"
+        write_records(path, ["id", "note"], [{"id": "1", "note": "a\r\nb"}])
+        assert path.read_bytes() == b'id,note\n1,"a\r\nb"\n'
+
+    def test_unknown_newline_raises(self, tmp_path):
+        path = tmp_path / "m.csv"
+        with pytest.raises(
+            ValueError, match=r"newline must be one of \['crlf', 'lf'\]"
+        ):
+            write_records(path, ["id"], [], newline="cr")
+        assert not path.exists()
 
     def test_types_do_not_change_a_delimited_file(self, tmp_path):
         path = tmp_path / "m.csv"
@@ -39,13 +58,13 @@ class TestDelimited:
     def test_bom_is_written_on_request_and_accepted_on_read(self, tmp_path):
         path = tmp_path / "m.csv"
         write_records(path, ["id"], [{"id": "1"}], bom=True)
-        assert path.read_bytes() == b"\xef\xbb\xbfid\r\n1\r\n"
+        assert path.read_bytes() == b"\xef\xbb\xbfid\n1\n"
         assert read_records(path) == Records(["id"], [{"id": "1"}])
 
     def test_no_bom_by_default(self, tmp_path):
         path = tmp_path / "m.csv"
         write_records(path, ["id"], [])
-        assert path.read_bytes() == b"id\r\n"
+        assert path.read_bytes() == b"id\n"
 
     def test_header_only_file_keeps_its_columns(self, tmp_path):
         path = tmp_path / "m.csv"
@@ -122,6 +141,16 @@ class TestDelimited:
         path = tmp_path / "grid.csv"
         write_values_csv(str(path), [["a"]], bom=True)
         assert path.read_bytes() == b"\xef\xbb\xbfa\r\n"
+
+    def test_write_value_grid_keeps_crlf_by_default(self, tmp_path):
+        path = tmp_path / "grid.csv"
+        write_values_csv(str(path), [["a", "b"], ["1", "2"]])
+        assert path.read_bytes() == b"a,b\r\n1,2\r\n"
+
+    def test_write_value_grid_lf_on_request(self, tmp_path):
+        path = tmp_path / "grid.csv"
+        write_values_csv(str(path), [["a", "b"], ["1", "2"]], newline="lf")
+        assert path.read_bytes() == b"a,b\n1,2\n"
 
 
 class TestJson:
@@ -202,6 +231,10 @@ class TestJson:
     def test_bom_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="only to .csv and .tsv"):
             write_records(tmp_path / "m.json", ["id"], [], bom=True)
+
+    def test_crlf_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="newline applies only to .csv and .tsv"):
+            write_records(tmp_path / "m.json", ["id"], [], newline="crlf")
 
     def test_read_columns_are_every_key_in_first_seen_order(self, tmp_path):
         path = tmp_path / "m.json"

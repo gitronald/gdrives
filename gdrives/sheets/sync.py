@@ -551,7 +551,9 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     :func:`~gdrives.sheets.apply.apply_plan` (re-read guard, pushes, new
     rows, read-back); then the local file, the base, and
     the column widths. The local file and the base are written only when
-    they change, and widths only on a run that wrote to the sheet. Raises on
+    they change, and widths only on a run that wrote to the sheet. Both files
+    end their lines as the tab's ``newline`` says (LF by default), so a file
+    written with other line endings keeps them until a run changes it. Raises on
     the first failure, with the report recording every write made before it.
     """
     report = planned.report
@@ -586,11 +588,17 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             plan.new_local,
             types=tab.types,
             bom=tab.bom,
+            newline=tab.newline,
         )
         report.wrote_local = True
     base = planned.base
     if base is None or base.columns != planned.columns or base.rows != plan.new_base:
-        write_records(planned.target.base_path(tab), planned.columns, plan.new_base)
+        write_records(
+            planned.target.base_path(tab),
+            planned.columns,
+            plan.new_base,
+            newline=tab.newline,
+        )
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
         set_column_widths(service, spreadsheet_id, tab.title, tab.widths)
@@ -759,7 +767,8 @@ def pull_tab(
     ``validate`` before anything is written. The report's ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
-    local file is simply created. An unchanged file is not rewritten.
+    local file is simply created. An unchanged file is not rewritten. A
+    delimited file ends its lines as the tab's ``newline`` says.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     report.local, report.apply = tab.local, apply
@@ -783,7 +792,12 @@ def pull_tab(
     report.replacement = _compare(before, table.columns, table.rows, tab.key)
     if apply and not report.replacement.unchanged:
         write_records(
-            tab.local, table.columns, table.rows, types=tab.types, bom=tab.bom
+            tab.local,
+            table.columns,
+            table.rows,
+            types=tab.types,
+            bom=tab.bom,
+            newline=tab.newline,
         )
         report.wrote_local = True
     return report
@@ -979,8 +993,8 @@ def pull_all_tabs(
     ``skip`` title the spreadsheet lacks, and two titles whose file names
     collide (compared case-insensitively). A tab with no values, or no header
     row, is reported and skipped, never written as an empty file. With
-    ``apply`` the files are written (and ``out_dir`` created); an unchanged
-    file is not rewritten.
+    ``apply`` the files are written (and ``out_dir`` created), a delimited
+    one with LF line endings; an unchanged file is not rewritten.
     """
     if extension.lower() not in LOCAL_EXTENSIONS:
         raise ValueError(

@@ -363,6 +363,7 @@ class TestRunGet:
         out = tmp_path / "out.csv"
         run_get("SHEET_ID", "A1:B2", output=str(out))
         assert read_values_csv(str(out)) == [["a", "b"], ["1", "2"]]
+        assert out.read_bytes() == b"a,b\r\n1,2\r\n"
         assert "Wrote 2 row(s)" in capsys.readouterr().err
 
     def test_delimited_stdout_when_not_aligned(self, monkeypatch, capsys):

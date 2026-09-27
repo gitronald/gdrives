@@ -32,6 +32,7 @@ from typing import Any
 
 from gdrives.local import safe_filename
 from gdrives.sheets.cells import COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.values import RAW, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
@@ -68,6 +69,7 @@ _TAB_FIELDS = frozenset(
         "insert_above",
         "widths",
         "bom",
+        "newline",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -98,6 +100,8 @@ class TabConfig:
     ``local`` is absolute (resolved against the config file's directory).
     ``columns`` is the projection, or None for every column of the local
     file. ``insert_above`` maps its one column to the values it matches.
+    ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
+    local file is written with, and with it the tab's base.
     """
 
     title: str
@@ -113,6 +117,7 @@ class TabConfig:
     insert_above: Mapping[str, tuple[Any, ...]] | None = None
     widths: Mapping[str, int] = field(default_factory=dict)
     bom: bool = False
+    newline: str = "lf"
 
     @property
     def types(self) -> dict[str, str]:
@@ -377,6 +382,13 @@ class _Checker:
             problems.append(f"{where}: 'bom' must be true or false")
         elif bom and local is not None and local.suffix.lower() == ".json":
             problems.append(f"{where}: 'bom' applies only to a .csv or .tsv file")
+        newline = raw.get("newline", "lf")
+        if not isinstance(newline, str) or newline not in NEWLINES:
+            problems.append(
+                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
+            )
+        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
+            problems.append(f"{where}: 'newline' applies only to a .csv or .tsv file")
 
         key = self._names(where, raw, "key")
         if mode == "sync" and not key:
@@ -415,6 +427,7 @@ class _Checker:
             insert_above=insert_above,
             widths=widths,
             bom=bool(bom),
+            newline=str(newline),
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:

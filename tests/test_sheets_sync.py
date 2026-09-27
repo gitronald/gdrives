@@ -309,6 +309,41 @@ class TestSync:
         run(grid, target, apply=True)
         assert target.tabs[0].local.read_bytes().startswith(b"\xef\xbb\xbfid,")
 
+    def test_the_local_file_and_the_base_are_written_with_lf(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, ["a", "Ada", "1"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
+        run(grid, target, apply=True)
+        assert snapshot(target) == (
+            b"id,name,amt\na,Ada,1\nb,Bo,2\n",
+            b"id,name,amt\na,Ada,1\nb,Bo,2\n",
+        )
+
+    @pytest.mark.parametrize("bom", [False, True])
+    def test_newline_crlf_is_kept_on_the_local_file_and_the_base(self, tmp_path, bom):
+        target = make_target(tmp_path, newline="crlf", bom=bom)
+        write_local(target, ["a", "Ada", "1"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"], ["b", "Bo", "2"]]})
+        run(grid, target, apply=True)
+        mark = b"\xef\xbb\xbf" if bom else b""
+        assert snapshot(target) == (
+            mark + b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n",
+            b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n",
+        )
+
+    def test_a_crlf_file_keeps_its_line_endings_until_it_changes(self, synced):
+        # write_local and write_base write CRLF, as 0.11.0 did.
+        grid, target = synced
+        before = snapshot(target)
+        run(grid, target, apply=True)
+        assert snapshot(target) == before
+        grid.write("T", [["a", "Ada", "9"]], row=2)
+        run(grid, target, apply=True)
+        assert snapshot(target) == (
+            b"id,name,amt\na,Ada,9\nb,Bo,2\n",
+            b"id,name,amt\na,Ada,9\nb,Bo,2\n",
+        )
+
     def test_widths_are_set_after_a_sheet_write_only(self, synced, tmp_path):
         _, plain = synced
         target = make_target(tmp_path, widths={"name": 240})
@@ -881,7 +916,7 @@ class TestPaths:
         grid = FakeSheetGrid({"../a/b": [HEADER, *ROWS]})
         sync_tab(grid, "S", target, tab, apply=True)
         base = tmp_path / "cfg" / "snapshots" / ".._a_b.csv"
-        assert base.read_bytes() == b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
+        assert base.read_bytes() == b"id,name,amt\na,Ada,1\nb,Bo,2\n"
         assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
             ".._a_b.csv"
         ]

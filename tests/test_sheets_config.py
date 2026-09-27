@@ -71,6 +71,7 @@ class TestValidConfig:
                     "insert_above": {"status": ["closed"]},
                     "widths": {"notes": 320},
                     "bom": True,
+                    "newline": "crlf",
                 },
                 "Summary": {"mode": "push", "local": "output/summary.json"},
             },
@@ -105,6 +106,7 @@ class TestValidConfig:
                             insert_above={"status": ("closed",)},
                             widths={"notes": 320},
                             bom=True,
+                            newline="crlf",
                         ),
                         TabConfig(
                             title="Summary",
@@ -126,6 +128,7 @@ class TestValidConfig:
         )
         assert tab.columns is None
         assert tab.insert_above is None
+        assert tab.newline == "lf"
 
     def test_default_base_uses_a_safe_target_name(self):
         data = {"a/../b": config()["roster"]}
@@ -410,6 +413,30 @@ class TestTabProblems:
             members(local="m.json", bom=True),
             "'bom' applies only to a .csv or .tsv file",
         )
+
+    @pytest.mark.parametrize("newline", ["cr", "LF", "\n", True, None])
+    def test_newline_not_a_line_ending(self, newline):
+        self.tab_refused(
+            members(newline=newline),
+            f"'newline' must be one of ['crlf', 'lf'], not {newline!r}",
+        )
+
+    def test_newline_on_json(self):
+        self.tab_refused(
+            members(local="m.json", newline="crlf"),
+            "'newline' applies only to a .csv or .tsv file",
+        )
+
+    def test_newline_lf_on_json_is_what_a_json_file_gets(self):
+        tab = members(local="m.json", newline="lf")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].newline == "lf"
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_newline_applies_to_every_mode(self, mode):
+        tab = members(mode=mode, newline="crlf")
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].newline == "crlf"
 
     @pytest.mark.parametrize("key", [None, []])
     def test_sync_tab_without_a_key(self, key):

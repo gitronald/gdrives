@@ -5,7 +5,8 @@
 :mod:`gdrives.sheets.cells`), picking the format from the extension:
 
 - ``.csv`` / ``.tsv``: every cell is a string, so leading zeros, booleans, and
-  dates stay exactly as written.
+  dates stay exactly as written. Records end their lines with LF unless asked
+  otherwise; a grid keeps the CRLF of the ``csv`` module.
 - ``.json``: an array of objects holding typed values per the declared column
   types, written byte-stably (column order, two-space indent, final newline)
   so rewriting unchanged records leaves the file byte-for-byte the same.
@@ -28,6 +29,16 @@ from gdrives.sheets.cells import from_cell, to_cell
 # for a delimited format, None for JSON.
 _FORMATS: dict[str, str | None] = {".csv": ",", ".tsv": "\t", ".json": None}
 
+#: The line endings a delimited file is written with, by name.
+NEWLINES: dict[str, str] = {"lf": "\n", "crlf": "\r\n"}
+
+
+def _terminator(newline: str) -> str:
+    """The line ending called ``newline``, refusing a name that is not one."""
+    if newline not in NEWLINES:
+        raise ValueError(f"newline must be one of {sorted(NEWLINES)}, not {newline!r}")
+    return NEWLINES[newline]
+
 
 def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:
     """Read a local delimited file into rows of string cells.
@@ -46,18 +57,26 @@ def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:
 
 
 def write_values_csv(
-    path: str, values: list[list[str]], *, delimiter: str = ",", bom: bool = False
+    path: str,
+    values: list[list[str]],
+    *,
+    delimiter: str = ",",
+    bom: bool = False,
+    newline: str = "crlf",
 ) -> None:
     """Write rows of cells to a local delimited file, creating parent dirs.
 
     Written atomically, so a failed run never leaves a partial file behind.
     ``bom`` starts the file with a UTF-8 byte-order mark, which some
-    spreadsheet apps need to read it as UTF-8.
+    spreadsheet apps need to read it as UTF-8. ``newline`` ends each row with
+    ``"crlf"`` (the default, and the ``csv`` module's) or ``"lf"``; a line
+    break inside a cell is written as the cell holds it.
     """
+    terminator = _terminator(newline)
     buf = io.StringIO()
     if bom:
         buf.write("\ufeff")
-    csv.writer(buf, delimiter=delimiter).writerows(values)
+    csv.writer(buf, delimiter=delimiter, lineterminator=terminator).writerows(values)
     write_text(Path(path), buf.getvalue())
 
 
@@ -194,27 +213,37 @@ def write_records(
     *,
     types: Mapping[str, str] | None = None,
     bom: bool = False,
+    newline: str = "lf",
 ) -> None:
     """Atomically write records to a ``.csv``, ``.tsv``, or ``.json`` file.
 
     ``columns`` fixes the column order; a column a row lacks is written blank,
     and a row holding a column not in ``columns`` raises rather than being
     dropped. A delimited file gets a header row and every cell as-is; ``bom``
-    starts it with a UTF-8 byte-order mark. A JSON file gets one object per row
+    starts it with a UTF-8 byte-order mark, and ``newline`` ends its lines
+    with ``"lf"`` (the default) or ``"crlf"``. A JSON file gets one object per row
     with keys in ``columns`` order and each value parsed as its column's type
     in ``types`` (default ``str``); a blank cell is ``null``. A JSON array
-    has no header, so a JSON file with no rows does not record its columns.
+    has no header, so a JSON file with no rows does not record its columns. It
+    is written with LF, and refuses ``bom`` and any other ``newline``.
     """
     delimiter = _format(path)
+    _terminator(newline)
     _check_columns(path, columns)
     grid = _row_cells(path, columns, rows)
     if delimiter is not None:
         write_values_csv(
-            str(path), [list(columns), *grid], delimiter=delimiter, bom=bom
+            str(path),
+            [list(columns), *grid],
+            delimiter=delimiter,
+            bom=bom,
+            newline=newline,
         )
         return
     if bom:
         raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
+    if newline != "lf":
+        raise ValueError(f"{path}: newline applies only to .csv and .tsv")
     declared = types or {}
     try:
         records = [
