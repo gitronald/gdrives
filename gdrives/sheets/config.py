@@ -33,6 +33,7 @@ from typing import Any
 from gdrives.local import safe_filename
 from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
+from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.values import RAW, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
@@ -108,11 +109,15 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TabConfig:
-    """One tab of a target, and the local file it is kept in step with.
+    """One tab of a target, and the local side it is kept in step with.
 
-    ``local`` is absolute (resolved against the config file's directory).
+    ``local`` is the local file, absolute (resolved against the config
+    file's directory). A tab loaded from a config always has one. A tab built
+    in code may give a ``store`` instead, and then ``local`` is None unless
+    given too; :attr:`local_store` is what a run reads and writes. A tab
+    with neither is refused.
     ``columns`` is the projection, or None for every column of the local
-    file. ``insert_above`` maps its one column to the values it matches.
+    side. ``insert_above`` maps its one column to the values it matches.
     ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
     local file is written with, and with it the tab's base. ``blank_keys``
     is ``"refuse"`` or ``"partial"``, as for
@@ -121,7 +126,7 @@ class TabConfig:
     """
 
     title: str
-    local: Path
+    local: Path | None = None
     mode: str = "sync"
     key: tuple[str, ...] = ()
     columns: tuple[str, ...] | None = None
@@ -136,11 +141,32 @@ class TabConfig:
     newline: str = "lf"
     blank_keys: str = "refuse"
     on_invalid: str = "refuse"
+    store: Store | None = None
+
+    def __post_init__(self) -> None:
+        if self.local is None and self.store is None:
+            raise ValueError(
+                f"tab {self.title!r}: give 'local', a file path, or 'store'"
+            )
 
     @property
     def types(self) -> dict[str, str]:
         """Each schema column's declared type, for writing a JSON file."""
         return {column: spec.type for column, spec in self.schema.items()}
+
+    @property
+    def local_store(self) -> Store:
+        """The store of the local side: ``store``, or the file at ``local``.
+
+        The file is read and written with the tab's ``types``, ``bom``, and
+        ``newline``.
+        """
+        if self.store is not None:
+            return self.store
+        assert self.local is not None  # __post_init__ refused a tab with neither
+        return FileStore(
+            self.local, types=self.types, bom=self.bom, newline=self.newline
+        )
 
 
 @dataclass(frozen=True)
@@ -148,7 +174,10 @@ class Target:
     """One spreadsheet and its tabs, in config order.
 
     ``spreadsheet`` is the URL, file ID, or Drive path as written in the
-    config. ``base`` is the absolute directory holding the base snapshots.
+    config. ``base`` is the absolute directory holding the base snapshots,
+    one CSV per tab. ``base_stores`` maps a tab's title to the store that
+    holds its base instead, for a base kept somewhere else; ``base`` is
+    unused for a tab it names.
     """
 
     name: str
@@ -156,6 +185,7 @@ class Target:
     base: Path
     tabs: tuple[TabConfig, ...]
     input_option: str = RAW
+    base_stores: Mapping[str, Store] = field(default_factory=dict)
 
     def tab(self, title: str) -> TabConfig:
         """The tab titled ``title``, raising ValueError naming the others."""
@@ -170,6 +200,16 @@ class Target:
     def base_path(self, tab: TabConfig) -> Path:
         """The base snapshot file of ``tab``: one CSV per tab, named by title."""
         return self.base / f"{safe_filename(tab.title)}.csv"
+
+    def base_store(self, tab: TabConfig) -> Store:
+        """The store of ``tab``'s base: its entry in ``base_stores``, or the file.
+
+        The file is the one at :meth:`base_path`, written with the tab's
+        ``newline``.
+        """
+        if tab.title in self.base_stores:
+            return self.base_stores[tab.title]
+        return FileStore(self.base_path(tab), newline=tab.newline)
 
 
 @dataclass(frozen=True)
@@ -346,7 +386,8 @@ class _Checker:
         A sync or pull tab writes its local file, and a sync tab its base file;
         a push tab only reads its local file, so push tabs may share one. Paths
         are compared case-folded, since on a case-insensitive filesystem
-        ``Notes.csv`` and ``notes.csv`` are one file.
+        ``Notes.csv`` and ``notes.csv`` are one file. Only files are checked:
+        a caller that gives a tab a store of its own owns this check.
         """
         writers: dict[str, list[str]] = {}
         paths: dict[str, Path] = {}
@@ -354,7 +395,7 @@ class _Checker:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
                 files: list[tuple[Path, str]] = []
-                if tab.mode != "push":
+                if tab.mode != "push" and tab.local is not None:
                     files.append((tab.local, f"{where} (local file)"))
                 if tab.mode == "sync":
                     files.append((target.base_path(tab), f"{where} (base)"))

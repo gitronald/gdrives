@@ -848,6 +848,7 @@ SUBMODULES = (
     "merge",
     "retry",
     "rules",
+    "stores",
     "structure",
     "sync",
     "table",

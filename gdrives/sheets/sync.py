@@ -7,6 +7,10 @@ local files and says what it would do, without writing anything anywhere or
 creating a directory. The writes happen only in :func:`apply_tab` and with
 ``apply=True``.
 
+The local side of a tab and its base are reached through a
+:class:`~gdrives.sheets.stores.Store`: the file a config names, or a store a
+caller gives the tab (``TabConfig.store``, ``Target.base_stores``).
+
 A **sync** tab is merged three ways (:func:`~gdrives.sheets.merge.merge`)
 against its base snapshot, one CSV per tab under the target's ``base``
 directory. :func:`plan_tab` reads and merges; :func:`apply_tab` writes, in an
@@ -20,7 +24,7 @@ order that is a safety property, stopping at the first failure:
    again, and the run stops if that merge differs from the checked one.
 3. :func:`~gdrives.sheets.apply.apply_plan`: the re-read guard, the pushed
    cells, the new rows, and the read-back check.
-4. The local file, then the base, then the column widths.
+4. The local store, then the base store, then the column widths.
 
 A caller's own checks are three hooks. ``validate`` takes rows, ``check`` a
 :class:`CheckContext` (the rows, the columns of both sides, and the merge),
@@ -65,6 +69,7 @@ from gdrives.sheets.config import (
 )
 from gdrives.sheets.files import Records, read_records, write_records
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
+from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.structure import (
     add_columns,
     delete_columns,
@@ -176,6 +181,8 @@ class Replacement:
 class TabReport:
     """What one run did, or would do, to one tab and its local file.
 
+    ``local`` is the tab's local file and ``local_label`` the label of its
+    local store, which is the file's path for a file.
     ``apply`` says whether writes were asked for; a preview has it False and
     writes nothing. ``tab_state`` is ``"present"``, ``"missing"`` (no such
     tab), or ``"empty"`` (no header row). ``error`` is set when the run
@@ -204,6 +211,7 @@ class TabReport:
     tab: str
     mode: str
     local: Path | None = None
+    local_label: str | None = None
     apply: bool = False
     tab_state: str = "present"
     error: str | None = None
@@ -318,11 +326,25 @@ def _canonical(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
     return rows
 
 
+def _named(store: Store, role: str = "local") -> str:
+    """What a message calls a store: ``local file <path>``, ``local store <label>``."""
+    kind = "file" if isinstance(store, FileStore) else "store"
+    return f"{role} {kind} {store.label}"
+
+
+def _started(report: TabReport, tab: TabConfig) -> Store:
+    """Name the tab's local side in ``report``, and return its store."""
+    store = tab.local_store
+    report.local, report.local_label = tab.local, store.label
+    return store
+
+
 def _read_local(tab: TabConfig) -> Records:
-    """The tab's local file, refusing one that does not exist."""
-    if not tab.local.exists():
-        raise ValueError(f"tab {tab.title!r}: local file {tab.local} does not exist")
-    return read_records(tab.local)
+    """The tab's local side, refusing one that does not exist."""
+    store = tab.local_store
+    if not store.exists():
+        raise ValueError(f"tab {tab.title!r}: {_named(store)} does not exist")
+    return store.read()
 
 
 def _projection(tab: TabConfig, local: Records) -> list[str]:
@@ -332,13 +354,12 @@ def _projection(tab: TabConfig, local: Records) -> list[str]:
     as blank there and push blanks over the sheet.
     """
     columns = list(tab.columns) if tab.columns is not None else list(local.columns)
+    named = _named(tab.local_store)
     if not columns:
-        raise ValueError(f"tab {tab.title!r}: local file {tab.local} has no columns")
+        raise ValueError(f"tab {tab.title!r}: {named} has no columns")
     lacking = [column for column in columns if column not in local.columns]
     if lacking:
-        raise ValueError(
-            f"tab {tab.title!r}: local file {tab.local} lacks column(s) {lacking}"
-        )
+        raise ValueError(f"tab {tab.title!r}: {named} lacks column(s) {lacking}")
     return columns
 
 
@@ -441,7 +462,7 @@ def plan_tab(
             f"prefer must be one of {sorted(SIDES)} or None, not {prefer!r}"
         )
     report = report if report is not None else TabReport(tab=tab.title, mode="sync")
-    report.local = tab.local
+    _started(report, tab)
     report.adopted = adopt
     options: dict[str, Any] = {
         "adopt": adopt,
@@ -513,12 +534,12 @@ def _plan(
         if report.problems:
             return planned(None, None, None)
 
-    base_path = target.base_path(tab)
-    base = read_records(base_path) if base_path.exists() else None
+    base_store = target.base_store(tab)
+    base = base_store.read() if base_store.exists() else None
     if options["adopt"] and base is not None:
         raise ValueError(
             f"tab {tab.title!r}: adopt is only for a first sync, and a base exists "
-            f"at {base_path} (delete the base to start over)"
+            f"at {base_store.label} (delete the base to start over)"
         )
 
     table: Table | None = None
@@ -551,7 +572,7 @@ def _plan(
     if report.tab_state != "present" and base is not None:
         raise ValueError(
             f"tab {tab.title!r} is {report.tab_state} but a base exists at "
-            f"{base_path}: the tab was emptied after a sync, so look before "
+            f"{base_store.label}: the tab was emptied after a sync, so look before "
             "syncing (delete the base to start over)"
         )
 
@@ -740,8 +761,8 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     add missing columns, delete extra ones), after which the tab is read and
     merged again, refusing a merge that differs from the checked one; then
     :func:`~gdrives.sheets.apply.apply_plan` (re-read guard, pushes, new
-    rows, read-back); then the local file, the base, and
-    the column widths. The local file and the base are written only when
+    rows, read-back); then the local store, the base store, and
+    the column widths. The local side and the base are written only when
     they change, and widths only on a run that wrote to the sheet. Both files
     end their lines as the tab's ``newline`` says (LF by default), so a file
     written with other line endings keeps them until a run changes it. Raises on
@@ -773,23 +794,11 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
         report.wrote_sheet = True
 
     if plan.new_local != planned.local.rows:
-        write_records(
-            tab.local,
-            planned.local.columns,
-            plan.new_local,
-            types=tab.types,
-            bom=tab.bom,
-            newline=tab.newline,
-        )
+        tab.local_store.write(planned.local.columns, plan.new_local)
         report.wrote_local = True
     base = planned.base
     if base is None or base.columns != planned.columns or base.rows != plan.new_base:
-        write_records(
-            planned.target.base_path(tab),
-            planned.columns,
-            plan.new_base,
-            newline=tab.newline,
-        )
+        planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
         set_column_widths(service, spreadsheet_id, tab.title, tab.widths)
@@ -974,7 +983,8 @@ def pull_tab(
     delimited file ends its lines as the tab's ``newline`` says.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
-    report.local, report.apply = tab.local, apply
+    store = _started(report, tab)
+    report.apply = apply
     if tab.title not in list_tabs(service, spreadsheet_id):
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; the local file is left alone")
@@ -1010,17 +1020,10 @@ def pull_tab(
     if report.problems:
         return report
     _warn(report, context, warn)
-    before = read_records(tab.local) if tab.local.exists() else Records([], [])
+    before = store.read() if store.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, tab.key)
     if apply and not report.replacement.unchanged:
-        write_records(
-            tab.local,
-            table.columns,
-            table.rows,
-            types=tab.types,
-            bom=tab.bom,
-            newline=tab.newline,
-        )
+        store.write(table.columns, table.rows)
         report.wrote_local = True
     return report
 
@@ -1076,10 +1079,11 @@ def push_tab(
     already holding exactly the local file is not written.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
-    report.local, report.apply = tab.local, apply
+    store = _started(report, tab)
+    report.apply = apply
     local = _read_local(tab)
     if not local.rows:
-        raise ValueError(f"tab {tab.title!r}: local file {tab.local} has no rows")
+        raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
     _projection(tab, local)  # refuses a configured column the file lacks
     wanted = tab.columns if tab.columns is not None else local.columns
     out = [column for column in local.columns if column in wanted]
@@ -1099,7 +1103,7 @@ def push_tab(
         index_rows(
             local.rows,
             tab.key,
-            side=f"local file {tab.local}",
+            side=_named(store),
             blank_keys=tab.blank_keys,
         )
     expected = [out, *([row[column] for column in out] for row in local.rows)]
@@ -1355,7 +1359,8 @@ def run_target(
 
     report = SyncReport(target=target.name)
     for tab in selected:
-        tab_report = TabReport(tab=tab.title, mode=mode, local=tab.local, apply=apply)
+        tab_report = TabReport(tab=tab.title, mode=mode, apply=apply)
+        _started(tab_report, tab)
         report.tabs.append(tab_report)
         try:
             if mode == "sync":
@@ -1439,6 +1444,8 @@ def _format_tab(tab: TabReport) -> list[str]:
     lines = [f"{tab.mode} tab {_q(tab.tab)} ({run})"]
     if tab.local is not None:
         lines.append(f"  local file: {printable(str(tab.local))}")
+    elif tab.local_label is not None:
+        lines.append(f"  local store: {printable(tab.local_label)}")
     will = "" if tab.apply else "would be "
     lines.extend(f"  note: {printable(note)}" for note in tab.notes)
     if tab.tab_state == "missing" and tab.mode != "pull":

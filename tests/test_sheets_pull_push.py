@@ -9,7 +9,7 @@ the file bytes, and the calls a run leaves behind.
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
+from helpers import FakeSheetGrid, http_error, local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -383,7 +383,7 @@ class TestHooks:
         )
         assert report.problems == ["T (sheet): from validate", "T (sheet): from check"]
         assert warned == [] and report.warnings == []
-        assert not tab.local.exists()
+        assert not local_file(tab).exists()
 
     def test_a_push_checks_the_local_rows_before_any_request(self, tmp_path):
         tab = one_tab(tmp_path, "push", columns=["id", "amt"])
@@ -504,7 +504,7 @@ class TestPull:
     def test_preview_compares_with_the_local_file_by_key(self, tmp_path):
         tab = one_tab(tmp_path, "pull", key=["id"])
         write_local(tab, ["a", "Ada", "1"], ["b", "Bo", "2"], ["c", "Cy", "3"])
-        before = tab.local.read_bytes()
+        before = local_file(tab).read_bytes()
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "5"], ["d", "Di", 4]]})
         report = pull_tab(grid, "S", tab)
         assert replacement_of(report) == Replacement(
@@ -519,7 +519,7 @@ class TestPull:
             unchanged=False,
         )
         assert replacement_of(report).row_drop == 1
-        assert tab.local.read_bytes() == before
+        assert local_file(tab).read_bytes() == before
         assert writes(grid) == []
 
     def test_apply_replaces_the_local_file(self, tmp_path):
@@ -527,7 +527,7 @@ class TestPull:
         write_local(tab, ["a", "Ada", "1", "memo"], header=HEADER + ["memo"])
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", 5], ["b", "Bo", True]]})
         report = pull_tab(grid, "S", tab, apply=True)
-        assert tab.local.read_bytes() == (
+        assert local_file(tab).read_bytes() == (
             b"\xef\xbb\xbfid,name,amt\na,Ada,5\nb,Bo,TRUE\n"
         )
         assert replacement_of(report).dropped_columns == {"memo": 1}
@@ -537,7 +537,7 @@ class TestPull:
         tab = one_tab(tmp_path, "pull", columns=["amt", "id"])
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         pull_tab(grid, "S", tab, apply=True)
-        assert tab.local.read_bytes() == b"amt,id\n1,a\n2,b\n"
+        assert local_file(tab).read_bytes() == b"amt,id\n1,a\n2,b\n"
 
     @pytest.mark.parametrize("bom", [False, True])
     def test_newline_crlf_is_written_on_request(self, tmp_path, bom):
@@ -545,7 +545,7 @@ class TestPull:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         pull_tab(grid, "S", tab, apply=True)
         mark = b"\xef\xbb\xbf" if bom else b""
-        assert tab.local.read_bytes() == (
+        assert local_file(tab).read_bytes() == (
             mark + b"id,name,amt\r\na,Ada,1\r\nb,Bo,2\r\n"
         )
 
@@ -602,10 +602,10 @@ class TestPull:
     def test_an_unchanged_file_is_not_rewritten(self, tmp_path):
         tab = one_tab(tmp_path, "pull")
         write_local(tab, *ROWS)
-        mtime = tab.local.stat().st_mtime_ns
+        mtime = local_file(tab).stat().st_mtime_ns
         report = pull_tab(FakeSheetGrid({"T": [HEADER, *ROWS]}), "S", tab, apply=True)
         assert replacement_of(report).unchanged and not report.wrote_local
-        assert tab.local.stat().st_mtime_ns == mtime
+        assert local_file(tab).stat().st_mtime_ns == mtime
 
     @pytest.mark.parametrize(
         ("tabs", "message", "state"),
@@ -620,13 +620,13 @@ class TestPull:
     ):
         tab = one_tab(tmp_path, "pull")
         write_local(tab, *ROWS)
-        before = tab.local.read_bytes()
+        before = local_file(tab).read_bytes()
         report = TabReport(tab="T", mode="pull")
         with pytest.raises(
             ValueError, match=f"{message}.*the local file is left alone"
         ):
             pull_tab(FakeSheetGrid(tabs), "S", tab, apply=True, report=report)
-        assert tab.local.read_bytes() == before
+        assert local_file(tab).read_bytes() == before
         assert report.tab_state == state
 
     def test_schema_problems_write_nothing(self, tmp_path):
@@ -636,7 +636,7 @@ class TestPull:
         assert report.problems == [
             "T (sheet): row 2, column 'amt': '2' is not one of ['1']"
         ]
-        assert not tab.local.exists()
+        assert not local_file(tab).exists()
 
 
 # -- the one-off dump --
