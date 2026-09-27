@@ -1,7 +1,8 @@
 """Live integration tests for gdrives.sheets against the real Sheets API v4.
 
-These exercise every core value operation (list_tabs, pull/update/append/clear)
-and the conditional format rule round trip (add/list/delete) against a real
+These exercise every core value operation (list_tabs, pull/update/append/clear),
+the read layer (read_tab, pull_many and its render options), and the
+conditional format rule round trip (add/list/delete) against a real
 spreadsheet, so they catch anything the fake-service unit tests in
 test_sheets.py and test_sheets_rules.py can't — request-shape mismatches, scope
 problems, and how the API actually renders formulas, empty ranges, and stored
@@ -280,3 +281,36 @@ def test_conditional_rule_index_orders_and_json_replays(tab):
     listed = _rules_on(service, sid, name)[1]["rule"]
     sheets.add_conditional_rule(service, sid, listed, index=2)
     assert _rules_on(service, sid, name)[2]["rule"] == listed
+
+
+def test_read_tab_reads_canonical_cells_by_header_name(tab):
+    service, sid, name = tab
+    # A RAW write stores text as typed; a USER_ENTERED one parses numbers and
+    # booleans, which the unformatted read returns as values.
+    sheets.update_values(
+        service,
+        sid,
+        f"'{name}'!A1:E2",
+        [["note", "id", "text", "n", "flag"], ["", "a ", "007", "3.0", "TRUE"]],
+        input_option=sheets.RAW,
+    )
+    sheets.update_values(service, sid, f"'{name}'!B3:E3", [["b", "007", "3.0", "TRUE"]])
+    table = sheets.read_tab(service, sid, name, ["id", "text", "n", "flag"], ["id"])
+    assert table.rows == [
+        {"id": "a ", "text": "007", "n": "3.0", "flag": "TRUE"},
+        {"id": "b", "text": "7", "n": "3", "flag": "TRUE"},
+    ]
+    assert table.row_numbers == {("a",): 2, ("b",): 3}
+    assert table.extra_columns == ["note"]
+
+
+def test_pull_many_reads_ranges_in_order(tab):
+    service, sid, name = tab
+    _seed(service, sid, name, [["h1", "h2"], ["1", "x"], ["2.5", "y"]])
+    grids = sheets.pull_many(
+        service,
+        sid,
+        [f"'{name}'!A2:A3", f"'{name}'!D1:D3", f"'{name}'!B1"],
+        render=sheets.UNFORMATTED_VALUE,
+    )
+    assert grids == [[[1], [2.5]], [], [["h2"]]]
