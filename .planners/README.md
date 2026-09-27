@@ -2,13 +2,13 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | active | — | — |
 | 017 | [List and download a file's Drive revisions, read-only](plans/017-drive-revisions/plan.md) | draft | — | — |
 | 016 | [Make Target.base optional when every tab has a base store](plans/016-optional-target-base/plan.md) | draft | — | — |
 | 015 | [Refuse projection columns the schema does not declare](plans/015-strict-schema/plan.md) | draft | — | — |
 | 014 | [Add a store for one entry of a multi-tab JSON file](plans/014-json-entry-store/plan.md) | draft | — | — |
 | 013 | [Reorder a keyed tab's rows to a given order by moving whole rows](plans/013-reorder-rows/plan.md) | draft | — | — |
 | 012 | [Exclude named columns from a pull](plans/012-pull-exclude-columns/plan.md) | draft | — | — |
-| 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | draft | — | — |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
