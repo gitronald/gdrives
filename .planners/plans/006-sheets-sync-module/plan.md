@@ -1,8 +1,8 @@
 ---
 id: 6
 slug: sheets-sync-module
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-module
 created: 2026-09-27T00:16:35-07:00
 concluded:
 pr:
