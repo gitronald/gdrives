@@ -27,7 +27,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``stores``: where a tab's local side and its base are kept (``Store``,
   ``FileStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
-  missing tabs, and set column widths
+  missing tabs, set column widths, and find and clear link formatting
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
   ``run_target``) and report it
@@ -135,9 +135,15 @@ from gdrives.sheets.rules import (
 )
 from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
+    CELL_LINK_FIELD,
+    LINK_FIELDS,
+    RUNS_FIELD,
+    LinkedCell,
     add_columns,
+    clear_link_format,
     delete_columns,
     ensure_tabs,
+    linked_cells,
     place_columns,
     set_column_widths,
 )
@@ -195,6 +201,7 @@ __all__ = [
     "ApplyError",
     "ApplyResult",
     "BOOTSTRAPS",
+    "CELL_LINK_FIELD",
     "COLUMN_TYPES",
     "CONFIG_NAME",
     "Cell",
@@ -211,7 +218,9 @@ __all__ = [
     "IDEMPOTENT_STATUSES",
     "HeldCell",
     "INPUT_OPTIONS",
+    "LINK_FIELDS",
     "LOCAL_EXTENSIONS",
+    "LinkedCell",
     "MODES",
     "MemoryStore",
     "MergePlan",
@@ -224,6 +233,7 @@ __all__ = [
     "RATE_LIMIT_STATUSES",
     "RAW",
     "ROW_FLAGS",
+    "RUNS_FIELD",
     "ReadBackError",
     "Records",
     "Replacement",
@@ -255,6 +265,7 @@ __all__ = [
     "build_formula_rule",
     "cell_problem",
     "check_blank_keys",
+    "clear_link_format",
     "clear_values",
     "color_to_hex",
     "column_index",
@@ -278,6 +289,7 @@ __all__ = [
     "hex_to_color",
     "index_rows",
     "insert_point",
+    "linked_cells",
     "list_conditional_rules",
     "list_tabs",
     "load_config",
