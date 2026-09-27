@@ -2,7 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
-| 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | active | — | — |
+| 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | active | — | [#45](https://github.com/gitronald/gdrives/pull/45) |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 007 | [Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets](plans/007-sheets-sync-adoption-gaps/plan.md) | draft | — | — |

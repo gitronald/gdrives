@@ -5,7 +5,7 @@ status: active
 branch: feature/oauth-token-and-consent-safety
 created: 2026-09-27T11:03:57-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/45
 ---
 
 # Protect a caller's OAuth token and make a pending consent visible
@@ -181,3 +181,66 @@ What follows from the order:
 - If this plan ships as a release of its own, its changelog lines are promoted before
   007 merges into `dev`. 007 lands through one umbrella PR at its end, so its lines do
   not reach `[Unreleased]` on `dev` before then.
+
+### 2026-09-27 — items 1 to 4 implemented
+
+Written at 2026-09-27T12:01:02-07:00, on `feature/oauth-token-and-consent-safety`.
+Commits: `c706b43` (the library: items 1, 2, and the `force`, `timeout`, and
+announcement helpers), `cbe3807` (`gdrives login`, and the announcement in every
+command), then the docs.
+
+The open questions:
+
+- **Which scopes `drive` implies.** Checked against the per-method scope lists in the
+  discovery documents of Sheets v4 (revision 20260921), Docs v1 (20260921), and Drive
+  v3 (20260923), 84 methods in all: a pair is kept when every method that accepts the
+  narrower scope also accepts the broader one. Every pair of the design holds. Three
+  more follow from it and are in the table: `drive` serves `drive.metadata.readonly`,
+  `spreadsheets.readonly`, and `documents.readonly`. One pair the lists allow is left
+  out on purpose: `drive.file` is accepted by the Sheets and Docs methods, but reaches
+  only the files the app created or was handed, so it serves no other scope.
+- **Where a refused overwrite leaves the caller.** Both tokens are kept: the new one
+  goes to the derived name. Where the derived name is the historical one
+  (`documents`, `drive`), or is taken by another grant too, the token serves the run
+  and is not saved, with a warning naming the file in the way. The consent then comes
+  back on the next run until that file is moved.
+- **Order with plan 004.** 004 is still a draft. The table already holds the
+  `drive.metadata` pair, and `gdrives login --scope drive` asks for
+  `DRIVE_WRITE_SCOPES`, so it follows whatever `mv` asks for once 004 changes that.
+
+Where the design left room:
+
+- `_token_path` still returns the one historical name. The lookup in both places is
+  `_token_paths`, and a token whose refresh is refused is passed over for the next
+  place before any consent starts.
+- `force` does not consent again when a cached token serves the request. It lifts the
+  terminal requirement and turns OAuth that is not configured into a `ConsentError`.
+- `--timeout` defaults to 300 seconds in the command and to no limit in the library. A
+  timeout is caught as an `AttributeError`, because `WSGITimeoutError` exists only in
+  releases of `google-auth-oauthlib` after 1.2.1 and the dependency has no floor.
+- Item 4 is not a call in each command. `_cli_errors`, which every command already
+  runs in, enters `announcing_credentials()`, and the one place credentials are made
+  (`_credentials`) prints the line when a consent or a refresh is coming, once per
+  scope set. A path given to a command is resolved with a Drive service of its own,
+  which a call per command would have missed, and a new command cannot forget it. A
+  library caller's stderr is unchanged outside such a block.
+- The notice of a token written under the derived name is a `logger.warning`, like
+  the module's other token notices. It reaches stderr through logging's default
+  handler, which a real run confirmed.
+
+Found while running it: with no terminal attached stdout is block-buffered, so the
+consent URL stayed in the buffer until the command exited, which is the one case
+`force` exists for. The prompt is now flushed as it is written.
+
+Checks: `ruff`, `pyrefly`, and 1608 tests at 100% coverage. Runs of the real command
+against a scratch config directory with placeholder client secrets and no terminal:
+`gdrives login --timeout 2` printed the credential line and the URL, then exited 1 with
+no token file written; `gdrives login --scope sheets` with a `drive` token under
+`gdrives_token_rw.json` exited 0 and left the file byte for byte as it was; and a
+missing client secrets file exited 1.
+
+Still open:
+
+- The manual check of the Testing section, one real `gdrives login` by the owner.
+- The project `CLAUDE.md` is not tracked, so its update exists only in the worktree's
+  copy and has to be carried to the main checkout when the branch merges.
