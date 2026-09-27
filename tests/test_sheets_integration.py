@@ -412,3 +412,85 @@ def test_add_then_delete_columns_by_name(tab):
     ]
     sheets.delete_columns(service, sid, name, ["x", "name"])
     assert sheets.pull_values(service, sid, f"'{name}'") == [["id", "y"], ["a"]]
+
+
+# -- sync and push: a whole run against the API --
+
+
+def _target(tmp_path, sid, name, tab):
+    """A config target ``roster`` with one tab: the fresh one, as ``tab`` says."""
+    data = {"roster": {"spreadsheet": sid, "tabs": {name: tab}}}
+    return sheets.parse_config(data, tmp_path / sheets.CONFIG_NAME).target("roster")
+
+
+def _rows(path):
+    return [list(row.values()) for row in sheets.read_records(path).rows]
+
+
+def test_sync_adopts_merges_and_then_writes_nothing(tab, tmp_path):
+    service, sid, name = tab
+    target = _target(
+        tmp_path, sid, name, {"local": "members.csv", "key": ["member_id"]}
+    )
+    local = target.tabs[0].local
+    base = target.base_path(target.tabs[0])
+    header = ["member_id", "name", "status"]
+    sheets.write_values_csv(
+        str(local), [header, ["m1", "Ada", "active"], ["m2", "Bo", "007"]]
+    )
+
+    # First sync: the empty tab gets a header and every local row.
+    first = sheets.run_target(service, sid, target, "sync", apply=True, adopt=True)
+    assert first.exit_code == 0, sheets.format_report(first)
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        header,
+        ["m1", "Ada", "active"],
+        ["m2", "Bo", "007"],
+    ]
+    assert base.exists()
+
+    # A local edit and a sheet edit, on different cells, both land.
+    sheets.write_values_csv(
+        str(local), [header, ["m1", "Ada", "closed"], ["m2", "Bo", "007"]]
+    )
+    sheets.update_values(
+        service, sid, f"'{name}'!B3", [["Bea"]], input_option=sheets.RAW
+    )
+    second = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert second.exit_code == 0, sheets.format_report(second)
+    merged = [["m1", "Ada", "closed"], ["m2", "Bea", "007"]]
+    assert sheets.pull_values(service, sid, f"'{name}'") == [header, *merged]
+    assert _rows(local) == merged
+    assert _rows(base) == merged
+
+    # A run with nothing to do writes nothing anywhere.
+    stamps = [path.stat().st_mtime_ns for path in (local, base)]
+    third = sheets.run_target(service, sid, target, "sync", apply=True)
+    (report,) = third.tabs
+    assert third.exit_code == 0
+    assert not (report.wrote_sheet or report.wrote_local or report.wrote_base)
+    assert [path.stat().st_mtime_ns for path in (local, base)] == stamps
+
+
+def test_push_that_shrinks_the_tab_clears_the_old_cells(tab, tmp_path):
+    service, sid, name = tab
+    _seed(
+        service,
+        sid,
+        name,
+        [
+            ["total", "count", "extra", "more"],
+            ["a", "1", "x", "y"],
+            ["b", "2", "x", "y"],
+            ["c", "3", "x", "y"],
+        ],
+    )
+    target = _target(tmp_path, sid, name, {"mode": "push", "local": "summary.csv"})
+    sheets.write_values_csv(str(target.tabs[0].local), [["total", "count"], ["a", "9"]])
+    report = sheets.run_target(service, sid, target, "push", apply=True)
+    assert report.exit_code == 0, sheets.format_report(report)
+    # The blanks padding the write cleared every cell the new data does not cover.
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        ["total", "count"],
+        ["a", "9"],
+    ]
