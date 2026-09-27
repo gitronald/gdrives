@@ -527,7 +527,9 @@ knows are valid.
 ## Credentials and scopes
 
 A preview reads with the read-only scope, so it never triggers a consent for
-write access, and prints no credential line.
+write access. It prints a credential line only when its authentication is
+about to wait on an interactive consent or a token refresh, as every `gdrives`
+command does.
 
 With `--apply`, each command first prints one line to stderr naming the
 credential its requests will use (an OAuth token, a service account and its
