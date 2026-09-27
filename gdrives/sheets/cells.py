@@ -39,6 +39,10 @@ _CLASSES: tuple[tuple[type, str], ...] = (
     (datetime, "datetime"),
 )
 
+#: How a blank key cell is taken: ``refuse`` refuses a row with any, and
+#: ``partial`` only a row whose every key cell is blank.
+BLANK_KEYS = frozenset({"refuse", "partial"})
+
 #: The column types a sheet holds as serial numbers.
 SERIAL_TYPES = frozenset({"date", "datetime"})
 
@@ -163,6 +167,23 @@ def serial_to_cell(number: float, type_: ColumnType) -> str:
     return to_cell(moment.date())
 
 
+def normalize_cell(text: str, type_: ColumnType = "str") -> str:
+    """``text`` as :func:`to_cell` writes its value, for comparing two cells.
+
+    Two cell strings can differ and mean one value: ``true`` and ``TRUE`` in
+    a ``bool`` column, ``3.0`` and ``3`` in a ``float`` column. A cell that
+    parses as ``type_`` is returned in the one form its value has; a cell that
+    does not is returned unchanged, to be compared as text. Parsing is as
+    strict as :func:`from_cell`: nothing is coerced. Only comparisons use
+    this form; the stored text is never rewritten.
+    """
+    name = column_type(type_)
+    try:
+        return to_cell(from_cell(text, name))
+    except ValueError:
+        return text
+
+
 # -- typed rows --
 
 
@@ -262,12 +283,21 @@ def row_key(record: Mapping[str, str], key: Sequence[str]) -> tuple[str, ...]:
     return tuple(normalize_key(record.get(column, "")) for column in key)
 
 
+def check_blank_keys(blank_keys: str) -> None:
+    """Refuse a ``blank_keys`` setting that is not one of :data:`BLANK_KEYS`."""
+    if blank_keys not in BLANK_KEYS:
+        raise ValueError(
+            f"blank_keys must be one of {sorted(BLANK_KEYS)}, not {blank_keys!r}"
+        )
+
+
 def index_rows(
     rows: Sequence[Mapping[str, str]],
     key: Sequence[str],
     *,
     side: str,
     numbers: Sequence[int] | None = None,
+    blank_keys: str = "refuse",
 ) -> dict[tuple[str, ...], int]:
     """Map each row's normalized key to its row number, refusing bad keys.
 
@@ -276,7 +306,14 @@ def index_rows(
     ValueError naming ``side`` (``"local"``, ``"tab 'Members'"``) when any row
     has a blank key cell, or when two rows share a key, listing every such
     row at once so a single run shows everything to fix.
+
+    ``blank_keys="partial"`` is for a composite key of which a component is
+    absent on some rows, where the others still identify the row: a row is
+    refused only when its every key cell is blank. Two rows share a key when
+    their components agree, blank ones included. With a one-column key the
+    two settings are the same.
     """
+    check_blank_keys(blank_keys)
     if not key:
         raise ValueError(f"{side}: no key columns to index rows by")
     labels = list(numbers) if numbers is not None else list(range(1, len(rows) + 1))
@@ -285,7 +322,7 @@ def index_rows(
     duplicates: dict[tuple[str, ...], list[int]] = {}
     for label, row in zip(labels, rows, strict=True):
         found = row_key(row, key)
-        if "" in found:
+        if not any(found) or (blank_keys == "refuse" and "" in found):
             blank.append(label)
         elif found in index:
             duplicates.setdefault(found, [index[found]]).append(label)
@@ -354,8 +391,11 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
-def _cell_problem(text: str, schema: ColumnSchema) -> str | None:
-    """Why ``text`` does not fit ``schema``, or None when it does."""
+def cell_problem(text: str, schema: ColumnSchema) -> str | None:
+    """Why ``text`` does not fit ``schema``, or None when it does.
+
+    The reason is the text :func:`problems` reports for the cell.
+    """
     if text == "":
         return "is required" if schema.required else None
     try:
@@ -387,7 +427,7 @@ def problems(
     for position, row in enumerate(rows, start=1):
         for column, spec in schema.items():
             text = row.get(column, "")
-            reason = _cell_problem(text, spec)
+            reason = cell_problem(text, spec)
             if reason is not None:
                 found.append(
                     Problem(

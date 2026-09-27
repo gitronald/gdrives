@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-c-merge-additions
 ---
 
 # 007c — Add normalized comparison, held cells, partial keys, and plan predicates
@@ -158,3 +158,64 @@ unaffected, since `write_records` fills the gap from the file's column list. A c
 - The report prints held cells and `remote_invalid` rows under their own headings.
 - Changelog: the options, `normalize_cell`, `carry=`, and the predicates under Added;
   normalized comparison under Changed.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-c-merge-additions`, cut from step b's branch, with
+a draft PR onto it. Partial keys were built first, as the design says.
+
+| Commit | Part |
+|---|---|
+| `db38041` | `blank_keys` on `index_rows`, `parse_tab`, `read_tab`, `merge`, the re-reads of `apply_plan`, `push_tab`, and as a tab field; `Table.blank_keys` |
+| `42ff400` | `normalize_cell`, `merge(types=, schema=, carry=)`, `HeldCell`, `MergePlan.held`, `remote_invalid`, and the three predicates |
+| `d472982` | The `on_invalid` tab field, `plan_tab` passing the types, the schema, and the carried columns, the report's headings, and `_in_sync` |
+| `27c2e54` | The guide, the changelog, and the live case |
+
+Decisions made during the work:
+
+- **`_in_sync` did not test for conflicts or row flags.** The design says it is false
+  for a plan with either, and on 0.11.0 it was not: a tab with nothing to write and a
+  conflict printed `in sync: nothing to write` below the conflict. It now tests
+  `needs_attention`, which covers conflicts, row flags, and held cells. The line is a
+  change to the report's text, and is in the changelog under Changed.
+- **A held cell reports no override.** A `sheet_owned` column or `prefer="sheet"` that
+  would have discarded a local value discards nothing when the sheet value is held.
+- **A new sheet row is checked in every schema column of the projection**, its key
+  columns included. A row both sides hold is checked in its non-key cells, which are
+  the ones a merge folds.
+- **On a row-owning tab a new sheet row is flagged `remote_added`**, as before, and
+  none of its cells is held: it would not have been folded.
+- **With `carry=` given, every row of `new_local` holds each carried column**, the
+  existing local rows too, blank where a row lacked it. With `carry=None` the rows are
+  left as 0.11.0 left them. `carry` also refuses a column named twice.
+- **`adopt` merges with the same `types`, `schema`, and `carry`** as a merge against a
+  base.
+- **`cell_problem` is public.** It is `_cell_problem` of `cells.py` under a public
+  name, and gives `HeldCell.reason` the text `problems` gives.
+- **`check_blank_keys` is public** for the same reason `column_type` is: the functions
+  that take the setting refuse a bad one before any request.
+- **The report words a held cell with what stays**:
+  `a / 'amt': 'x' is not a valid int; the local value stays '1'`. A cell of a held row
+  has no local value, and prints the reason only. `remote_invalid` rows are listed
+  under their own heading and left out of the row flags.
+- **`ON_INVALID` and `BLANK_KEYS`** are the two settings' constants, and are exported.
+
+The exhaustive merge test now also runs over two spellings of one value in typed
+columns, and over a schema that one of the three values fails, with every ownership
+setting. Its invariants hold in the form cells are compared in, and a held value is
+checked to reach neither the local side nor the base.
+
+**Live suite.** One case: a sync of a tab whose two key columns each have a blank
+component on one row, with a push and a new row. One run of the whole suite, by the
+orchestrating session, after the case had passed by itself:
+
+| | Writes | Reads |
+|---|---|---|
+| Before this step | 64 | 78 |
+| The new case | 4 | 6 |
+| After | 68 | 84 |
+
+23 passed in 99 seconds. 6 reads were refused on the quota and sent again, which the
+counts above leave out.

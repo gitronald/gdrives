@@ -116,12 +116,14 @@ to keep in step with local files:
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
+| `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
+| `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
 
 The loader checks the whole file before any request is made and reports every
@@ -179,6 +181,60 @@ whitespace collapsed, so a stray trailing space typed on the sheet does not
 split one row into two. The stored text is never rewritten. A blank or repeated
 key on either side stops the run with every such row listed.
 
+### Typed columns compare by value
+
+Two cell strings can differ and mean one value: `true` and `TRUE` in a `bool`
+column, `3.0` and `3` in a `float` column. It is common in practice. A sync
+writes literal strings, so the sheet holds the text `3.0`, and a person who
+retypes the cell leaves the number 3, which reads as `3`.
+
+On a tab with a `schema`, the cells of a column with a declared type are
+compared as values of that type, so a respelling is not an edit. Without
+this, a respelled cell is folded or pushed for nothing, and a respelling on
+one side turns a real edit on the other into a conflict.
+
+- Only comparison changes. A push sends the local file's text and a fold
+  takes the sheet's, and neither side is rewritten to match the other's
+  spelling.
+- A cell that does not parse as its type is compared as text, and the schema
+  check reports it. Nothing is coerced.
+- Key columns are never compared by type: `007` and `7` are one `int` and two
+  keys.
+- A tab with no `schema` compares text, as does a pull or a push, which
+  replaces one side with the other.
+
+### Keys with a blank component
+
+A row with a blank key cell is refused, on the sheet, in the local file, and
+in the base. For a one-column key that is right: the row has no identity, and
+it has to be fixed.
+
+With a composite key, a component can be absent on some rows where the others
+still identify the row. `blank_keys: "partial"` allows that: a row is refused
+only when its every key cell is blank. Two rows share a key when their
+components agree, blank ones included, and a repeated key is refused as
+before.
+
+### Holding invalid sheet values
+
+A sheet value that fails the tab's `schema` reaches the merged rows, the check
+reports it, and nothing is written for the tab. One mistyped cell on a shared
+sheet then blocks every other push and fold until someone fixes it.
+
+`on_invalid: "hold"` keeps such a value out instead. A sheet value that would
+be folded but fails its column's type, `allowed`, or `required` is **held**:
+the local file and the base keep their values, the rest of the tab is
+written, and the run exits 2. The cell is held again on every run until the
+sheet is corrected.
+
+- A blanked cell in a `required` column is held too.
+- A new sheet row with any invalid cell is held whole: it is not folded, and
+  its invalid cells are listed.
+- Only the sheet side is held. An invalid value in the local file stops the
+  tab under both settings, since the local file is yours to fix.
+- A pull has no such option. It replaces the whole file, and refuses a tab
+  with any problem.
+
 ### Ownership
 
 Ownership overrides the cell rule for whole columns:
@@ -200,8 +256,10 @@ Key columns are identity and cannot be owned.
 ### The report
 
 The report lists, per tab, the cells to push, the cells and rows to fold into
-the local file, the new rows for the sheet, the conflicts, the overrides, and
-the row flags, each cell with its before and after values. A value that came
+the local file, the new rows for the sheet, the conflicts, the overrides, the
+sheet values and rows held, and the row flags, each cell with its before and
+after values. A tab is reported `in sync` only when nothing is written and
+nothing is left for a person. A value that came
 from the sheet or a file is shown with control characters escaped, so it cannot
 drive the terminal.
 
@@ -512,7 +570,7 @@ tab.
 |---|---|
 | 0 | In sync, or every change applied. For a preview: the run can go ahead, whether or not it found changes |
 | 1 | An error: the config, a schema problem, an API error, a refusal, or a failed guard or read-back |
-| 2 | Needs a person: conflicts or row flags remain |
+| 2 | Needs a person: conflicts, row flags, or held sheet values remain |
 
 `--apply` with conflicts present still applies every change that does not
 conflict, then exits 2. When one tab exits 1 and another 2, the run exits 1.

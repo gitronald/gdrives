@@ -634,6 +634,38 @@ def test_sync_adopts_merges_and_then_writes_nothing(tab, tmp_path):
     assert [path.stat().st_mtime_ns for path in (local, base)] == stamps
 
 
+def test_sync_of_a_tab_whose_keys_have_a_blank_component(seeded, tmp_path):
+    header = ["year", "id", "v"]
+    service, sid, name = seeded([header, ["2026", "", "a"], ["", "1", "b"]])
+    target = _target(
+        tmp_path,
+        sid,
+        name,
+        {"local": "rows.csv", "key": ["year", "id"], "blank_keys": "partial"},
+    )
+    tab = target.tabs[0]
+    rows = [
+        {"year": "2026", "id": "", "v": "a"},
+        {"year": "", "id": "1", "v": "b"},
+    ]
+    sheets.write_records(target.base_path(tab), header, rows)
+    sheets.write_records(
+        tab.local,
+        header,
+        [rows[0] | {"v": "A"}, rows[1], {"year": "2026", "id": "1", "v": "c"}],
+    )
+    report = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert report.exit_code == 0, sheets.format_report(report)
+    (done,) = report.tabs
+    assert done.applied == sheets.ApplyResult(1, 1, [2], [4])
+    assert sheets.pull_values(service, sid, f"'{name}'") == [
+        header,
+        ["2026", "", "A"],
+        ["", "1", "b"],
+        ["2026", "1", "c"],
+    ]
+
+
 GREY = {"red": 0.8, "green": 0.8, "blue": 0.8}
 
 

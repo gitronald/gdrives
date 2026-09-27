@@ -20,6 +20,7 @@ from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import (
     SERIAL_TYPES,
     ColumnType,
+    check_blank_keys,
     column_type,
     index_rows,
     serial_to_cell,
@@ -56,8 +57,9 @@ class Table:
     ``last_row`` is the last spreadsheet row holding a value in any column,
     columns outside ``columns`` and past the header included (1 when the tab
     holds only its header): new rows go after it. ``types`` holds the declared
-    type of each column read that has one, by name, so that a later read of
-    the same tab reads its dates the same way.
+    type of each column read that has one, by name, and ``blank_keys`` the
+    setting the rows were indexed with, so that a later read of the same tab
+    reads it the same way.
     """
 
     tab: str
@@ -70,6 +72,7 @@ class Table:
     wide_rows: list[int]
     last_row: int
     types: dict[str, str] = field(default_factory=dict)
+    blank_keys: str = "refuse"
 
 
 def _declared(types: Mapping[str, ColumnType] | None) -> dict[str, str]:
@@ -145,6 +148,7 @@ def read_tab(
     key: Sequence[str] = (),
     *,
     types: Mapping[str, ColumnType] | None = None,
+    blank_keys: str = "refuse",
 ) -> Table:
     """Read ``tab`` and return its ``columns`` as keyed records.
 
@@ -161,8 +165,11 @@ def read_tab(
     reads are not one moment, so rows inserted between them put a date
     against the wrong row; :func:`~gdrives.sheets.apply.apply_plan` reads the
     tab again before it writes.
+
+    ``blank_keys`` is as for :func:`~gdrives.sheets.cells.index_rows`.
     """
     _check_request(tab, columns, key)
+    check_blank_keys(blank_keys)
     declared = {
         column: name
         for column, name in _declared(types).items()
@@ -176,7 +183,15 @@ def read_tab(
         date_time_render=FORMATTED_STRING,
     )
     serials = pull_serials(service, spreadsheet_id, tab, grid, declared)
-    return parse_tab(tab, grid, columns, key, types=declared, serials=serials)
+    return parse_tab(
+        tab,
+        grid,
+        columns,
+        key,
+        types=declared,
+        serials=serials,
+        blank_keys=blank_keys,
+    )
 
 
 def _dated(text: str, serials: Sequence[Sequence[Any]], number: int, type_: str) -> str:
@@ -203,6 +218,7 @@ def parse_tab(
     *,
     types: Mapping[str, ColumnType] | None = None,
     serials: Serials | None = None,
+    blank_keys: str = "refuse",
 ) -> Table:
     """Parse ``grid``, a whole tab's rows as read, into ``columns`` as keyed records.
 
@@ -226,9 +242,11 @@ def parse_tab(
     row at its last non-empty cell), and rows that are entirely blank are
     skipped. With a ``key``, a row that has data but a blank key cell, or that
     repeats another row's key, raises with every such spreadsheet row listed
-    (see :func:`~gdrives.sheets.cells.index_rows`).
+    (see :func:`~gdrives.sheets.cells.index_rows`, which ``blank_keys`` is
+    passed to).
     """
     _check_request(tab, columns, key)
+    check_blank_keys(blank_keys)
     declared = _declared(types)
     header = _header(grid)
     if not any(header):
@@ -268,7 +286,11 @@ def parse_tab(
         numbers.append(number)
 
     row_numbers = (
-        index_rows(rows, key, side=f"tab {tab!r}", numbers=numbers) if key else {}
+        index_rows(
+            rows, key, side=f"tab {tab!r}", numbers=numbers, blank_keys=blank_keys
+        )
+        if key
+        else {}
     )
     return Table(
         tab=tab,
@@ -283,4 +305,5 @@ def parse_tab(
         # the last one holding anything.
         last_row=numbers[-1] if numbers else 1,
         types=read_types,
+        blank_keys=blank_keys,
     )

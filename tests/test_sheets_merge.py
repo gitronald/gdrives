@@ -17,11 +17,14 @@ from gdrives.sheets import (
     ROW_FLAGS,
     SIDES,
     Cell,
+    ColumnSchema,
+    HeldCell,
     MergePlan,
     NewRow,
     Override,
     RowFlag,
     merge,
+    normalize_cell,
 )
 
 KEY = ["id"]
@@ -440,6 +443,51 @@ class TestKeys:
             NewRow(key=("1", "y"), values={"a": "1", "b": "y", "v": "2"})
         ]
 
+    def test_a_blank_key_component_is_refused_by_default(self):
+        rows = [{"a": "1", "b": "", "v": "0"}]
+        for position, side in enumerate(["base", "local", "sheet"]):
+            sides = [[], [], []]
+            sides[position] = rows
+            with pytest.raises(ValueError, match=rf"^{side}: blank key \['a', 'b'\]"):
+                base, local, sheet = sides
+                merge(base, local, sheet, ["a", "b"], ["a", "b", "v"])
+
+    def test_partial_matches_rows_by_the_components_they_have(self):
+        plan = merge(
+            [{"a": "1", "b": "", "v": "0"}, {"a": "", "b": "x", "v": "0"}],
+            [
+                {"a": "1", "b": "", "v": "1"},
+                {"a": "", "b": "x", "v": "0"},
+                {"a": "1", "b": "x", "v": "new"},
+            ],
+            [{"a": "1", "b": " ", "v": "0"}, {"a": "", "b": "x", "v": "2"}],
+            ["a", "b"],
+            ["a", "b", "v"],
+            blank_keys="partial",
+        )
+        assert plan.pushes == [Cell(("1", ""), "v", "0", "1", "0")]
+        assert plan.fold_cells == [Cell(("", "x"), "v", "0", "0", "2")]
+        # The row that differs from the first only in a blank component is
+        # another row.
+        assert [new.key for new in plan.appends] == [("1", "x")]
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_partial_refuses_a_key_blank_in_every_component(self, position):
+        sides = [[], [], []]
+        sides[position] = [{"a": "", "b": " ", "v": "0"}]
+        base, local, sheet = sides
+        with pytest.raises(ValueError, match=r"blank key \['a', 'b'\] in rows \[1\]"):
+            merge(base, local, sheet, ["a", "b"], ["a", "b", "v"], blank_keys="partial")
+
+    def test_partial_refuses_duplicates_blank_components_included(self):
+        local = [{"a": "1", "b": "", "v": "0"}, {"a": "1", "b": "", "v": "1"}]
+        with pytest.raises(ValueError, match=r"^local: duplicate key \('1', ''\)"):
+            merge([], local, [], ["a", "b"], ["a", "b", "v"], blank_keys="partial")
+
+    def test_an_unknown_blank_keys_is_refused(self):
+        with pytest.raises(ValueError, match="blank_keys must be one of"):
+            run([], [], [], blank_keys="some")
+
     def test_plan_entries_name_rows_by_normalized_key(self):
         plan = run([], [row("  x  y ")], [])
         assert plan.appends[0].key == ("x y",)
@@ -468,6 +516,356 @@ class TestCarried:
         plan = run([], [row("1", a="1"), row("2", b="2")], [row("3", "c")])
         assert plan.new_local[-1] == row("3", "c", a="", b="")
 
+    def test_with_no_local_rows_there_is_nothing_to_infer(self):
+        assert run([], [], [row("3", "c")]).new_local == [row("3", "c")]
+
+    def test_carry_names_the_carried_columns(self):
+        plan = run([], [], [row("3", "c")], carry=["extra", "more"])
+        assert plan.new_local == [row("3", "c", extra="", more="")]
+        assert plan.new_base == [row("3", "c")]
+
+    def test_carry_fills_every_row_of_the_local_side(self):
+        base = [row("1", "a"), row("4", "d")]
+        local = [row("1", "b", extra="x"), row("2", more="y"), row("4", "d")]
+        plan = run(base, local, [row("1", "a"), row("3", "c")], carry=["extra", "more"])
+        assert plan.new_local == [
+            row("1", "b", extra="x", more=""),
+            row("2", more="y", extra=""),
+            row("4", "d", extra="", more=""),
+            row("3", "c", extra="", more=""),
+        ]
+        assert all(set(r) == set(COLUMNS) for r in plan.new_base)
+        assert "extra" not in plan.appends[0].values
+
+    def test_a_local_column_carry_does_not_name_still_passes_through(self):
+        plan = run([], [row("1", other="o")], [], carry=["extra"])
+        assert plan.new_local == [row("1", other="o", extra="")]
+
+    def test_no_carried_columns_by_name(self):
+        plan = run([], [row("1", extra="x")], [row("3", "c")], carry=[])
+        assert plan.new_local == [row("1", extra="x"), row("3", "c")]
+
+    def test_a_carried_column_in_the_projection_is_refused(self):
+        with pytest.raises(
+            ValueError, match=r"merge: carry column\(s\) \['name'\] are in columns"
+        ):
+            run([], [], [], carry=["extra", "name"])
+
+    def test_a_repeated_carried_column_is_refused(self):
+        with pytest.raises(ValueError, match=r"carry column\(s\) \['x'\] named twice"):
+            run([], [], [], carry=["x", "x"])
+
+
+TYPES = {"name": "bool", "notes": "float"}
+
+
+def typed(base, local, sheet, **options):
+    return run(base, local, sheet, types=TYPES, **options)
+
+
+class TestNormalizedComparison:
+    """With ``types``, two spellings of one value are one value."""
+
+    @pytest.mark.parametrize(
+        ("column", "one", "other"),
+        [("name", "true", "TRUE"), ("notes", "3.0", "3")],
+    )
+    def test_the_four_cell_cases(self, column, one, other):
+        changed = "FALSE" if column == "name" else "4"
+
+        def cells(b, loc, r):
+            return typed(
+                [row("1", **{column: b})],
+                [row("1", **{column: loc})],
+                [row("1", **{column: r})],
+            )
+
+        # In sync: both sides hold the value, spelled differently.
+        plan = cells(one, one, other)
+        assert not plan.has_writes and not plan.needs_attention
+        assert plan.new_base == [row("1", **{column: one})]
+        # A local edit: the sheet's respelling is not an edit.
+        plan = cells(one, changed, other)
+        assert plan.pushes == [cell(column, one, changed, other)]
+        assert (plan.fold_cells, plan.conflicts) == ([], [])
+        # A sheet edit: the local respelling is not an edit.
+        plan = cells(one, other, changed)
+        assert plan.fold_cells == [cell(column, one, other, changed)]
+        assert (plan.pushes, plan.conflicts) == ([], [])
+        assert plan.new_local == [row("1", **{column: changed})]
+        # A conflict: both changed, to different values.
+        other_change = "" if column == "name" else "5"
+        plan = cells(one, changed, other_change)
+        assert plan.conflicts == [cell(column, one, changed, other_change)]
+
+    def test_without_types_a_respelling_is_an_edit(self):
+        plan = run([row("1", "true")], [row("1", "true")], [row("1", "TRUE")])
+        assert plan.fold_cells == [cell("name", "true", "true", "TRUE")]
+
+    def test_a_retyped_sheet_cell_is_no_false_conflict(self):
+        # Base 3.0, the sheet retyped to 3, and the local file edited to 4:
+        # one edit. Compared as text, both sides changed.
+        sides = ([row("1", notes="3.0")], [row("1", notes="4")], [row("1", notes="3")])
+        assert run(*sides).conflicts == [cell("notes", "3.0", "4", "3")]
+        plan = typed(*sides)
+        assert plan.conflicts == []
+        assert plan.pushes == [cell("notes", "3.0", "4", "3")]
+
+    def test_both_sides_changed_to_one_value_spelled_two_ways(self):
+        plan = typed(
+            [row("1", notes="1")], [row("1", notes="2.0")], [row("1", notes="2")]
+        )
+        assert not plan.has_writes and plan.conflicts == []
+        # The local file keeps its text, and the base takes it.
+        assert plan.new_local == [row("1", notes="2.0")]
+        assert plan.new_base == [row("1", notes="2.0")]
+
+    def test_a_push_sends_the_stored_text_and_a_fold_takes_it(self):
+        plan = typed(
+            [row("1", "TRUE", "1"), row("2", "TRUE", "1")],
+            [row("1", "false", "1"), row("2", "TRUE", "1")],
+            [row("1", "TRUE", "1"), row("2", "TRUE", "2.50")],
+        )
+        assert [c.local for c in plan.pushes] == ["false"]
+        assert plan.new_local[1] == row("2", "TRUE", "2.50")
+
+    def test_a_cell_that_does_not_parse_is_compared_as_text(self):
+        plan = typed(
+            [row("1", "yes", "1")], [row("1", "yes", "1")], [row("1", "YES", "1")]
+        )
+        assert plan.fold_cells == [cell("name", "yes", "yes", "YES")]
+
+    def test_ownership_compares_in_normalized_form_too(self):
+        sides = ([row("1", "true")], [row("1", "true")], [row("1", "TRUE")])
+        for owned in ("local_owned", "sheet_owned"):
+            plan = typed(*sides, **{owned: {"name"}})
+            assert not plan.has_writes and plan.overrides == []
+        # A respelled sheet value is not a changed one, so no override.
+        plan = typed(
+            [row("1", "true")],
+            [row("1", "FALSE")],
+            [row("1", "TRUE")],
+            local_owned={"name"},
+        )
+        assert plan.pushes == [cell("name", "true", "FALSE", "TRUE")]
+        assert plan.overrides == []
+
+    def test_a_typed_key_column_is_not_normalized(self):
+        # 007 and 7 are one int and two keys.
+        plan = merge(
+            [],
+            [{"id": "007", "v": "a"}],
+            [{"id": "7", "v": "b"}],
+            ["id"],
+            ["id", "v"],
+            types={"id": "int", "v": "str"},
+        )
+        assert [new.key for new in plan.appends] == [("007",)]
+        assert [new.key for new in plan.fold_rows] == [("7",)]
+
+    def test_classes_are_types(self):
+        plan = run(
+            [row("1", "true")],
+            [row("1", "true")],
+            [row("1", "TRUE")],
+            types={"name": bool},
+        )
+        assert not plan.has_writes
+
+    def test_a_type_for_a_column_outside_the_projection_is_ignored(self):
+        assert run([], [], [], types={"gone": "int"}) == MergePlan()
+
+    def test_an_unknown_type_is_refused(self):
+        with pytest.raises(ValueError, match="merge: column 'name': unknown column"):
+            run([], [], [], types={"name": "number"})
+
+
+SCHEMA = {
+    "id": ColumnSchema(required=True),
+    "name": ColumnSchema(type="bool"),
+    "notes": ColumnSchema(required=True, allowed=["x", "y"]),
+}
+
+
+def held(column, base, local, sheet, reason, id_="1"):
+    return HeldCell(
+        key=(id_,), column=column, base=base, local=local, sheet=sheet, reason=reason
+    )
+
+
+def holding(base, local, sheet, **options):
+    return run(base, local, sheet, schema=SCHEMA, **options)
+
+
+class TestHeld:
+    """With ``schema``, a sheet value that fails it is held, not folded."""
+
+    def test_a_sheet_edit_that_fails_its_type_is_held(self):
+        sides = (
+            [row("1", "TRUE", "x")],
+            [row("1", "TRUE", "x")],
+            [row("1", "yes", "x")],
+        )
+        plan = holding(*sides)
+        assert plan.held == [
+            held("name", "TRUE", "TRUE", "yes", "'yes' is not a valid bool")
+        ]
+        assert plan.fold_cells == []
+        assert not plan.has_writes and plan.needs_attention
+        # Both keep their value, so the next run reports it again.
+        assert plan.new_local == [row("1", "TRUE", "x")]
+        assert plan.new_base == [row("1", "TRUE", "x")]
+
+    def test_with_no_schema_it_folds_as_before(self):
+        plan = run(
+            [row("1", "TRUE", "x")], [row("1", "TRUE", "x")], [row("1", "yes", "x")]
+        )
+        assert plan.fold_cells == [cell("name", "TRUE", "TRUE", "yes")]
+        assert plan.held == [] and not plan.needs_attention
+
+    def test_a_value_outside_allowed_and_a_required_blank_are_held(self):
+        plan = holding(
+            [row("1", "", "x"), row("2", "", "x")],
+            [row("1", "", "x"), row("2", "", "x")],
+            [row("1", "", "z"), row("2", "", "")],
+        )
+        assert plan.held == [
+            held("notes", "x", "x", "z", "'z' is not one of ['x', 'y']"),
+            held("notes", "x", "x", "", "is required", id_="2"),
+        ]
+        assert plan.new_local == [row("1", "", "x"), row("2", "", "x")]
+
+    def test_a_valid_sheet_edit_beside_a_held_one_still_folds(self):
+        plan = holding(
+            [row("1", "TRUE", "x")], [row("1", "TRUE", "x")], [row("1", "no", "y")]
+        )
+        assert [h.column for h in plan.held] == ["name"]
+        assert plan.fold_cells == [cell("notes", "x", "x", "y")]
+        assert plan.new_local == [row("1", "TRUE", "y")]
+        assert plan.new_base == [row("1", "TRUE", "y")]
+
+    def test_a_sheet_owned_column_is_held_with_no_override(self):
+        plan = holding(
+            [row("1", "TRUE", "x")],
+            [row("1", "FALSE", "x")],
+            [row("1", "yes", "x")],
+            sheet_owned={"name"},
+        )
+        assert plan.held == [
+            held("name", "TRUE", "FALSE", "yes", "'yes' is not a valid bool")
+        ]
+        assert plan.overrides == [] and plan.fold_cells == []
+        assert plan.new_local == [row("1", "FALSE", "x")]
+        assert plan.new_base == [row("1", "TRUE", "x")]
+
+    def test_a_conflict_that_prefer_sheet_resolves_is_held(self):
+        sides = (
+            [row("1", "TRUE", "x")],
+            [row("1", "FALSE", "x")],
+            [row("1", "yes", "x")],
+        )
+        plan = holding(*sides, prefer="sheet")
+        assert [h.sheet for h in plan.held] == ["yes"]
+        assert plan.overrides == [] and plan.conflicts == []
+        # A conflict that nothing resolves stays a conflict ...
+        plan = holding(*sides)
+        assert plan.held == []
+        assert plan.conflicts == [cell("name", "TRUE", "FALSE", "yes")]
+        # ... and one resolved toward the local side is pushed.
+        plan = holding(*sides, prefer="local")
+        assert plan.held == [] and [p.local for p in plan.pushes] == ["FALSE"]
+
+    def test_an_invalid_value_both_sides_hold_is_not_held(self):
+        # It is the local file's to fix, and the merged check reports it.
+        plan = holding([], [row("1", "yes", "x")], [row("1", "yes", "x")])
+        assert plan.held == [] and not plan.needs_attention
+
+    def test_a_push_over_an_invalid_sheet_value_is_not_held(self):
+        plan = holding(
+            [row("1", "yes", "x")], [row("1", "TRUE", "x")], [row("1", "yes", "x")]
+        )
+        assert plan.held == []
+        assert plan.pushes == [cell("name", "yes", "TRUE", "yes")]
+
+    def test_a_row_not_in_the_base(self):
+        plan = holding([], [row("1", "", "x")], [row("1", "yes", "x")])
+        assert plan.held == [held("name", "", "", "yes", "'yes' is not a valid bool")]
+        assert plan.new_base == [row("1", "", "x")]
+
+    def test_a_new_sheet_row_with_an_invalid_cell_is_held_whole(self):
+        plan = holding([], [], [row("7", "yes", ""), row("8", "TRUE", "x")])
+        assert plan.row_flags == [RowFlag(("7",), "remote_invalid")]
+        assert plan.held == [
+            held("name", "", "", "yes", "'yes' is not a valid bool", id_="7"),
+            held("notes", "", "", "", "is required", id_="7"),
+        ]
+        assert [new.key for new in plan.fold_rows] == [("8",)]
+        assert plan.new_local == [row("8", "TRUE", "x")]
+        assert plan.new_base == [row("8", "TRUE", "x")]
+        assert plan.needs_attention
+
+    def test_a_new_sheet_row_on_a_row_owning_tab_is_flagged_as_before(self):
+        plan = holding([], [], [row("7", "yes", "")], owns_rows=True)
+        assert plan.row_flags == [RowFlag(("7",), "remote_added")]
+        assert plan.held == []
+
+    def test_a_schema_column_outside_the_projection_is_ignored(self):
+        schema = {"gone": ColumnSchema(required=True)}
+        plan = run([], [], [row("7")], schema=schema)
+        assert plan.held == [] and [new.key for new in plan.fold_rows] == [("7",)]
+
+    def test_held_cells_repeat_on_the_next_merge(self):
+        sheet = [row("1", "yes", "z"), row("7", "no", "x")]
+        local = [row("1", "TRUE", "x")]
+        plan = holding([row("1", "TRUE", "x")], local, sheet)
+        again = holding(plan.new_base, plan.new_local, sheet)
+        assert again.held == plan.held and len(plan.held) == 3
+        assert again.row_flags == plan.row_flags
+        assert not again.has_writes
+
+    def test_normalized_comparison_and_holding_together(self):
+        plan = run(
+            [row("1", "true", "x")],
+            [row("1", "true", "x")],
+            [row("1", "TRUE", "z")],
+            types={"name": "bool"},
+            schema=SCHEMA,
+        )
+        assert [h.column for h in plan.held] == ["notes"]
+        assert plan.fold_cells == []
+
+
+class TestPredicates:
+    C = Cell(("1",), "name", "a", "b", "c")
+    N = NewRow(("2",), {"id": "2"})
+
+    @pytest.mark.parametrize(
+        ("plan", "sheet", "local"),
+        [
+            (MergePlan(), False, False),
+            (MergePlan(pushes=[C]), True, False),
+            (MergePlan(appends=[N]), True, False),
+            (MergePlan(fold_cells=[C]), False, True),
+            (MergePlan(fold_rows=[N]), False, True),
+            (MergePlan(pushes=[C], fold_rows=[N]), True, True),
+            (MergePlan(conflicts=[C]), False, False),
+            (MergePlan(row_flags=[RowFlag(("1",), "local_deleted")]), False, False),
+            (
+                MergePlan(held=[HeldCell(("1",), "name", "a", "a", "c", "bad")]),
+                False,
+                False,
+            ),
+        ],
+    )
+    def test_each_kind_of_plan(self, plan, sheet, local):
+        assert plan.sheet_writes is sheet
+        assert plan.local_writes is local
+        assert plan.has_writes is (sheet or local)
+
+    def test_a_held_cell_needs_attention(self):
+        plan = MergePlan(held=[HeldCell(("1",), "name", "a", "a", "c", "bad")])
+        assert plan.needs_attention and not plan.has_writes
+
 
 class TestPlan:
     def test_entries_and_plan_are_frozen(self):
@@ -478,6 +876,7 @@ class TestPlan:
             (override("name", "", "", "", "local", "prefer"), "kept"),
             (NewRow(key=("1",), values={}), "key"),
             (RowFlag(key=("1",), flag="local_deleted"), "flag"),
+            (HeldCell(("1",), "name", "", "", "x", "bad"), "reason"),
         ]:
             with pytest.raises(FrozenInstanceError):
                 setattr(obj, name, None)
@@ -503,7 +902,12 @@ class TestPlan:
     def test_constants(self):
         assert SIDES == {"local", "sheet"}
         assert OVERRIDE_REASONS == {"local_owned", "sheet_owned", "prefer"}
-        assert ROW_FLAGS == {"remote_deleted", "local_deleted", "remote_added"}
+        assert ROW_FLAGS == {
+            "remote_deleted",
+            "local_deleted",
+            "remote_added",
+            "remote_invalid",
+        }
 
 
 # -- exhaustive invariants --
@@ -520,11 +924,21 @@ _SETTINGS = [
     {"prefer": "sheet"},
 ]
 _SPLIT = {"local_owned": {"name"}, "sheet_owned": {"notes"}}
+# Two spellings of one value, another value, and a blank, in bool columns.
+_SPELLINGS = ("", "true", "TRUE", "FALSE")
+_BOOLS = {"types": {"name": "bool", "notes": "bool"}}
+# "b" fails the schema, so a fold of it is held.
+_HOLDS = {
+    "schema": {
+        "name": ColumnSchema(allowed=["a"]),
+        "notes": ColumnSchema(allowed=["a"]),
+    }
+}
 
 
-def _states(columns):
+def _states(columns, values=_VALUES):
     """Every state of one row on one side: absent, or each mix of cell values."""
-    return [None, *itertools.product(_VALUES, repeat=len(columns))]
+    return [None, *itertools.product(values, repeat=len(columns))]
 
 
 def _side(ids, states, columns, **extra):
@@ -550,6 +964,10 @@ def _check(base, local, sheet, columns, options):
     snapshot = copy.deepcopy((base, local, sheet))
     plan = merge(base, local, sheet, KEY, columns, **options)
     assert (base, local, sheet) == snapshot
+    types = options.get("types", {})
+
+    def normal(column, text):
+        return normalize_cell(text, types[column]) if column in types else text
 
     new_sheet = _apply_to_sheet(sheet, plan)
     new_local = plan.new_local
@@ -570,16 +988,24 @@ def _check(base, local, sheet, columns, options):
         assert after["carried"] == before["carried"]
     assert all(set(r) == {"id", *columns} for r in plan.new_base)
 
-    # Every settled cell holds one value on the sheet, locally, and in the base.
+    # Every settled cell holds one value on the sheet, locally, and in the
+    # base, compared in the form of its type. A held cell is not settled.
     flagged = {f.key[0] for f in plan.row_flags}
-    conflicted = {(c.key[0], c.column) for c in plan.conflicts}
+    conflicted = {(c.key[0], c.column) for c in [*plan.conflicts, *plan.held]}
     ids = set(by_id["local"]) | set(by_id["sheet"])
     for id_ in ids - flagged:
         for column in columns:
             if (id_, column) in conflicted:
                 continue
-            seen = {by_id[name][id_].get(column, "") for name in by_id}
+            seen = {normal(column, by_id[name][id_].get(column, "")) for name in by_id}
             assert len(seen) == 1, (id_, column, seen)
+
+    # A held value reaches neither the local side nor the base.
+    for entry in plan.held:
+        if entry.key[0] in flagged:
+            continue
+        assert by_id["local"][entry.key[0]][entry.column] == entry.local
+        assert by_id["base"][entry.key[0]][entry.column] == entry.base
 
     # A flagged row changes nothing on either side.
     old_local = {r["id"]: r for r in local}
@@ -601,6 +1027,7 @@ def _check(base, local, sheet, columns, options):
     assert (again.fold_cells, again.fold_rows, again.overrides) == ([], [], [])
     assert again.conflicts == plan.conflicts
     assert again.row_flags == plan.row_flags
+    assert again.held == plan.held
     assert again.new_local == new_local
     assert again.new_base == plan.new_base
 
@@ -629,3 +1056,36 @@ class TestExhaustive:
             )
             local = [{**r, "carried": "c"} for r in local]
             _check(base, local, sheet, ["id", *columns], options)
+
+    @pytest.mark.parametrize("options", [*_SETTINGS, _SPLIT])
+    def test_one_row_two_typed_columns(self, options):
+        columns = ["name", "notes"]
+        states = _states(columns, _SPELLINGS)
+        for b, loc, r in itertools.product(states, repeat=3):
+            base = _side(["1"], [b], columns)
+            local = _side(["1"], [loc], columns, carried="c")
+            sheet = _side(["1"], [r], columns)
+            _check(base, local, sheet, ["id", *columns], options | _BOOLS)
+
+    @pytest.mark.parametrize("options", [*_SETTINGS, _SPLIT])
+    def test_one_row_two_columns_with_a_schema(self, options):
+        columns = ["name", "notes"]
+        states = _states(columns)
+        for b, loc, r in itertools.product(states, repeat=3):
+            base = _side(["1"], [b], columns)
+            local = _side(["1"], [loc], columns, carried="c")
+            sheet = _side(["1"], [r], columns)
+            _check(base, local, sheet, ["id", *columns], options | _HOLDS)
+
+    @pytest.mark.parametrize("options", _SETTINGS)
+    def test_two_rows_one_column_with_a_schema_and_carry(self, options):
+        columns = ["name"]
+        states = _states(columns)
+        per_row = list(itertools.product(states, repeat=3))
+        for first, second in itertools.product(per_row, repeat=2):
+            base, local, sheet = (
+                _side(["1", "2"], [first[i], second[i]], columns) for i in range(3)
+            )
+            local = [{**r, "carried": "c"} for r in local]
+            extra = {"schema": _HOLDS["schema"], "carry": ["carried"]}
+            _check(base, local, sheet, ["id", *columns], options | extra)

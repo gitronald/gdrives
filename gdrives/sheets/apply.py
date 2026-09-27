@@ -8,8 +8,8 @@ plan's pushed cells and new rows to the tab, in this order:
    table. Any difference raises :class:`SheetChangedError` with nothing
    written. The Sheets API has no revision precondition, so this re-read is
    the only tie between the plan and the write. The tab is read as the table
-   was, with the table's declared types, so a date cell of a typed column
-   compares as the ISO 8601 it was read as.
+   was, with the table's declared types and its setting for blank keys, so a
+   date cell of a typed column compares as the ISO 8601 it was read as.
 2. **Push changed cells** in one ``values.batchUpdate`` call, with ``RAW``
    input, each cell addressed by its header position and its row number in
    the fresh read.
@@ -205,7 +205,13 @@ def _reread(
     stale = f"tab {table.tab!r} changed since it was read, so nothing was written"
     try:
         fresh = read_tab(
-            service, spreadsheet_id, table.tab, columns, table.key, types=table.types
+            service,
+            spreadsheet_id,
+            table.tab,
+            columns,
+            table.key,
+            types=table.types,
+            blank_keys=table.blank_keys,
         )
     except ValueError as e:
         raise SheetChangedError(f"{stale}: {e}") from e
@@ -407,6 +413,7 @@ def verify(
             table.columns,
             table.key,
             types=table.types,
+            blank_keys=table.blank_keys,
         )
     except ValueError as e:
         raise ReadBackError(f"{failed}: {e}") from e

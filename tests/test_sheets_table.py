@@ -236,6 +236,38 @@ class TestParseTab:
             parse_tab("T", [], None)
 
 
+class TestPartialKeys:
+    GRID = [["y", "id", "v"], ["2026", "", "a"], ["", "1", "b"], ["2026", "1", "c"]]
+
+    def test_refused_by_default(self):
+        with pytest.raises(
+            ValueError, match=r"blank key \['y', 'id'\] in rows \[2, 3\]"
+        ):
+            parse_tab("T", self.GRID, None, ["y", "id"])
+
+    def test_partial_reads_them_and_the_table_records_the_setting(self):
+        table = parse_tab("T", self.GRID, None, ["y", "id"], blank_keys="partial")
+        assert table.row_numbers == {("2026", ""): 2, ("", "1"): 3, ("2026", "1"): 4}
+        assert table.blank_keys == "partial"
+        assert parse_tab("T", self.GRID, None).blank_keys == "refuse"
+
+    def test_a_row_with_data_and_no_key_at_all_is_still_refused(self):
+        grid = [*self.GRID, ["", "", "d"]]
+        with pytest.raises(ValueError, match=r"blank key \['y', 'id'\] in rows \[5\]"):
+            parse_tab("T", grid, None, ["y", "id"], blank_keys="partial")
+
+    def test_read_tab_takes_the_setting(self):
+        svc = tab_of(*self.GRID)
+        table = read_tab(svc, "sid", "T", None, ["y", "id"], blank_keys="partial")
+        assert len(table.rows) == 3 and table.blank_keys == "partial"
+
+    def test_an_unknown_setting_is_refused_without_a_request(self):
+        svc = tab_of(*self.GRID)
+        with pytest.raises(ValueError, match="blank_keys must be one of"):
+            read_tab(svc, "sid", "T", None, ["y", "id"], blank_keys="some")
+        assert svc.calls == []
+
+
 class TestSerials:
     """A declared date column is read from the serial numbers of a second read."""
 

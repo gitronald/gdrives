@@ -15,6 +15,7 @@ from gdrives.sheets import (
     CONFIG_NAME,
     ApplyResult,
     Cell,
+    HeldCell,
     MergePlan,
     NewRow,
     Override,
@@ -336,6 +337,30 @@ class TestPushRefusals:
         assert grid.calls == [] and report.exit_code == 1
 
 
+class TestPushPartialKeys:
+    HEADER = ["y", "id", "v"]
+    ROWS = [["2026", "", "a"], ["", "1", "b"]]
+
+    def test_a_blank_component_is_refused_by_default(self, tmp_path):
+        tab = one_tab(tmp_path, "push", key=["y", "id"])
+        write_local(tab, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": []})
+        with pytest.raises(
+            ValueError, match=r"blank key \['y', 'id'\] in rows \[1, 2\]"
+        ):
+            push_tab(grid, "S", tab, apply=True)
+        assert writes(grid) == []
+
+    def test_partial_pushes_the_rows(self, tmp_path):
+        tab = one_tab(tmp_path, "push", key=["y", "id"], blank_keys="partial")
+        write_local(tab, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": [self.HEADER, ["2026", "", "old"]]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert grid.values("T") == [self.HEADER, *self.ROWS]
+        assert replacement_of(report).changed == [("2026", "")]
+        assert replacement_of(report).added == [("", "1")]
+
+
 # -- pull --
 
 
@@ -414,6 +439,22 @@ class TestPull:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         pull_tab(grid, "S", tab, apply=True)
         assert grid.methods == ["spreadsheets.get", "values.get"]
+
+    def test_partial_keys(self, tmp_path):
+        header = ["y", "id", "v"]
+        rows = [["2026", "", "a"], ["", "1", "b"]]
+        grid = FakeSheetGrid({"T": [header, *rows]})
+        strict = one_tab(tmp_path, "pull", key=["y", "id"])
+        with pytest.raises(
+            ValueError, match=r"blank key \['y', 'id'\] in rows \[2, 3\]"
+        ):
+            pull_tab(grid, "S", strict, apply=True)
+        tab = one_tab(tmp_path, "pull", key=["y", "id"], blank_keys="partial")
+        pull_tab(grid, "S", tab, apply=True)
+        assert rows_of(tab.local) == rows
+        grid.write("T", [["2027", "", "c"]], row=4)
+        report = pull_tab(grid, "S", tab)
+        assert replacement_of(report).added == [("2027", "")]
 
     def test_a_missing_local_file_is_created(self, tmp_path):
         tab = one_tab(tmp_path, "pull", local="out/deep/t.json")
@@ -790,6 +831,35 @@ class TestFormatReport:
             f"  local file: {tmp_path / 't.csv'}",
             "  the tab does not exist: would be created with a header row",
             "  columns would be added: 'x'",
+        ]
+
+    @pytest.mark.parametrize(
+        "plan",
+        [
+            MergePlan(conflicts=[Cell(("a",), "amt", "1", "2", "3")]),
+            MergePlan(row_flags=[RowFlag(("z",), "local_deleted")]),
+            MergePlan(held=[HeldCell(("a",), "amt", "1", "1", "x", "bad")]),
+        ],
+    )
+    def test_work_left_for_a_person_is_not_in_sync(self, plan):
+        report = TabReport(tab="T", mode="sync", plan=plan)
+        assert "in sync" not in format_report(SyncReport([report]))
+
+    def test_row_flags_beside_held_rows(self):
+        plan = MergePlan(
+            row_flags=[
+                RowFlag(("n",), "remote_invalid"),
+                RowFlag(("z",), "local_deleted"),
+            ],
+            held=[HeldCell(("n",), "amt", "", "", "x", "'x' is not a valid int")],
+        )
+        report = TabReport(tab="T", mode="sync", plan=plan)
+        assert format_report(SyncReport([report])).splitlines()[1:] == [
+            "  sheet values held, left for a person (1):",
+            "    n / 'amt': 'x' is not a valid int",
+            "  new sheet rows held for their invalid cells (1): n",
+            "  row flags (1), left for a person:",
+            "    z: local_deleted",
         ]
 
     def test_in_sync(self):

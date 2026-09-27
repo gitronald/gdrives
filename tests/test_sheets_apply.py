@@ -537,6 +537,38 @@ class TestInsertAbove:
         ]
 
 
+class TestPartialKeys:
+    HEADER = ["y", "id", "v"]
+    ROWS = [["2026", "", "a"], ["", "1", "b"]]
+
+    def sheet(self):
+        tabs = {"T": [self.HEADER, *self.ROWS]}
+        table = read_tab(
+            FakeSheetGrid(tabs),
+            "S",
+            "T",
+            self.HEADER,
+            ["y", "id"],
+            blank_keys="partial",
+        )
+        return FakeSheetGrid(tabs), table
+
+    def test_the_re_read_and_the_read_back_index_rows_as_the_table_did(self):
+        grid, table = self.sheet()
+        the_plan = plan(
+            [Cell(("2026", ""), "v", "a", "A", "a")],
+            [NewRow(("2027", ""), {"y": "2027", "id": "", "v": "c"})],
+        )
+        result = apply_plan(grid, "S", table, the_plan)
+        assert result == ApplyResult(1, 1, [2], [4])
+        assert grid.values("T") == [
+            self.HEADER,
+            ["2026", "", "A"],
+            ["", "1", "b"],
+            ["2027", "", "c"],
+        ]
+
+
 class TestTypedDates:
     """The re-read guard and the read-back read a typed table as it was read."""
 

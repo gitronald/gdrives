@@ -183,7 +183,7 @@ class TabReport:
 
     @property
     def needs_attention(self) -> bool:
-        """True when conflicts or row flags are left for a person."""
+        """True when conflicts, row flags, or held cells are left for a person."""
         return self.plan is not None and self.plan.needs_attention
 
     @property
@@ -206,7 +206,7 @@ class SyncReport:
         """1 if any tab failed, else 2 if any needs a person, else 0.
 
         0 means in sync, or every change applied (or, in a preview, that the
-        run can go ahead); 2 means conflicts or row flags remain.
+        run can go ahead); 2 means conflicts, row flags, or held cells remain.
         """
         codes = {tab.exit_code for tab in self.tabs}
         return 1 if 1 in codes else 2 if 2 in codes else 0
@@ -336,6 +336,14 @@ def plan_tab(
     The tab is read with the schema's types: a column declared ``date`` or
     ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
 
+    The schema's types also decide how cells compare: two spellings of one
+    value in a typed column are one value
+    (:func:`~gdrives.sheets.merge.merge`'s ``types``). A sheet value that
+    fails the schema reaches the merged rows and stops the tab, unless the
+    tab's ``on_invalid`` is ``"hold"``: then it is held out of the merge and
+    reported, and the rest of the tab is written. The local columns outside
+    the projection are carried, by name.
+
     With no base file yet, the tab is **bootstrapped**: the local file's
     projection is taken as the base, so sheet-only edits and rows fold in, a
     local row the sheet lacks is flagged ``remote_deleted``, and nothing is
@@ -464,6 +472,14 @@ def _plan(
             "syncing (delete the base to start over)"
         )
 
+    # The schema's types decide how cells compare, and under "hold" the schema
+    # keeps a sheet value that fails it out of the merge.
+    shared: dict[str, Any] = {
+        "blank_keys": tab.blank_keys,
+        "types": tab.types,
+        "schema": tab.schema if tab.on_invalid == "hold" else None,
+        "carry": [column for column in local.columns if column not in columns],
+    }
     if options["adopt"]:
         plan = merge(
             [],
@@ -473,6 +489,7 @@ def _plan(
             columns,
             local_owned=[column for column in columns if column not in tab.key],
             owns_rows=True,
+            **shared,
         )
     else:
         if base is not None:
@@ -496,6 +513,7 @@ def _plan(
             sheet_owned=tab.sheet_owned,
             owns_rows=tab.owns_rows,
             prefer=options["prefer"],
+            **shared,
         )
         if report.bootstrapped and plan.pushes:
             plan = _defer_pushes(plan, tab.key, report)
@@ -544,7 +562,13 @@ def _sheet_side(
     )
     present = [column for column in columns if column not in missing]
     table = parse_tab(
-        tab.title, grid, present, tab.key, types=tab.types, serials=serials
+        tab.title,
+        grid,
+        present,
+        tab.key,
+        types=tab.types,
+        serials=serials,
+        blank_keys=tab.blank_keys,
     )
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
@@ -583,6 +607,7 @@ def _insert_row(
             tab.key,
             types=tab.types,
             serials=serials,
+            blank_keys=tab.blank_keys,
         )
     return insert_point(table, plan, insert_above)
 
@@ -852,7 +877,13 @@ def pull_tab(
     serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
     try:
         table = parse_tab(
-            tab.title, grid, tab.columns, tab.key, types=tab.types, serials=serials
+            tab.title,
+            grid,
+            tab.columns,
+            tab.key,
+            types=tab.types,
+            serials=serials,
+            blank_keys=tab.blank_keys,
         )
     except EmptyTabError:
         report.tab_state = "empty"
@@ -938,7 +969,12 @@ def push_tab(
     if report.problems:
         return report
     if tab.key:
-        index_rows(local.rows, tab.key, side=f"local file {tab.local}")
+        index_rows(
+            local.rows,
+            tab.key,
+            side=f"local file {tab.local}",
+            blank_keys=tab.blank_keys,
+        )
     expected = [out, *([row[column] for column in out] for row in local.rows)]
 
     exists = tab.title in list_tabs(service, spreadsheet_id)
@@ -1321,12 +1357,13 @@ def _format_tab(tab: TabReport) -> list[str]:
 
 
 def _in_sync(tab: TabReport) -> bool:
-    """True when the run found nothing to write."""
+    """True when the run found nothing to write, and nothing left for a person."""
     if tab.plan is not None:
         plan = tab.plan
         return (
             tab.tab_state == "present"
-            and not (plan.pushes or plan.appends or plan.fold_cells or plan.fold_rows)
+            and not plan.has_writes
+            and not plan.needs_attention
             and not (tab.add_columns or tab.drop_columns or tab.deferred)
         )
     return tab.replacement is not None and tab.replacement.unchanged
@@ -1395,9 +1432,24 @@ def _format_plan(
                 f"    {_key(o.key)} / {_q(o.column)}: kept {o.kept} "
                 f"({o.reason}), discarded {_q(lost)}"
             )
-    if plan.row_flags:
-        lines.append(f"  row flags ({len(plan.row_flags)}), left for a person:")
-        lines.extend(f"    {_key(f.key)}: {f.flag}" for f in plan.row_flags)
+    invalid = [f.key for f in plan.row_flags if f.flag == "remote_invalid"]
+    if plan.held:
+        lines.append(f"  sheet values held, left for a person ({len(plan.held)}):")
+        for h in plan.held:
+            # A cell of a held row has no local value to keep.
+            stays = "" if h.key in invalid else f"; the local value stays {_q(h.local)}"
+            lines.append(
+                f"    {_key(h.key)} / {_q(h.column)}: {printable(h.reason)}{stays}"
+            )
+    if invalid:
+        lines.append(
+            f"  new sheet rows held for their invalid cells ({len(invalid)}): "
+            f"{_keys(invalid)}"
+        )
+    flags = [f for f in plan.row_flags if f.flag != "remote_invalid"]
+    if flags:
+        lines.append(f"  row flags ({len(flags)}), left for a person:")
+        lines.extend(f"    {_key(f.key)}: {f.flag}" for f in flags)
     return lines
 
 
