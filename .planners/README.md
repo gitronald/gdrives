@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | draft | — | — |
-| 007 | [Add typed records, pluggable stores, and in-memory pushes to sheets sync](plans/007-sheets-sync-typed-stores/plan.md) | draft | — | — |
+| 007 | [Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets](plans/007-sheets-sync-adoption-gaps/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 006 | [Add a sheets package with keyed two-way sync between Sheets and local files](plans/006-sheets-sync-module/plan.md) | done | 2026-09-27 08:29 PT | [#36](https://github.com/gitronald/gdrives/pull/36) |
 | 005 | [Upgrade to the proj-template 0.10.0 standard](plans/005-template-upgrade/plan.md) | done | 2026-09-25 23:40 PT | [#32](https://github.com/gitronald/gdrives/pull/32) |

@@ -1,6 +1,6 @@
 ---
 id: 7
-slug: sheets-sync-typed-stores
+slug: sheets-sync-adoption-gaps
 status: draft
 branch:
 created: 2026-09-27T10:24:14-07:00
@@ -8,7 +8,7 @@ concluded:
 pr:
 ---
 
-# Add typed records, pluggable stores, and in-memory pushes to sheets sync
+# Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets
 
 ## Plan
 
