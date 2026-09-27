@@ -1,4 +1,4 @@
-# gdrives v0.11.1a0
+# gdrives v0.12.1a0
 
 Command-line tools for Google Drive.
 
@@ -111,6 +111,7 @@ then service account, then ADC.
    export GOOGLE_CONFIG_DIR=~/.google   # directory holding gdrives_credentials.json
    ```
 5. Run `gdrives show-drives`. A browser opens for one-time authorization; the token is cached to `$GOOGLE_CONFIG_DIR/gdrives_token.json` and reused (it re-auths automatically if revoked).
+6. With no terminal attached (a tool that captures stdin), a command skips the consent. Run `gdrives login` to consent anyway: it prints the URL and waits (`--scope read|sheets|docs|drive`, `--timeout SECONDS`).
 
 Full walkthrough: [docs/setup-oauth.md](docs/setup-oauth.md).
 
@@ -165,6 +166,23 @@ Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
 and the `sheets-*` and `docs-*` commands) resolves it against the cache.
 `gdrives --version` prints the installed version.
+
+### Log in
+
+```bash
+gdrives login                  # Consent to read access (every read command)
+gdrives login --scope sheets   # The sheets-* write commands (also: docs, drive)
+gdrives login --timeout 60     # Give up after 60 seconds (default 300)
+```
+
+Any command starts the consent it needs when run in a terminal. `login` starts
+it with or without one: it prints the consent URL, waits for the browser to
+come back, caches the token, and prints the credential the commands will now
+use. When a cached token already serves the scope, nothing is asked. It exits 1
+when the time runs out, or when the token could not be saved. It is also the
+way to grant again after a token's refresh has failed. Before any command
+waits on a consent or a token refresh, it says so on stderr with a line
+starting `Credential:`.
 
 ### List Drive contents
 
@@ -516,7 +534,7 @@ There are a few options out there, but most haven't been touched in years, and n
 ## Security & privacy
 
 - Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`, and `sheets-sync` and `sheets-push` with `--apply`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope, as do `sheets-sync` and `sheets-push` without `--apply` and `sheets-pull` with or without it.
-- The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another, and a cached token whose grant does not cover a request is re-authorized rather than reused. Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
+- The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another. A cached token whose grant does not cover a request is re-authorized rather than reused, and one whose grant is broader (a `drive` token, for a Sheets write) is used as it is. The names `gdrives_token*.json` are reserved: a consent never overwrites a token file holding a grant the new one does not include, and writes its token under a name derived from its scopes instead (see [docs/setup-oauth.md](docs/setup-oauth.md)). Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
 - Names of shared items are chosen by other people. `ls`, `download`, `mv`, and `show-drives` escape control characters in them before printing, so an embedded escape sequence can't rewrite the terminal, and `ls --save-as` CSVs prefix formula-like cells with `'` so a spreadsheet app won't run them.
 - Local files are written through a private temporary file and renamed into place, so an interrupted run never leaves a partial download, export, listing, or drive cache. Overwriting an existing file (`export -o`, `docs-get -o`) keeps that file's permissions.
