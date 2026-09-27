@@ -88,6 +88,35 @@ class TestDelimited:
         with pytest.raises(ValueError, match="blank column name"):
             read_records(path)
 
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [("m.csv", "id , name\n1,Alex\n"), ("m.tsv", "id \t name\n1\tAlex\n")],
+    )
+    def test_header_names_are_stripped(self, tmp_path, name, text):
+        # A tab's header cells are stripped, so a padded name must match them.
+        path = tmp_path / name
+        path.write_text(text)
+        assert read_records(path) == Records(
+            ["id", "name"], [{"id": "1", "name": "Alex"}]
+        )
+
+    def test_cells_are_not_stripped(self, tmp_path):
+        path = tmp_path / "m.csv"
+        path.write_text("id,name\n1, Alex \n")
+        assert read_records(path).rows == [{"id": "1", "name": " Alex "}]
+
+    def test_header_names_equal_once_stripped_raise(self, tmp_path):
+        path = tmp_path / "m.csv"
+        path.write_text("id,name,id \n")
+        with pytest.raises(ValueError, match=r"repeated column name\(s\) \['id'\]"):
+            read_records(path)
+
+    def test_whitespace_only_header_raises(self, tmp_path):
+        path = tmp_path / "m.csv"
+        path.write_text("id, ,name\n")
+        with pytest.raises(ValueError, match="blank column name"):
+            read_records(path)
+
     def test_write_value_grid_bom(self, tmp_path):
         # The grid writer gained the same option; its default is unchanged.
         path = tmp_path / "grid.csv"
@@ -221,6 +250,26 @@ class TestJson:
         path = tmp_path / "m.json"
         path.write_text('[{"": 1}]')
         with pytest.raises(ValueError, match="blank column name"):
+            read_records(path)
+
+    def test_key_names_are_stripped(self, tmp_path):
+        path = tmp_path / "m.json"
+        path.write_text(json.dumps([{"id ": 1, " name": "Alex"}, {"id": 2}]))
+        assert read_records(path) == Records(
+            ["id", "name"],
+            [{"id": "1", "name": "Alex"}, {"id": "2", "name": ""}],
+        )
+
+    def test_whitespace_only_key_name_raises(self, tmp_path):
+        path = tmp_path / "m.json"
+        path.write_text('[{" ": 1}]')
+        with pytest.raises(ValueError, match="blank column name"):
+            read_records(path)
+
+    def test_key_names_equal_once_stripped_raise(self, tmp_path):
+        path = tmp_path / "m.json"
+        path.write_text('[{"id": 1}, {"id": 2, "id ": 3}]')
+        with pytest.raises(ValueError, match="item 1 repeats column name 'id'"):
             read_records(path)
 
 

@@ -818,6 +818,16 @@ class TestRefusals:
         with pytest.raises(ValueError, match=r"lacks column\(s\) \['amt'\]"):
             run(FakeSheetGrid({"T": [HEADER]}), target)
 
+    def test_a_padded_local_header_names_the_configured_column(self, tmp_path):
+        # The tab's header cells are read stripped, so the file's must be too.
+        target = make_target(tmp_path, columns=["id", "name", "amt"])
+        write_local(target, *ROWS, header=["id ", " name", "amt"])
+        write_base(target, *ROWS)
+        report = run(FakeSheetGrid({"T": [HEADER, *ROWS]}), target)
+        assert report.problems == []
+        assert plan_of(report).needs_attention is False
+        assert plan_of(report).pushes == []
+
     def test_a_local_file_with_no_columns(self, tmp_path):
         target = make_target(tmp_path, local="local.json")
         target.tabs[0].local.write_text("[]", encoding="utf-8")
