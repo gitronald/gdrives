@@ -408,7 +408,7 @@ def _plan(
     if options["adopt"] and base is not None:
         raise ValueError(
             f"tab {tab.title!r}: adopt is only for a first sync, and a base exists "
-            f"at {base_path}"
+            f"at {base_path} (delete the base to start over)"
         )
 
     table: Table | None = None
