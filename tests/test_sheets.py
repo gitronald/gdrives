@@ -841,6 +841,7 @@ SUBMODULES = (
     "apply",
     "cells",
     "commands",
+    "config",
     "files",
     "match",
     "merge",

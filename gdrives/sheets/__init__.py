@@ -17,6 +17,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
+- ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
   records
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
@@ -64,6 +65,20 @@ from gdrives.sheets.commands import (
     run_rules,
     run_set,
     run_update,
+)
+from gdrives.sheets.config import (
+    BOOTSTRAPS,
+    CONFIG_NAME,
+    INPUT_OPTIONS,
+    LOCAL_EXTENSIONS,
+    MODES,
+    Config,
+    ConfigError,
+    TabConfig,
+    Target,
+    find_config,
+    load_config,
+    parse_config,
 )
 from gdrives.sheets.files import (
     Records,
@@ -128,14 +143,21 @@ from gdrives.sheets.values import (
 __all__ = [
     "ApplyError",
     "ApplyResult",
+    "BOOTSTRAPS",
     "COLUMN_TYPES",
+    "CONFIG_NAME",
     "Cell",
     "ColumnSchema",
+    "Config",
+    "ConfigError",
     "EmptyTabError",
     "FORMATTED_STRING",
     "FORMATTED_VALUE",
     "FORMULA",
     "IDEMPOTENT_STATUSES",
+    "INPUT_OPTIONS",
+    "LOCAL_EXTENSIONS",
+    "MODES",
     "MergePlan",
     "NewRow",
     "OVERRIDE_REASONS",
@@ -150,8 +172,10 @@ __all__ = [
     "SERIAL_NUMBER",
     "SIDES",
     "SheetChangedError",
+    "TabConfig",
     "TabGrid",
     "Table",
+    "Target",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
     "a1_quote",
@@ -171,6 +195,7 @@ __all__ = [
     "delete_conditional_rule",
     "describe_rule",
     "ensure_tabs",
+    "find_config",
     "find_rows",
     "first_tab",
     "format_rules",
@@ -181,8 +206,10 @@ __all__ = [
     "index_rows",
     "list_conditional_rules",
     "list_tabs",
+    "load_config",
     "merge",
     "normalize_key",
+    "parse_config",
     "parse_pairs",
     "parse_tab",
     "problems",
