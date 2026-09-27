@@ -11,6 +11,7 @@ from gdrives.local import (
     atomic_output,
     escape_formula,
     printable,
+    safe_filename,
     umask_mode,
     write_text,
 )
@@ -173,3 +174,52 @@ class TestPrintable:
     def test_ordinary_names_are_unchanged(self):
         name = "Café notes (1)  — 日本.pdf"
         assert printable(name) == name
+
+
+class TestSafeFilename:
+    def test_replaces_slash(self):
+        assert safe_filename("a/b") == "a_b"
+
+    def test_replaces_null_byte(self):
+        assert safe_filename("a\x00b") == "a_b"
+
+    def test_strips_surrounding_whitespace(self):
+        assert safe_filename("  name  ") == "name"
+
+    def test_empty_becomes_file(self):
+        assert safe_filename("") == "file"
+
+    def test_blank_becomes_file(self):
+        assert safe_filename("   ") == "file"
+
+    def test_dotdot_neutralized(self):
+        # '..' must not survive — out / '..' would escape the target directory.
+        assert safe_filename("..") == "__"
+
+    def test_single_dot_neutralized(self):
+        assert safe_filename(".") == "_"
+
+    def test_dotdot_with_whitespace_neutralized(self):
+        assert safe_filename("  ..  ") == "__"
+
+    def test_dotfile_preserved(self):
+        assert safe_filename(".env") == ".env"
+
+    def test_replaces_backslash(self):
+        # On Windows '\' is a path separator; neutralize it like '/'.
+        assert safe_filename("a\\b") == "a_b"
+
+    def test_control_characters_replaced(self):
+        # ESC would reach the terminal in every progress line that prints the
+        # local path; newlines and tabs make awkward local names too.
+        assert safe_filename("\x1b]0;x\x07a\nb\tc\x9bd.pdf") == "_]0;x_a_b_c_d.pdf"
+
+    def test_backslash_traversal_neutralized(self):
+        # '..\\..\\evil' must not survive as a Windows path traversal.
+        assert safe_filename("..\\..\\evil") == ".._.._evil"
+
+    def test_still_importable_from_download(self):
+        # safe_filename moved here from gdrives.download, which re-imports it.
+        from gdrives import download
+
+        assert download.safe_filename is safe_filename
