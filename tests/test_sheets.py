@@ -836,7 +836,16 @@ def test_unreferenced_duplicate_headers_do_not_block_update():
 # -- package surface --
 
 
-SUBMODULES = ("a1", "commands", "files", "match", "retry", "rules", "values")
+SUBMODULES = (
+    "a1",
+    "cells",
+    "commands",
+    "files",
+    "match",
+    "retry",
+    "rules",
+    "values",
+)
 
 
 def _defined_public(module):
