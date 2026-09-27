@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A `blank_keys` tab field, `refuse` (the default) or `partial`, for every mode. `partial` allows a row of a composite key to leave a component blank, and refuses only a row whose every key cell is blank. `index_rows`, `parse_tab`, `read_tab`, and `merge` take `blank_keys=`, and `Table.blank_keys` records the setting a tab was read with.
 - An `on_invalid` tab field for `sync` tabs, `refuse` (the default) or `hold`. With `hold`, a sheet value that fails the `schema` is kept out of the local file and the base, the rest of the tab is written, the report lists the held values and rows, and the run exits 2.
 - `MergePlan.sheet_writes`, `MergePlan.local_writes`, and `MergePlan.has_writes` say whether a plan writes to the sheet, to the local side, or to either.
+- Two hooks beside `validate`, on `plan_tab`, `sync_tab`, `pull_tab`, `push_tab`, and `run_target`. `check` blocks a write as `validate` does, and is given a `CheckContext`: the rows, their stage (`local`, `merged`, or `sheet`), the columns of the rows, the projection, the sheet's columns, the columns the run adds and drops, and the merge plan. `warn` takes a `CheckContext` too, runs once after every blocking check has passed, and blocks nothing: its messages go to `TabReport.warnings`, are printed under their own heading, and leave the exit code as it is.
 
 ### Changed
 

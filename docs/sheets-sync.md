@@ -622,7 +622,57 @@ raise SystemExit(report.exit_code)
 
 `plan_tab` and `apply_tab` split a sync of one tab into its read-and-merge and
 its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
-Each takes an optional `validate` callable (rows in, a list of problem messages
-out) for checks a schema cannot express. The pieces underneath are exported
-too: `read_tab`, `merge`, `apply_plan`, `verify`, `read_records`, and
-`write_records`.
+The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
+`verify`, `read_records`, and `write_records`.
+
+### Hooks
+
+`plan_tab`, `sync_tab`, `pull_tab`, `push_tab`, and `run_target` take three
+optional callables, for checks a schema cannot express. Each returns a list
+of messages:
+
+| Hook | Receives | Blocks a write | Runs |
+|---|---|---|---|
+| `validate` | the rows | yes | at every stage |
+| `check` | a `CheckContext` | yes | at every stage, after `validate` |
+| `warn` | a `CheckContext` | no | once, at the run's last stage, when no check found a problem |
+
+The stages are `local` (the local rows of a sync or a push, before any
+request), `merged` (a sync's merged result), and `sheet` (the rows a pull
+read). A `CheckContext` holds:
+
+| Field | Holds |
+|---|---|
+| `tab`, `stage` | The tab's title, and the stage |
+| `rows`, `columns` | The rows, and the columns they hold |
+| `projection` | The columns the sheet carries |
+| `sheet_columns` | The sheet header's named columns. None at the `local` stage, and when the tab is missing or has no header |
+| `adding`, `dropping` | The columns this run adds to the sheet and deletes from it |
+| `extra_columns` | The sheet's columns outside the projection, less `dropping` |
+| `plan` | The merge, at the `merged` stage |
+
+```python
+DECLARED = {"member_id", "name", "status"}
+
+
+def declared(context):
+    """Refuse a column on either side that nothing declares."""
+    found = [*context.columns, *context.extra_columns]
+    return [f"undeclared column {c!r}" for c in found if c not in DECLARED]
+
+
+def folded(context):
+    """Say which rows the run takes an edit from the sheet for."""
+    return [f"{cell.key} changed on the sheet" for cell in context.plan.fold_cells]
+
+
+report = run_target(
+    service, "<spreadsheet-id>", target, "sync", check=declared, warn=folded
+)
+```
+
+A message from `validate` or `check` is a problem: the tab is written
+nowhere, and the run exits 1. A message from `warn` is printed under
+`warnings` and changes neither what is written nor the exit code. The
+commands take no hooks, so a caller with checks in code runs the library from
+a command of its own.

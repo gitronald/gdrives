@@ -12,15 +12,20 @@ against its base snapshot, one CSV per tab under the target's ``base``
 directory. :func:`plan_tab` reads and merges; :func:`apply_tab` writes, in an
 order that is a safety property, stopping at the first failure:
 
-1. The schema and ``validate`` checks, on the local rows and on the merged
-   result. Any problem means nothing is written. These are the only checks:
-   every later step writes what they passed.
+1. The schema, ``validate``, and ``check`` checks, on the local rows and on
+   the merged result. Any problem means nothing is written. These are the
+   only checks: every later step writes what they passed.
 2. The structure steps asked for: create a missing tab with its header row,
    add missing columns, delete extra ones. The tab is then read and merged
    again, and the run stops if that merge differs from the checked one.
 3. :func:`~gdrives.sheets.apply.apply_plan`: the re-read guard, the pushed
    cells, the new rows, and the read-back check.
 4. The local file, then the base, then the column widths.
+
+A caller's own checks are three hooks. ``validate`` takes rows, ``check`` a
+:class:`CheckContext` (the rows, the columns of both sides, and the merge),
+and both block a write. ``warn`` takes a :class:`CheckContext` too, runs once
+after every blocking check has passed, and blocks nothing.
 
 A run that fails part way has recorded no sync that did not land: a failed
 guard or read-back leaves the local file and the base as they were, and the
@@ -89,6 +94,48 @@ from gdrives.sheets.values import (
 #: A caller's own check: rows in, one message per problem out.
 Validate = Callable[[Sequence[Mapping[str, str]]], list[str]]
 
+#: The stages a check runs at: the local rows of a sync or a push, the merged
+#: result of a sync, and the rows a pull read from the sheet.
+STAGES = frozenset({"local", "merged", "sheet"})
+
+
+@dataclass(frozen=True)
+class CheckContext:
+    """What a ``check`` or a ``warn`` hook is given: the rows, and what is around them.
+
+    ``stage`` is where ``rows`` come from, one of :data:`STAGES`, and
+    ``columns`` the columns they hold. ``projection`` is the columns the
+    sheet carries. ``sheet_columns`` is the sheet header's named columns, or
+    None when the sheet has not been read (the local stage runs before any
+    request) or the tab is missing or has no header. ``adding`` and
+    ``dropping`` are the columns this run adds to the sheet and deletes from
+    it. ``plan`` is the merge at the merged stage, and None at the others.
+    """
+
+    tab: str
+    stage: str
+    rows: Sequence[Mapping[str, str]]
+    columns: tuple[str, ...]
+    projection: tuple[str, ...]
+    sheet_columns: tuple[str, ...] | None = None
+    adding: tuple[str, ...] = ()
+    dropping: tuple[str, ...] = ()
+    plan: MergePlan | None = None
+
+    @property
+    def extra_columns(self) -> tuple[str, ...]:
+        """The sheet's columns outside the projection, less the ones being dropped.
+
+        A column a run is about to delete is not one to check: the usual
+        reason to drop it is that nothing declares it any more.
+        """
+        outside = (*self.projection, *self.dropping)
+        return tuple(c for c in self.sheet_columns or () if c not in outside)
+
+
+#: A caller's own check with the context: one message per problem out.
+Check = Callable[[CheckContext], list[str]]
+
 _Key = tuple[str, ...]
 
 #: The errors a run reports per tab instead of stopping: a refusal or a
@@ -133,7 +180,9 @@ class TabReport:
     writes nothing. ``tab_state`` is ``"present"``, ``"missing"`` (no such
     tab), or ``"empty"`` (no header row). ``error`` is set when the run
     stopped: a refusal, an API error, or a failed guard or read-back.
-    ``problems`` lists schema and ``validate`` problems, which write nothing.
+    ``problems`` lists schema, ``validate``, and ``check`` problems, which
+    write nothing. ``warnings`` lists what the ``warn`` hook said, which
+    blocks nothing and leaves the exit code as it is.
 
     For a sync tab: ``plan`` is the merge; ``add_columns`` and
     ``drop_columns`` (with non-blank cell counts) are the structure steps
@@ -159,6 +208,7 @@ class TabReport:
     tab_state: str = "present"
     error: str | None = None
     problems: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     plan: MergePlan | None = None
     add_columns: list[str] = field(default_factory=list)
@@ -237,6 +287,8 @@ class TabPlan:
     drop_extra: bool = False
     prefer: str | None = None
     validate: Validate | None = None
+    check: Check | None = None
+    warn: Check | None = None
     created: bool = False
     added: tuple[str, ...] = ()
 
@@ -291,21 +343,31 @@ def _projection(tab: TabConfig, local: Records) -> list[str]:
 
 
 def _check(
-    rows: Sequence[Mapping[str, str]],
     tab: TabConfig,
+    context: CheckContext,
     validate: Validate | None,
-    label: str,
+    check: Check | None,
 ) -> list[str]:
-    """Every schema and ``validate`` problem in ``rows``, as messages."""
+    """Every schema, ``validate``, and ``check`` problem at one stage, as messages."""
+    label = f"{tab.title} ({context.stage})"
     found = [
         str(problem)
-        for problem in problems(
-            rows, tab.schema, tab=f"{tab.title} ({label})", key=tab.key
-        )
+        for problem in problems(context.rows, tab.schema, tab=label, key=tab.key)
     ]
     if validate is not None:
-        found.extend(f"{tab.title} ({label}): {text}" for text in validate(rows))
+        found.extend(f"{label}: {text}" for text in validate(context.rows))
+    if check is not None:
+        found.extend(f"{label}: {text}" for text in check(context))
     return found
+
+
+def _warn(report: TabReport, context: CheckContext, warn: Check | None) -> None:
+    """Run ``warn`` at a run's last stage, unless the run has problems.
+
+    Its messages would describe rows that are not written.
+    """
+    if warn is not None and not report.problems:
+        report.warnings = list(warn(context))
 
 
 def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
@@ -326,13 +388,19 @@ def plan_tab(
     drop_extra: bool = False,
     prefer: str | None = None,
     validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
     report: TabReport | None = None,
 ) -> TabPlan:
     """Read a sync tab, its local file, and its base, and merge them. Writes nothing.
 
-    The local rows are checked against the tab's schema and ``validate``
-    first; with any problem the plan stops there (``plan`` is None and the
-    report lists the problems). The merged result is checked the same way.
+    The local rows are checked against the tab's schema, ``validate``, and
+    ``check`` first; with any problem the plan stops there (``plan`` is None
+    and the report lists the problems). The merged result is checked the same
+    way, and ``check`` is then given the columns of both sides and the merge
+    (:class:`CheckContext`). ``warn`` runs once, on the merged result, when
+    no check found a problem; its messages go to the report's ``warnings``
+    and block nothing.
     The tab is read with the schema's types: a column declared ``date`` or
     ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
 
@@ -381,6 +449,8 @@ def plan_tab(
         "drop_extra": drop_extra,
         "prefer": prefer,
         "validate": validate,
+        "check": check,
+        "warn": warn,
     }
     return _plan(service, spreadsheet_id, target, tab, report, options)
 
@@ -399,10 +469,13 @@ def _plan(
 ) -> TabPlan:
     """:func:`plan_tab`'s body. ``created`` marks a tab this run created, and
     ``added`` the columns this run added, both of which the base cannot hold.
-    ``check=False`` skips the schema and ``validate`` checks, for the merge
-    after a restructure, which must match one that already passed them.
+    ``check=False`` runs no check and no hook, for the merge after a
+    restructure, which must match one that already passed them. The
+    warnings of the first merge are then kept.
     """
     report.problems, report.notes = list[str](), list[str]()
+    if check:
+        report.warnings = list[str]()
     report.deferred = list[Cell]()
     report.plan, report.bootstrapped = None, False
     report.insert_row, report.last_row = None, None
@@ -427,8 +500,16 @@ def _plan(
             **options,
         )
 
+    hooks = (options["validate"], options["check"])
     if check:
-        report.problems = _check(local.rows, tab, options["validate"], "local")
+        before = CheckContext(
+            tab=tab.title,
+            stage="local",
+            rows=local.rows,
+            columns=tuple(local.columns),
+            projection=tuple(columns),
+        )
+        report.problems = _check(tab, before, *hooks)
         if report.problems:
             return planned(None, None, None)
 
@@ -441,6 +522,7 @@ def _plan(
         )
 
     table: Table | None = None
+    sheet_columns: tuple[str, ...] | None = None
     grid: list[list[Any]] = []
     serials: Serials = {}
     remote: list[dict[str, str]] = []
@@ -460,6 +542,7 @@ def _plan(
             report.tab_state = "empty"
         else:
             report.tab_state = "present"
+            sheet_columns = tuple(whole.columns)
             serials = pull_serials(service, spreadsheet_id, tab.title, grid, tab.types)
             table, remote = _sheet_side(
                 tab, columns, grid, serials, whole, report, options
@@ -523,7 +606,19 @@ def _plan(
         if plan.appends:
             report.insert_row, report.last_row = above, table.last_row
     if check:
-        report.problems = _check(plan.new_local, tab, options["validate"], "merged")
+        merged = CheckContext(
+            tab=tab.title,
+            stage="merged",
+            rows=plan.new_local,
+            columns=tuple(local.columns),
+            projection=tuple(columns),
+            sheet_columns=sheet_columns,
+            adding=tuple(report.add_columns),
+            dropping=tuple(report.drop_columns),
+            plan=plan,
+        )
+        report.problems = _check(tab, merged, *hooks)
+        _warn(report, merged, options["warn"])
     return planned(table, plan, base)
 
 
@@ -639,7 +734,8 @@ def _defer_pushes(plan: MergePlan, key: Sequence[str], report: TabReport) -> Mer
 def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabReport:
     """Write what :func:`plan_tab` planned, in order, stopping at the first failure.
 
-    Nothing is written when the plan found schema or ``validate`` problems.
+    Nothing is written when the plan found schema, ``validate``, or ``check``
+    problems.
     Otherwise: the structure steps (create a missing tab and its header row,
     add missing columns, delete extra ones), after which the tab is read and
     merged again, refusing a merge that differs from the checked one; then
@@ -736,6 +832,8 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         "drop_extra": planned.drop_extra,
         "prefer": planned.prefer,
         "validate": planned.validate,
+        "check": planned.check,
+        "warn": planned.warn,
     }
     again = _plan(
         service,
@@ -773,6 +871,8 @@ def sync_tab(
     drop_extra: bool = False,
     prefer: str | None = None,
     validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """:func:`plan_tab`, then :func:`apply_tab` when ``apply``."""
@@ -786,6 +886,8 @@ def sync_tab(
         drop_extra=drop_extra,
         prefer=prefer,
         validate=validate,
+        check=check,
+        warn=warn,
         report=report,
     )
     if not apply:
@@ -852,6 +954,8 @@ def pull_tab(
     *,
     apply: bool = False,
     validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """Replace ``tab``'s local file with the tab's records (with ``apply``).
@@ -861,8 +965,9 @@ def pull_tab(
     schema's types, so a column declared ``date`` or ``datetime`` arrives as
     ISO 8601 at the cost of a second read. A missing
     tab, a tab with no header row, or one with no rows is refused, and the
-    local file is left alone. The records are checked against the schema and
-    ``validate`` before anything is written. The report's ``replacement``
+    local file is left alone. The records are checked against the schema,
+    ``validate``, and ``check`` before anything is written, at the stage
+    ``"sheet"``, and ``warn`` runs when they pass. The report's ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
     local file is simply created. An unchanged file is not rewritten. A
@@ -892,9 +997,19 @@ def pull_tab(
         ) from None
     if not table.rows:
         raise ValueError(f"tab {tab.title!r} has no rows; the local file is left alone")
-    report.problems = _check(table.rows, tab, validate, "sheet")
+    context = CheckContext(
+        tab=tab.title,
+        stage="sheet",
+        rows=table.rows,
+        columns=tuple(table.columns),
+        projection=tuple(table.columns),
+        sheet_columns=tuple(name for name in table.header if name),
+    )
+    report.warnings = list[str]()
+    report.problems = _check(tab, context, validate, check)
     if report.problems:
         return report
+    _warn(report, context, warn)
     before = read_records(tab.local) if tab.local.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, tab.key)
     if apply and not report.replacement.unchanged:
@@ -936,6 +1051,8 @@ def push_tab(
     input_option: str = RAW,
     apply: bool = False,
     validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
     """Replace ``tab``'s values with its local file (with ``apply``).
@@ -946,7 +1063,8 @@ def push_tab(
     where the new data is smaller, so a failure cannot leave the tab empty;
     the grid is grown first when the data does not fit. A missing tab is
     created. An empty local file is refused, and the rows are checked against
-    the schema and ``validate`` first.
+    the schema, ``validate``, and ``check`` first, before any request, at the
+    stage ``"local"``; ``warn`` runs when they pass.
 
     The report's ``replacement`` says what the sheet holds that the local
     file does not: rows by key when there is a key, and always row and cell
@@ -965,9 +1083,18 @@ def push_tab(
     _projection(tab, local)  # refuses a configured column the file lacks
     wanted = tab.columns if tab.columns is not None else local.columns
     out = [column for column in local.columns if column in wanted]
-    report.problems = _check(local.rows, tab, validate, "local")
+    context = CheckContext(
+        tab=tab.title,
+        stage="local",
+        rows=local.rows,
+        columns=tuple(local.columns),
+        projection=tuple(out),
+    )
+    report.warnings = list[str]()
+    report.problems = _check(tab, context, validate, check)
     if report.problems:
         return report
+    _warn(report, context, warn)
     if tab.key:
         index_rows(
             local.rows,
@@ -1192,9 +1319,12 @@ def run_target(
     drop_extra: bool = False,
     prefer: str | None = None,
     validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
 ) -> SyncReport:
     """Run every ``mode`` tab of ``target`` (or just ``tabs``), one report each.
 
+    ``validate``, ``check``, and ``warn`` are passed to every tab.
     ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
     that fails (a refusal, an API error, a failed guard) is reported with its
     error and the run goes on to the next tab, since tabs are independent.
@@ -1240,6 +1370,8 @@ def run_target(
                     drop_extra=drop_extra,
                     prefer=prefer,
                     validate=validate,
+                    check=check,
+                    warn=warn,
                     report=tab_report,
                 )
             elif mode == "pull":
@@ -1249,6 +1381,8 @@ def run_target(
                     tab,
                     apply=apply,
                     validate=validate,
+                    check=check,
+                    warn=warn,
                     report=tab_report,
                 )
             else:
@@ -1259,6 +1393,8 @@ def run_target(
                     input_option=target.input_option,
                     apply=apply,
                     validate=validate,
+                    check=check,
+                    warn=warn,
                     report=tab_report,
                 )
         except TAB_ERRORS as e:
@@ -1337,6 +1473,9 @@ def _format_tab(tab: TabReport) -> list[str]:
     if tab.problems:
         lines.append(f"  problems ({len(tab.problems)}), so nothing is written:")
         lines.extend(f"    {printable(problem)}" for problem in tab.problems)
+    if tab.warnings:
+        lines.append(f"  warnings ({len(tab.warnings)}):")
+        lines.extend(f"    {printable(warning)}" for warning in tab.warnings)
     wrote = [
         name
         for name, done in (

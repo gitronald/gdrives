@@ -15,6 +15,7 @@ from gdrives.sheets import (
     CONFIG_NAME,
     ApplyResult,
     Cell,
+    CheckContext,
     HeldCell,
     MergePlan,
     NewRow,
@@ -335,6 +336,141 @@ class TestPushRefusals:
             "T (local): bad",
         ]
         assert grid.calls == [] and report.exit_code == 1
+
+
+class TestHooks:
+    def test_a_pull_checks_the_rows_the_sheet_holds(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", columns=["id", "amt"])
+        grid = FakeSheetGrid({"T": [[*HEADER, "", "memo"], *ROWS]})
+        seen = []
+        report = pull_tab(
+            grid,
+            "S",
+            tab,
+            apply=True,
+            check=lambda context: seen.append(context) or [],
+            warn=lambda context: [f"{len(context.rows)} rows at {context.stage}"],
+        )
+        assert seen == [
+            CheckContext(
+                tab="T",
+                stage="sheet",
+                rows=[{"id": "a", "amt": "1"}, {"id": "b", "amt": "2"}],
+                columns=("id", "amt"),
+                projection=("id", "amt"),
+                sheet_columns=("id", "name", "amt", "memo"),
+                adding=(),
+                dropping=(),
+                plan=None,
+            )
+        ]
+        assert seen[0].extra_columns == ("name", "memo")
+        assert report.warnings == ["2 rows at sheet"]
+        assert report.wrote_local and report.exit_code == 0
+
+    def test_a_pull_with_a_problem_writes_nothing_and_warns_of_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "pull")
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        warned = []
+        report = pull_tab(
+            grid,
+            "S",
+            tab,
+            apply=True,
+            validate=lambda rows: ["from validate"],
+            check=lambda context: ["from check"],
+            warn=lambda context: warned.append(context) or ["a warning"],
+        )
+        assert report.problems == ["T (sheet): from validate", "T (sheet): from check"]
+        assert warned == [] and report.warnings == []
+        assert not tab.local.exists()
+
+    def test_a_push_checks_the_local_rows_before_any_request(self, tmp_path):
+        tab = one_tab(tmp_path, "push", columns=["id", "amt"])
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": []})
+        seen = []
+        report = push_tab(
+            grid,
+            "S",
+            tab,
+            apply=True,
+            check=lambda context: seen.append((context, list(grid.calls))) or [],
+            warn=lambda context: [f"pushing {list(context.projection)}"],
+        )
+        ((context, calls),) = seen
+        assert calls == []
+        assert context == CheckContext(
+            tab="T",
+            stage="local",
+            rows=[dict(zip(HEADER, row, strict=True)) for row in ROWS],
+            columns=tuple(HEADER),
+            projection=("id", "amt"),
+            sheet_columns=None,
+            adding=(),
+            dropping=(),
+            plan=None,
+        )
+        assert report.warnings == ["pushing ['id', 'amt']"]
+        assert grid.values("T") == [["id", "amt"], ["a", "1"], ["b", "2"]]
+
+    def test_a_push_with_a_problem_writes_nothing_and_warns_of_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "push")
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": []})
+        warned = []
+        report = push_tab(
+            grid,
+            "S",
+            tab,
+            apply=True,
+            check=lambda context: ["from check"],
+            warn=lambda context: warned.append(context) or ["a warning"],
+        )
+        assert report.problems == ["T (local): from check"]
+        assert warned == [] and report.warnings == [] and grid.calls == []
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_run_target_passes_the_hooks_to_every_mode(self, tmp_path, mode):
+        tab = {"mode": mode, "local": "local.csv", "key": ["id"]}
+        target = make_target(tmp_path, {"T": tab})
+        write_local(target.tabs[0], *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        stages = []
+        report = run_target(
+            grid,
+            "S",
+            target,
+            mode,
+            validate=lambda rows: stages.append("validate") or [],
+            check=lambda context: stages.append(f"check {context.stage}") or [],
+            warn=lambda context: [f"warn {context.stage}"],
+        )
+        last = {"sync": "merged", "pull": "sheet", "push": "local"}[mode]
+        assert stages[-2:] == ["validate", f"check {last}"]
+        assert report.tabs[0].warnings == [f"warn {last}"]
+        assert report.exit_code == 0
+
+    def test_warnings_are_printed_after_problems_and_change_no_exit_code(self):
+        report = TabReport(
+            tab="T", mode="push", problems=["bad"], warnings=["look\x1b[2J", "again"]
+        )
+        assert format_report(SyncReport([report])).splitlines() == [
+            "push tab 'T' (preview)",
+            "  problems (1), so nothing is written:",
+            "    bad",
+            "  warnings (2):",
+            "    look\\x1b[2J",
+            "    again",
+        ]
+        quiet = TabReport(tab="T", mode="sync", plan=MergePlan(), warnings=["look"])
+        assert quiet.exit_code == 0 and not quiet.failed
+        assert format_report(SyncReport([quiet])).splitlines() == [
+            "sync tab 'T' (preview)",
+            "  warnings (1):",
+            "    look",
+            "  in sync: nothing to write",
+        ]
 
 
 class TestPushPartialKeys:
