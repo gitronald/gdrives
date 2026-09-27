@@ -136,6 +136,24 @@ class TestAWaitIsAnnounced:
         assert result.exit_code == 0
         assert result.stderr == self.LINE + "Spreadsheet ID: SHEET\n"
 
+    def test_on_a_command_that_takes_no_config(self, env):
+        result = env.invoke("sheets-widths", "SHEET")
+        assert result.exit_code == 0
+        assert result.stderr == "Spreadsheet ID: SHEET\n" + self.LINE
+        assert env.writes() == []
+
+    def test_before_the_notice_of_a_retried_call(self, env, monkeypatch):
+        monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("gdrives.sheets.retry.random.random", lambda: 0.0)
+        env.grid.fail("values.get", http_error(429, "rate limited"))
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert result.stderr == (
+            "Spreadsheet ID: SHEET\n"
+            + self.LINE
+            + "Sheets API returned 429; retrying in 1s (attempt 2 of 5)\n"
+        )
+
 
 class TestSheetsSync:
     def test_a_preview_in_sync_exits_0_read_only_and_silent(self, env):
