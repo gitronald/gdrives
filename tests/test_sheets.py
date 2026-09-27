@@ -842,6 +842,7 @@ SUBMODULES = (
     "commands",
     "files",
     "match",
+    "merge",
     "retry",
     "rules",
     "table",

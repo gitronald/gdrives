@@ -18,6 +18,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``table``: ``read_tab``, a whole tab as header-named, keyed records
+- ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -59,6 +60,17 @@ from gdrives.sheets.files import (
     write_values_csv,
 )
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
+from gdrives.sheets.merge import (
+    OVERRIDE_REASONS,
+    ROW_FLAGS,
+    SIDES,
+    Cell,
+    MergePlan,
+    NewRow,
+    Override,
+    RowFlag,
+    merge,
+)
 from gdrives.sheets.retry import IDEMPOTENT_STATUSES, RATE_LIMIT_STATUSES, with_retry
 from gdrives.sheets.rules import (
     add_conditional_rule,
@@ -94,16 +106,24 @@ from gdrives.sheets.values import (
 
 __all__ = [
     "COLUMN_TYPES",
+    "Cell",
     "ColumnSchema",
     "FORMATTED_STRING",
     "FORMATTED_VALUE",
     "FORMULA",
     "IDEMPOTENT_STATUSES",
+    "MergePlan",
+    "NewRow",
+    "OVERRIDE_REASONS",
+    "Override",
     "Problem",
     "RATE_LIMIT_STATUSES",
     "RAW",
+    "ROW_FLAGS",
     "Records",
+    "RowFlag",
     "SERIAL_NUMBER",
+    "SIDES",
     "Table",
     "UNFORMATTED_VALUE",
     "USER_ENTERED",
@@ -130,6 +150,7 @@ __all__ = [
     "index_rows",
     "list_conditional_rules",
     "list_tabs",
+    "merge",
     "normalize_key",
     "parse_pairs",
     "problems",
