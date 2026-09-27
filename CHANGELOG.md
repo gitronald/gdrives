@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `insert_point` in `gdrives.sheets` returns the spreadsheet row a merge plan's new rows go above, for a table and an `insert_above` pair. It is pure, and `apply_plan` and the sync preview both use it. `TabReport.insert_row` and `TabReport.last_row` hold the result for a sync tab with `insert_above` and new rows, and the text report says where the rows go: `above row 5` or `after row 40` in a preview, and the rows written after an apply.
 - `place_columns` adds each column a header lacks at its place in a wanted order, in one request, and returns the columns added. `add_columns` takes `after=` to add columns directly after a named column.
 - A `newline` tab field in `gdrives-sheets.json`, `lf` (the default) or `crlf`, sets the line ending of a tab's `.csv` or `.tsv` local file and of its base. `write_records` and `write_values_csv` take `newline=`.
+- `encode_rows` and `decode_rows` in `gdrives.sheets` turn rows of typed values into records of canonical cell strings and back, for rows that never touch a file. `encode_rows` refuses a nested value and a column outside `columns`, and `decode_rows` lists every cell that does not parse as its declared type, each by row position and column.
+- A column type can be declared by its class as well as its name: `from_cell`, `decode_rows`, and `write_records(types=)` take `str`, `int`, `float`, `bool`, `date`, and `datetime`. `column_type` returns the name for a name or a class, and `ColumnSchema.of` builds a schema from either. `ColumnSchema.type` still holds the name, and the config file takes names only.
+- `read_tab` takes `types=`, and `parse_tab` takes `types=` and `serials=`. `pull_serials` reads a tab's declared date columns as serial numbers in one request, and `serial_to_cell` converts a serial to the ISO 8601 cell string of a `date` or a `datetime`. `Table.types` records the declared types of the columns read.
 
 ### Changed
 
@@ -20,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Rows inserted with `insert_above` take the formatting of the row above them, not of the row they sit above. Directly below the header they still take the formatting of the row below.
 - Columns added by `--add-missing` (`add_missing`) land at their place in the projection, directly after the nearest earlier projection column the sheet has, not after the header's last column. Columns the sheet already has are not moved.
 - A sync preview refuses an `insert_above` column the tab lacks, as the apply already did.
+- A column that a tab's `schema` declares `date` or `datetime` is read from the sheet as ISO 8601 whatever the sheet displays, by a second read of the declared columns as serial numbers. A sync, its re-read guard and read-back, and a pull all read that way. A cell holding text is left as it is. A base that holds a date's display text where the serial gives another value, such as a date-time whose format hides its milliseconds, reports that cell as a sheet edit on the first run and folds the ISO value in. A tab with no declared date column is read once, as before.
+- `write_records` lists every cell of a `.json` file that does not parse as its declared type, each by row position and column, where it raised on the first one. The message still starts with the path. An unknown type in `types` is refused whatever the rows hold.
 
 ## [0.11.0] - 2026-09-27
 
