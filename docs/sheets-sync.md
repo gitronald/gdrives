@@ -112,6 +112,7 @@ to keep in step with local files:
 |---|---|---|
 | `local` | all (required) | The local file. Its extension picks the format: `.csv`, `.tsv`, or `.json` |
 | `mode` | all | `sync` (the default), `pull`, or `push` |
+| `sheet_id` | all | The tab's `sheetId`, a whole number. The tab is then found by it, under whatever title it has on the sheet. See [a tab named by its sheetId](#a-tab-named-by-its-sheetid) |
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
@@ -135,6 +136,27 @@ owned columns outside `columns`, a column both `local_owned` and
 `USER_ENTERED` on a target with a `sync` tab, and two tabs that would write the
 same file (a local file or a base file, compared case-insensitively, across
 the whole config).
+
+### A tab named by its sheetId
+
+A config's tabs are keyed by title, so a tab renamed on the sheet stops a run.
+For some sheets the title is incidental, such as the tab a form writes its
+responses to, and the tab's `sheetId` is what stays the same. It is the
+number after `gid=` in the tab's URL.
+
+```json
+"Responses": {"mode": "pull", "local": "data/responses.csv", "sheet_id": 1234567890}
+```
+
+- The tab is found by its `sheet_id`, and the title it has on the sheet is
+  used in every request. When that title differs from the config's, the
+  report says so: `renamed on the sheet: 'Responses' is now 'Form responses 1'`.
+- The config's title still names the tab in reports, names the base file, and
+  is what `--tab` selects. The config is not rewritten.
+- A `sheet_id` the spreadsheet lacks is an error for the tab. The run never
+  falls back to the title, which another tab may have taken, and never
+  creates the tab.
+- Two tabs of one target with the same `sheet_id` are a config error.
 
 Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
@@ -432,7 +454,9 @@ separators and control characters replaced) plus the extension. `--skip TITLE`
 with a tab but is produced elsewhere. A `--skip` title the spreadsheet lacks,
 and two tabs whose file names collide, are refused before any values are
 read. A tab with no values or no header row is skipped and reported, never
-written as an empty file.
+written as an empty file. `--bom` starts each `.csv` or `.tsv` file with a
+byte-order mark, and `--slug` names each file by a slug of its title. A title
+with no letter or digit has no slug, which is an error for that tab.
 
 ## Links
 
@@ -599,6 +623,7 @@ gdrives sheets-sync roster --apply --prefer local  # Resolve conflicts toward lo
 gdrives sheets-pull roster --apply                 # Replace local files for the pull tabs
 gdrives sheets-push roster --apply                 # Replace the push tabs from local files
 gdrives sheets-pull <spreadsheet-id> --all-tabs -o out/  # One-off dump, no config
+gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSON for the config
 ```
 
 | Option | Commands | Meaning |
@@ -615,15 +640,48 @@ gdrives sheets-pull <spreadsheet-id> --all-tabs -o out/  # One-off dump, no conf
 | `-o`, `--output DIR` | `sheets-pull` | The directory for `--all-tabs` files |
 | `--skip TITLE` | `sheets-pull` | With `--all-tabs`, leave this tab out; repeat for several |
 | `--format csv\|tsv\|json` | `sheets-pull` | With `--all-tabs`, the file format. Default `csv` |
+| `--bom` | `sheets-pull` | With `--all-tabs`, start each `.csv` or `.tsv` file with a byte-order mark. Not with `--format json` |
+| `--slug` | `sheets-pull` | With `--all-tabs`, name each file by its title in lower case, with each run of other characters than letters and digits as one hyphen: `Form responses 1` is `form-responses-1` |
 
 Refused before any request, with exit code 1: an unknown target, a `--tab`
 the target lacks or that belongs to another mode (all of them listed at once),
 a target with no tabs of the command's mode, `--all-tabs` combined with
-`--tab` or `--config`, `--all-tabs` without `-o`, and `-o`, `--skip`, or
-`--format` without `--all-tabs`.
+`--tab` or `--config`, `--all-tabs` without `-o`, `--bom` with
+`--format json`, and `-o`, `--skip`, `--format`, `--bom`, or `--slug` without
+`--all-tabs`.
 
-The report goes to stdout. The spreadsheet ID, the credential line, and error
-messages go to stderr.
+The report goes to stdout. The spreadsheet ID, the credential line, retry
+notices, and error messages go to stderr.
+
+**`sheets-widths`** prints a tab's column widths in pixels as a JSON object
+by header name, ready to paste under the tab's `widths`. It takes a Sheet
+URL, file ID, or Drive path, reads the first tab unless `--tab` names one,
+and uses the read-only scope. A column with a blank header cell is left out.
+
+```bash
+gdrives sheets-widths <spreadsheet-id> --tab Members
+```
+
+```json
+{
+  "member_id": 90,
+  "name": 220,
+  "notes": 320
+}
+```
+
+**Retries.** A request the API refuses for its rate limit, or fails with a
+5xx where repeating it is safe, is sent again after a wait that doubles each
+time, up to five attempts. Each wait is announced on stderr, so a run that
+backs off does not look hung:
+
+```
+Sheets API returned 429; retrying in 4s (attempt 3 of 5)
+```
+
+**Requests.** A run lists the spreadsheet's tabs once, and reads each tab's
+values once: a preview of five tabs makes one listing and five reads. A tab
+with a declared `date` or `datetime` column is read a second time.
 
 Tabs are independent: a tab that fails (a refusal, an API error, a failed
 guard or read-back) is reported with its error, and the run goes on to the next

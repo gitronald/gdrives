@@ -782,6 +782,44 @@ def test_sync_places_a_new_row_and_a_new_column(seeded, shared_tab, tmp_path):
     assert fills == [None, None, None, None, GREY, GREY]
 
 
+def test_sync_finds_a_renamed_tab_by_its_sheet_id(seeded, shared_tab, tmp_path):
+    header = ["id", "v"]
+    service, sid, name = seeded([header, ["a", "1"]])
+    renamed = f"{name}_renamed"
+    rename = {
+        "updateSheetProperties": {
+            "properties": {"sheetId": shared_tab.sheet_id, "title": renamed},
+            "fields": "title",
+        }
+    }
+    _patiently(service, sid, {"requests": [rename]})
+    # The tests after this one reach the tab under the title it has now.
+    shared_tab.name = renamed
+
+    target = _target(
+        tmp_path,
+        sid,
+        name,
+        {"local": "rows.csv", "key": ["id"], "sheet_id": shared_tab.sheet_id},
+    )
+    tab = target.tabs[0]
+    sheets.write_records(target.base_path(tab), header, [{"id": "a", "v": "1"}])
+    sheets.write_records(
+        local_file(tab), header, [{"id": "a", "v": "2"}, {"id": "b", "v": "3"}]
+    )
+    report = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert report.exit_code == 0, sheets.format_report(report)
+    (done,) = report.tabs
+    assert done.tab == name
+    assert done.notes == [f"renamed on the sheet: {name!r} is now {renamed!r}"]
+    assert target.base_path(tab).name == f"{name}.csv"
+    assert sheets.pull_values(service, sid, f"'{renamed}'") == [
+        header,
+        ["a", "2"],
+        ["b", "3"],
+    ]
+
+
 def test_push_with_clear_links_leaves_no_link(tab, shared_tab):
     # What the fake's link rule rests on: a whole-cell URL or domain is linked
     # when it is written, under RAW input; a link on part of a cell's text is

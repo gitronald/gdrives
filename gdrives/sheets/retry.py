@@ -15,7 +15,7 @@ the wrappers' own included.
 
 import random
 import time
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -56,7 +56,7 @@ _notices: ContextVar[OnRetry | None] = ContextVar("gdrives_retry_notices", defau
 
 
 @contextmanager
-def retry_notices(callback: OnRetry) -> Iterator[None]:
+def retry_notices(callback: OnRetry) -> Generator[None, None, None]:
     """Tell ``callback`` of every wait of a :func:`with_retry` inside the block.
 
     The value wrappers call :func:`with_retry` themselves, so a caller cannot
