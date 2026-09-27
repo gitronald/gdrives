@@ -61,19 +61,25 @@ def _cli_errors() -> Generator[None, None, None]:
 
     One seam so every command surfaces 'Error: ...' + exit 1 instead of a raw
     traceback, and a new command can't forget to handle HttpError or OSError.
+    It is also where every command starts announcing its credentials: an
+    authentication about to wait on a consent or a token refresh says so on
+    stderr first (see gdrives.auth.announcing_credentials).
     """
     from google.auth.exceptions import GoogleAuthError
     from googleapiclient.errors import HttpError
     from httplib2 import HttpLib2Error
     from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
+    from gdrives.auth import ConsentError, announcing_credentials
     from gdrives.download import DownloadError
     from gdrives.files import IncompleteSearchError
     from gdrives.resolve import DrivePathError
 
     try:
-        yield
+        with announcing_credentials():
+            yield
     except (
+        ConsentError,
         DrivePathError,
         DownloadError,
         IncompleteSearchError,
@@ -241,6 +247,53 @@ def show_drives():
                 f"{printable(d['name'])} ({d['id']})"
             )
         print(f"\nSaved to {CACHE_PATH}", file=sys.stderr)
+
+
+@app.command()
+def login(
+    scope: Annotated[
+        Literal["read", "sheets", "docs", "drive"],
+        typer.Option(
+            "--scope",
+            help="Access to grant: read (every read command), sheets (the "
+            "sheets-* write commands), docs (the docs-* write commands), or "
+            "drive (mv)",
+        ),
+    ] = "read",
+    timeout: Annotated[
+        int,
+        typer.Option("--timeout", min=1, help="Seconds to wait for the consent"),
+    ] = 300,
+):
+    """Grant OAuth access in a browser, with or without a terminal attached.
+
+    Prints the consent URL, waits for the browser to come back, and caches the
+    token the other commands then use. Nothing is asked when a cached token
+    already serves the scope. Also the way to grant again after a token's
+    refresh has failed. Exits 1, with every token file untouched, when
+    --timeout runs out, and when the token of a consent could not be saved.
+    """
+    from gdrives.auth import (
+        LOGIN_SCOPES,
+        ConsentError,
+        announce_credentials,
+        authenticate_oauth,
+        describe_credentials,
+    )
+
+    with _cli_errors():
+        scopes = LOGIN_SCOPES[scope]
+        announce_credentials(scopes, force=True)
+        authenticate_oauth(scopes, force=True, timeout=timeout)
+        # What the next command will find, read back from the token files: a
+        # consent whose token was not saved has granted nothing that lasts.
+        info = describe_credentials(scopes)
+        if info.kind != "oauth" or info.consent:
+            raise ConsentError(
+                "the consent finished, but its token was not saved, so the "
+                "next command would ask again"
+            )
+        print(f"Credential: {info}", file=sys.stderr)
 
 
 # A spreadsheet target accepted by every sheets command: a Sheet URL, a bare
