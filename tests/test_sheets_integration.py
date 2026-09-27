@@ -17,14 +17,18 @@ repo. Set it to a throwaway sheet:
 
     export GDRIVES_TEST_SPREADSHEET_ID=<id of a sheet shared with the SA>
 
-Each test gets a fresh, uniquely-named tab that is created before and deleted
-after it, so runs never collide with each other or leave state behind — the
-spreadsheet's other tabs are never read or modified. Select or skip the suite
-with ``-m integration`` / ``-m "not integration"``.
+The module shares one uniquely-named temporary tab, created before its first
+test and deleted after its last, and emptied between tests, so every test
+starts from a blank tab and runs never collide with each other or leave state
+behind — the spreadsheet's other tabs are never read or modified. One tab for
+the module, in place of one per test, keeps the suite's write requests under
+the API's quota of 60 per minute. Select or skip the suite with
+``-m integration`` / ``-m "not integration"``.
 """
 
 import os
 import uuid
+from dataclasses import dataclass
 
 import pytest
 
@@ -64,18 +68,23 @@ def live_service():
     return service, sid
 
 
-def _patiently(requests, service, sid):
-    """Send structural ``requests``, waiting out the per-minute write quota.
+#: The grid a tab is created with, which the reset restores.
+DEFAULT_ROWS = 1000
+DEFAULT_COLUMNS = 26
 
-    The fixture's own calls must not give up while the quota is exhausted: a
-    ``deleteSheet`` that fails in teardown leaves its temporary tab behind on
+
+def _patiently(service, sid, body, fields=None):
+    """Send a structural ``batchUpdate``, waiting out the per-minute write quota.
+
+    The fixtures' own calls must not give up while the quota is exhausted: a
+    ``deleteSheet`` that fails in teardown leaves the temporary tab behind on
     the shared spreadsheet. The quota resets each minute, so the waits here
     (5, 10, 20, 32, and 32 seconds) outlast it.
     """
     return with_retry(
         lambda: (
             service.spreadsheets()
-            .batchUpdate(spreadsheetId=sid, body={"requests": requests})
+            .batchUpdate(spreadsheetId=sid, body=body, fields=fields)
             .execute()
         ),
         statuses=RATE_LIMIT_STATUSES,
@@ -84,21 +93,86 @@ def _patiently(requests, service, sid):
     )
 
 
-@pytest.fixture
-def tab(live_service):
-    """Yield (service, spreadsheet_id, tab_name) for a fresh, empty tab.
+@dataclass
+class _SharedTab:
+    """The module's temporary tab, and whether a test has had it yet."""
 
-    Creates a uniquely-named tab and deletes it afterward, so each test starts
-    from a blank slate and leaves nothing behind even if it writes.
-    """
+    name: str
+    sheet_id: int
+    used: bool = False
+
+
+@pytest.fixture(scope="module")
+def shared_tab(live_service):
+    """Add the module's temporary tab, and delete it after the last test."""
     service, sid = live_service
     name = "itest_" + uuid.uuid4().hex[:8]
-    added = _patiently([{"addSheet": {"properties": {"title": name}}}], service, sid)
+    added = _patiently(
+        service, sid, {"requests": [{"addSheet": {"properties": {"title": name}}}]}
+    )
     sheet_id = added["replies"][0]["addSheet"]["properties"]["sheetId"]
     try:
-        yield service, sid, name
+        yield _SharedTab(name, sheet_id)
     finally:
-        _patiently([{"deleteSheet": {"sheetId": sheet_id}}], service, sid)
+        _patiently(service, sid, {"requests": [{"deleteSheet": {"sheetId": sheet_id}}]})
+
+
+def _reset(service, sid, sheet_id):
+    """Return the temporary tab to the state ``addSheet`` left it in.
+
+    One write restores the grid's size and clears every cell's value, format,
+    and the rest of its data. Its response carries the tab's conditional format
+    rules, which no request removes in bulk, so a second write follows only
+    when a test left rules behind. A test that changes anything else about the
+    tab (a column width, a merge, a filter) has to be undone here too.
+    """
+    response = _patiently(
+        service,
+        sid,
+        {
+            "requests": [
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "gridProperties": {
+                                "rowCount": DEFAULT_ROWS,
+                                "columnCount": DEFAULT_COLUMNS,
+                            },
+                        },
+                        "fields": "gridProperties(rowCount,columnCount)",
+                    }
+                },
+                {"updateCells": {"range": {"sheetId": sheet_id}, "fields": "*"}},
+            ],
+            "includeSpreadsheetInResponse": True,
+        },
+        fields="updatedSpreadsheet.sheets(properties.sheetId,conditionalFormats)",
+    )
+    (sheet,) = [
+        s
+        for s in response["updatedSpreadsheet"]["sheets"]
+        if s["properties"]["sheetId"] == sheet_id
+    ]
+    rules = sheet.get("conditionalFormats", [])
+    if rules:
+        delete = {"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": 0}}
+        _patiently(service, sid, {"requests": [delete] * len(rules)})
+
+
+@pytest.fixture
+def tab(live_service, shared_tab):
+    """Yield (service, spreadsheet_id, tab_name) for the module's tab, emptied.
+
+    The first test gets the tab as it was created. Each later one gets it after
+    a reset, so a test starts from a blank slate whatever the one before it
+    wrote, and whether or not that one passed.
+    """
+    service, sid = live_service
+    if shared_tab.used:
+        _reset(service, sid, shared_tab.sheet_id)
+    shared_tab.used = True
+    return service, sid, shared_tab.name
 
 
 def test_list_tabs_includes_new_tab(tab):
@@ -170,7 +244,7 @@ def test_raw_stores_formula_literally(tab):
 
 
 def _seed(service, sid, name, rows):
-    """Write a header + data table into the fresh tab and return it."""
+    """Write a header + data table into the emptied tab and return it."""
     end = sheets.column_letter(len(rows[0]) - 1)
     sheets.update_values(service, sid, f"'{name}'!A1:{end}{len(rows)}", rows)
     return rows
@@ -229,12 +303,12 @@ def test_set_by_match_multiple_rows_refused_without_all(tab):
 
 
 def _rules_on(service, sid, name):
-    """The conditional format rules on the fresh tab only."""
+    """The conditional format rules on the temporary tab only."""
     return [r for r in sheets.list_conditional_rules(service, sid) if r["tab"] == name]
 
 
 def _row_count(service, sid, name):
-    """The fresh tab's current grid height."""
+    """The temporary tab's current grid height."""
     result = (
         service.spreadsheets()
         .get(spreadsheetId=sid, fields="sheets.properties(title,gridProperties)")
@@ -418,7 +492,7 @@ def test_add_then_delete_columns_by_name(tab):
 
 
 def _target(tmp_path, sid, name, tab):
-    """A config target ``roster`` with one tab: the fresh one, as ``tab`` says."""
+    """A config target ``roster`` with one tab: the temporary one, as ``tab`` says."""
     data = {"roster": {"spreadsheet": sid, "tabs": {name: tab}}}
     return sheets.parse_config(data, tmp_path / sheets.CONFIG_NAME).target("roster")
 

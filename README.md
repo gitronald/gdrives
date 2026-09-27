@@ -493,8 +493,9 @@ rather than fail when those aren't configured. A run that skips them ends with a
 
 5. Run `uv run pytest -m integration`.
 
-The tests leave your files as they found them. Each Sheets test adds its own
-temporary `itest_<hex>` tab and deletes it afterward. Each Docs test appends a
+The tests leave your files as they found them. The Sheets tests share one
+temporary `itest_<hex>` tab, which is added before the first test, emptied
+between tests, and deleted after the last. Each Docs test appends a
 uniquely tagged paragraph and removes it. The whole-body Docs writes, which would
 wipe a tab, run only on a temporary `itest_<hex>` tab that the test adds to the
 document and then deletes.
