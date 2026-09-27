@@ -1,6 +1,6 @@
 ---
-status: draft
-branch:
+status: active
+branch: feature/sheets-sync-adoption-g-tabs-and-tools
 ---
 
 # 007g — Name a tab by sheetId, list tabs once per run, and add the small tools
@@ -127,3 +127,75 @@ looks hung for 15 seconds or more.
 - `sheets-widths`, `--bom`, and `--slug` in the guide's command section, the README's
   command list, and the project `CLAUDE.md`.
 - Changelog: all of the above under Added; the request counts under Changed.
+
+## Log
+
+### 2026-09-27 — implemented
+
+Branch `feature/sheets-sync-adoption-g-tabs-and-tools`, cut from step f's branch, with
+a draft PR onto it.
+
+**Plan 008 had not merged into `dev`** when the step started: its PR was open. So the
+step went ahead on the umbrella's stack as it was, and whichever plan merges second
+resolves `commands.py` and `cli.py`. This step's edits there are `run_widths`, the
+`_noticed` decorator on every `run_*`, the two options of `run_pull`, and the
+`sheets-widths` command with `--bom` and `--slug` on `sheets-pull`.
+
+| Commit | Part |
+|---|---|
+| `ae279c0` | `TabListing`, `tab_listing`, `listing=` on the orchestration, and the `sheet_id` tab field |
+| `cd18d49` | `get_column_widths` and `sheets-widths`, `bom=` and `name=` on `pull_all_tabs` with `--bom` and `--slug`, `slug`, and `retry_notices` |
+| `bd375a5` | The guide, the README, the changelog, and the live case |
+
+Decisions made during the work:
+
+- **`run_target` reads the listing lazily, inside each tab's `try`.** A listing that
+  fails is reported for the tab that met it, and the next tab reads it again, so a run
+  still reports per tab. It reads the listing again after a tab that was created.
+- **`_restructure` reads a fresh listing only when it created the tab.** A run that
+  only adds or drops columns plans again with the listing it had.
+- **`ensure_tabs` takes `existing=`**, the titles a caller has just read, which is what
+  takes the third listing out of a sync that creates its tab.
+- **`push_rows` takes `sheet_id=` beside `title`.** Its checks run before any request,
+  and finding a tab by its id needs the listing, so the id is resolved after them.
+  `title` is then what the report calls the tab.
+- **`TabPlan.title` is the tab's title on the sheet**, which the structure steps, the
+  reads, and the widths use. `TabPlan.tab` stays the config's tab, so the base file
+  keeps the config's title.
+- **`get_column_widths` makes one read, not two.** The grid read of row 1 asks for
+  the header cells (`effectiveValue`) with the widths, so no values read is needed
+  for the header.
+- **A retry is told to the callback as a `RetryNotice`**: the status, the delay, the
+  attempt that follows, and the most attempts, which the printed line needs for
+  `attempt 3 of 5`. The design gave the callback three values.
+- **A title with no slug is an error for its tab**, reported in the run's report, and
+  the other tabs are written. The collision check covers the titles that mapped.
+- **`sheet_id` takes a whole number from 0**, since the first tab of a spreadsheet has
+  the id 0.
+
+**Seen and left.** The conditional format rules (`rules.py`) do not go through
+`with_retry`, so `sheets-rules`, `sheets-add-rule`, and `sheets-delete-rule` run inside
+`retry_notices` and have no retry to announce. It is as 0.11.0 has it.
+
+**The request counts that dropped**, pinned in `TestRequestBudget`:
+
+| Run | Listings before | After |
+|---|---|---|
+| A preview of N tabs of one mode | N | 1 |
+| A sync that creates its tab | 3, with 2 reads of the grid size | 2, with the same 2 |
+| A run of three push tabs that creates the second | 3, with 1 read of the grid size | 2, with the same 1 |
+
+**Live suite.** One case: the temporary tab is renamed and synced by its `sheet_id`.
+The tests after it reach the tab under its new title. One run of the whole suite, by
+the orchestrating session, after the case had passed by itself:
+
+| | Writes | Reads |
+|---|---|---|
+| Before this step | 74 | 93 |
+| The new case | 5 | 6 |
+| Reads the single listing took out of two sync cases | | -2 |
+| After | 79 | 97 |
+
+25 passed in 76 seconds. 3 reads were refused on the quota and sent again, which the
+counts above leave out. The live suite runs one tab at a time, so the listing saves
+it little: the saving is one read per tab after the first of a run.
