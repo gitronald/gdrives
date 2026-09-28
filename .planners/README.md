@@ -2,8 +2,8 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | active | — | — |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
-| 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 018 | [Close the remaining gaps that keep a downstream sync off gdrives.sheets](plans/018-downstream-adoption-gaps/plan.md) | done | 2026-09-27 20:12 PT | [#59](https://github.com/gitronald/gdrives/pull/59) |
 | 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | done | 2026-09-27 16:51 PT | [#56](https://github.com/gitronald/gdrives/pull/56) |
