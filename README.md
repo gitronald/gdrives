@@ -387,7 +387,9 @@ tab an `entry` of its `.json` `local` file, and a target's `base_file` keeps
 every sync tab's base as an entry of one `.json` file instead of one CSV per
 tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
 `render: "formatted"` reads every cell as the sheet displays it, for local
-files that hold the displayed text.
+files that hold the displayed text. A tab's `strict_schema` makes it a problem
+for a column of either side to have no `schema` entry, so a column added later
+does not silently sync as text.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an

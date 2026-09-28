@@ -84,6 +84,7 @@ _TAB_FIELDS = frozenset(
         "sheet_id",
         "entry",
         "link_urls",
+        "strict_schema",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -146,6 +147,11 @@ class TabConfig:
     link to its own text in that colour, not underlined
     (:func:`~gdrives.sheets.structure.set_url_links`). It contradicts
     ``clear_links``.
+    ``strict_schema`` makes it a problem for a column of either side, less one
+    a run is dropping, to have no ``schema`` entry: a carried local column and
+    a sheet column outside the projection are checked too, not just the
+    projection. With it, ``schema`` may also name a column outside
+    ``columns``, which is refused otherwise.
     """
 
     title: str
@@ -168,6 +174,7 @@ class TabConfig:
     render: str = "unformatted"
     clear_links: bool = False
     sheet_id: int | None = None
+    strict_schema: bool = False
     store: Store | None = None
     entry: str | None = None
     link_urls: str | None = None
@@ -639,7 +646,11 @@ class _Checker:
             problems.append(
                 f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
             )
-        schema = self._schema(where, raw.get("schema", {}), columns)
+        strict_schema = raw.get("strict_schema", False)
+        if not isinstance(strict_schema, bool):
+            problems.append(f"{where}: 'strict_schema' must be true or false")
+            strict_schema = False
+        schema = self._schema(where, raw.get("schema", {}), columns, strict_schema)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
         for what, names in (
@@ -679,6 +690,7 @@ class _Checker:
             sheet_id=sheet_id,
             entry=entry,
             link_urls=link_urls,
+            strict_schema=bool(strict_schema),
         )
 
     def _link_urls(self, where: str, raw: Mapping[str, Any]) -> str | None:
@@ -786,7 +798,11 @@ class _Checker:
             )
 
     def _schema(
-        self, where: str, raw: Any, columns: Sequence[str] | None
+        self,
+        where: str,
+        raw: Any,
+        columns: Sequence[str] | None,
+        strict_schema: bool = False,
     ) -> dict[str, ColumnSchema]:
         problems = self.problems
         if not isinstance(raw, dict):
@@ -829,7 +845,8 @@ class _Checker:
                     required=bool(required),
                     allowed=tuple(allowed) if allowed is not None else None,
                 )
-        self._outside(where, "schema", list(raw), columns)
+        if not strict_schema:
+            self._outside(where, "schema", list(raw), columns)
         return schema
 
     def _insert_above(

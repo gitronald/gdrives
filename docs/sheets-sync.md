@@ -136,6 +136,7 @@ to keep in step with local files:
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
+| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
 
 The loader checks the whole file before any request is made and reports every
 problem at once: unknown fields, a missing or empty key on a `sync` tab, key or
@@ -272,6 +273,41 @@ sheet is corrected.
   have been folded.
 - A pull has no such option. It replaces the whole file, and refuses a tab
   with any problem.
+
+### Requiring every column to be declared
+
+A column with no `schema` entry is read and written as `str`. For a column
+meant to hold a number or a date, that is a silent failure: a new column
+added locally syncs as text until someone notices.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "paid": {"type": "bool"}},
+  "strict_schema": true
+}
+```
+
+`strict_schema: true` makes it a problem for a column of either side, less
+one a run is dropping, to have no `schema` entry:
+
+- The local file's columns, in and out of the projection (a carried column
+  included), are checked at the `local` stage, before any request. A `sync`
+  or a `push` with such a column is refused before the sheet is even read.
+- The sheet's named header columns outside the projection are checked at the
+  `sheet` stage, once the tab is read: for a `sync`, once the merge is done
+  and before anything is written; for a `pull`, before the local file is
+  written. A `sync`'s local-side check runs first, so a column both sides
+  carry is reported once, at the `local` stage.
+- A column a `sync` run drops with `--drop-extra` is not checked, since it
+  will not be on the sheet after the run. A `pull`'s `exclude` names a column
+  that is never read, and is not checked either.
+- A key column needs an entry too, one line (`"member_id": {}`, `str` is the
+  default): a key has a type as much as any other column does.
+
+With `strict_schema`, `schema` may also name a column outside `columns`,
+which is refused otherwise: a carried or excluded column has to be declared
+somewhere.
 
 ### Ownership
 
