@@ -2,6 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 018 | [Close the remaining gaps that keep a downstream sync off gdrives.sheets](plans/018-downstream-adoption-gaps/plan.md) | draft | — | — |
 | 017 | [List and download a file's Drive revisions, read-only](plans/017-drive-revisions/plan.md) | draft | — | — |
 | 016 | [Make Target.base optional when every tab has a base store](plans/016-optional-target-base/plan.md) | draft | — | — |
 | 015 | [Refuse projection columns the schema does not declare](plans/015-strict-schema/plan.md) | draft | — | — |
