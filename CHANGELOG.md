@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-28
+
 ### Added
 
 - A `typed_writes` tab field for `sync` and `push` tabs, and `TabConfig.typed_writes`: each column the `schema` declares `int`, `float`, `bool`, `date`, or `datetime`, less the key, is written to the sheet as a value of that type instead of as text, so the sheet can sort, filter, and compute over it. A key column is always written as text, since `007` would come back `7`. A date is written as its serial number, and a date cell written that has no date or time format is given `yyyy-mm-dd` (`yyyy-mm-dd hh:mm:ss` for a `datetime`), while one with its own format keeps it, at the cost of a grid read of the date columns. A sync sends its pushed cells, its new rows, and the date formats in one `spreadsheets.batchUpdate`, and a push writes the whole tab in one `updateCells`. The read-back compares a typed column by value, so `3.0` written reads back `3` and matches. It is refused together with `render: "formatted"` and a target's `input_option: USER_ENTERED`, and a value the sheet cannot hold exactly (an `int` past 2^53, a `float` that is not finite, a `datetime` with a time zone or finer than a millisecond) is refused before any request. A tab that does not set it sends the requests it sent before. `apply_plan`, `verify`, and `push_rows` take `typed_writes=`; `gdrives.sheets` adds `cell_data`, `to_serial`, `DATE_FORMATS`, `NUMBER_FORMAT_FIELD`, `typed_columns`, `dated_cells`, and `format_requests`.
