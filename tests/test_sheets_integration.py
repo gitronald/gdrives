@@ -883,3 +883,49 @@ def test_push_that_shrinks_the_tab_clears_the_old_cells(seeded, tmp_path):
         ["total", "count"],
         ["a", "9"],
     ]
+
+
+def test_reorder_moves_whole_rows(seeded, shared_tab):
+    # What the fake's moveDimension rests on: the destination is counted
+    # before the row is taken out, a row takes its format and every column
+    # with it (the unnamed column C is never read into a record), and a blank
+    # row keeps its place. c crosses the blank row down, a moves up past it.
+    service, sid, name = seeded(
+        [
+            ["id", "name", "", "note"],
+            ["c", "Cy", "gap c", "third"],
+            ["b", "Bo", "", "second"],
+            ["", "", "", ""],
+            ["a", "Ada", "gap a", "first"],
+        ]
+    )
+    grey = {
+        "repeatCell": {
+            "range": {
+                "sheetId": shared_tab.sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 2,
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+            "cell": {"userEnteredFormat": {"backgroundColor": GREY}},
+            "fields": "userEnteredFormat.backgroundColor",
+        }
+    }
+    _patiently(service, sid, {"requests": [grey]})
+
+    result = sheets.reorder_rows(
+        service, sid, name, ["id"], ["a", "b", "c"], apply=True
+    )
+    assert result == sheets.ReorderResult(
+        moves=2, moved=[("a",), ("c",)], unchanged=False, applied=True
+    )
+    values, fills = _values_and_fills(service, sid, name, "A1:D5")
+    assert values == [
+        ["id", "name", "", "note"],
+        ["a", "Ada", "gap a", "first"],
+        ["b", "Bo", "", "second"],
+        [],
+        ["c", "Cy", "gap c", "third"],
+    ]
+    assert fills == [None, None, None, None, GREY]
