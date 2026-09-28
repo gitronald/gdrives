@@ -1,8 +1,8 @@
 ---
 id: 18
 slug: downstream-adoption-gaps
-status: draft
-branch:
+status: active
+branch: feature/downstream-adoption-gaps
 created: 2026-09-27T17:04:20-07:00
 concluded:
 pr:
