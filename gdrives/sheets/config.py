@@ -80,6 +80,7 @@ _TAB_FIELDS = frozenset(
         "on_invalid",
         "clear_links",
         "sheet_id",
+        "strict_schema",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -134,6 +135,11 @@ class TabConfig:
     the tab by its ``sheetId``, which a rename leaves as it is: the tab is
     then found by it, and ``title`` is what reports and the base file call
     the tab.
+    ``strict_schema`` makes it a problem for a column of either side, less one
+    a run is dropping, to have no ``schema`` entry: a carried local column and
+    a sheet column outside the projection are checked too, not just the
+    projection. With it, ``schema`` may also name a column outside
+    ``columns``, which is refused otherwise.
     """
 
     title: str
@@ -155,6 +161,7 @@ class TabConfig:
     on_invalid: str = "refuse"
     clear_links: bool = False
     sheet_id: int | None = None
+    strict_schema: bool = False
     store: Store | None = None
 
     def __post_init__(self) -> None:
@@ -521,7 +528,11 @@ class _Checker:
                 f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
                 f"not {on_invalid!r}"
             )
-        schema = self._schema(where, raw.get("schema", {}), columns)
+        strict_schema = raw.get("strict_schema", False)
+        if not isinstance(strict_schema, bool):
+            problems.append(f"{where}: 'strict_schema' must be true or false")
+            strict_schema = False
+        schema = self._schema(where, raw.get("schema", {}), columns, strict_schema)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
         for what, names in (
@@ -558,6 +569,7 @@ class _Checker:
             on_invalid=str(on_invalid),
             clear_links=bool(clear_links),
             sheet_id=sheet_id,
+            strict_schema=bool(strict_schema),
         )
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:
@@ -630,7 +642,11 @@ class _Checker:
             )
 
     def _schema(
-        self, where: str, raw: Any, columns: Sequence[str] | None
+        self,
+        where: str,
+        raw: Any,
+        columns: Sequence[str] | None,
+        strict_schema: bool = False,
     ) -> dict[str, ColumnSchema]:
         problems = self.problems
         if not isinstance(raw, dict):
@@ -673,7 +689,8 @@ class _Checker:
                     required=bool(required),
                     allowed=tuple(allowed) if allowed is not None else None,
                 )
-        self._outside(where, "schema", list(raw), columns)
+        if not strict_schema:
+            self._outside(where, "schema", list(raw), columns)
         return schema
 
     def _insert_above(

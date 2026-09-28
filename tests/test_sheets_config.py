@@ -874,3 +874,42 @@ class TestLoad:
         path = self.write(tmp_path, {})
         with pytest.raises(ConfigError, match=f"^{path}: 1 problem"):
             load_config(path)
+
+
+class TestStrictSchema:
+    @pytest.mark.parametrize("mode", ["sync", "push", "pull"])
+    def test_accepted_on_every_mode(self, mode):
+        tab = {"mode": mode, "local": "m.csv", "strict_schema": True}
+        if mode == "sync":
+            tab["key"] = ["id"]
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].strict_schema is True
+
+    def test_defaults_to_false(self):
+        target = parse_config(config({"Members": members()}), PATH).target("roster")
+        assert target.tabs[0].strict_schema is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(strict_schema="yes")}),
+            "target 'roster', tab 'Members': 'strict_schema' must be true or false",
+        )
+
+    def test_a_schema_column_outside_columns_is_accepted(self):
+        data = config(
+            {
+                "Members": members(
+                    columns=["id"],
+                    schema={"id": {}, "a": {}},
+                    strict_schema=True,
+                )
+            }
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert set(tab.schema) == {"id", "a"}
+
+    def test_a_schema_column_outside_columns_is_refused_without_it(self):
+        refused(
+            config({"Members": members(columns=["id"], schema={"id": {}, "a": {}})}),
+            "target 'roster', tab 'Members': schema column(s) ['a'] not in 'columns'",
+        )
