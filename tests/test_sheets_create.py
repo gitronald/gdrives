@@ -238,6 +238,13 @@ class TestRunCreate:
             run_create("Roster", folder_id="F")
         assert drive.named("create") == []
 
+    def test_a_folder_in_the_trash_is_refused(self, monkeypatch):
+        drive = FakeDriveFiles([{**folder(), "trashed": True}])
+        patch_drive_service(monkeypatch, drive)
+        with pytest.raises(ValueError, match=r"'reports' \(D\) is in the trash"):
+            run_create("Roster", folder_id="D")
+        assert drive.named("create") == []
+
     def test_a_failure_naming_the_tabs_still_names_the_file(self, monkeypatch, capsys):
         drive = FakeDriveFiles([folder()])
         sheets = FakeSheetsService(

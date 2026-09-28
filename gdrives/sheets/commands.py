@@ -289,7 +289,7 @@ def run_create(
         build_drive_service,
         build_sheets_service,
     )
-    from gdrives.files import find_named, get_file_metadata, is_folder
+    from gdrives.files import find_named, get_folder
     from gdrives.resolve import resolve_path
 
     if not title.strip():
@@ -306,9 +306,7 @@ def run_create(
     if folder is not None:
         folder_id = resolve_path(folder, drive)
     # "root" is the alias of My Drive's root; the API answers with its real ID.
-    parent = get_file_metadata(drive, folder_id or "root")
-    if not is_folder(parent):
-        raise ValueError(f"'{parent['name']}' is not a folder")
+    parent = get_folder(drive, folder_id or "root")
 
     same = find_named(drive, parent["id"], title)
     if same:

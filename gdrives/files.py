@@ -207,6 +207,23 @@ def list_children(
     return sorted(items, key=_folders_first)
 
 
+def get_folder(service: Service, folder_id: str) -> DriveFile:
+    """Fetch the folder a write goes in, named by its ID.
+
+    Refuses what is not a folder, and a folder in the trash: a file written
+    there is one nobody sees. A folder found by its path needs no such check,
+    since a listing leaves out what is trashed.
+    """
+    folder = get_file_metadata(service, folder_id, fields="id, name, mimeType, trashed")
+    if not is_folder(folder):
+        raise ValueError(f"destination '{folder['name']}' is not a folder")
+    if folder.get("trashed"):
+        raise ValueError(
+            f"destination '{folder['name']}' ({folder['id']}) is in the trash"
+        )
+    return folder
+
+
 def _by_id(f: DriveFile) -> str:
     """Sort key: files.list promises no order, and a message lists the same one."""
     return f["id"]

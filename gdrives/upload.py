@@ -37,13 +37,14 @@ from gdrives.files import (
     file_url,
     find_named,
     get_file_metadata,
+    get_folder,
     is_folder,
     is_native,
 )
 from gdrives.local import printable
 
 # What a replace needs to know of its target, and what the read-back compares.
-UPLOAD_FIELDS = "id, name, mimeType, size, md5Checksum, webViewLink"
+UPLOAD_FIELDS = "id, name, mimeType, size, md5Checksum, webViewLink, trashed"
 
 # The type sent for a file whose extension names none.
 DEFAULT_MIME_TYPE = "application/octet-stream"
@@ -53,6 +54,14 @@ REPLACE = "replace"
 
 # Bytes hashed per read, so a large file is never held in memory whole.
 _CHUNK = 1024 * 1024
+
+# Bytes sent per request of a resumable upload, a multiple of the 256 KiB the
+# API asks for. A chunk that fails is sent again, so a smaller one costs less
+# to repeat than the client library's default of 100 MiB.
+UPLOAD_CHUNK = 8 * 1024 * 1024
+
+# Times a chunk is sent again, with backoff, after a 5xx or a dropped connection.
+UPLOAD_RETRIES = 5
 
 
 class UploadError(Exception):
@@ -136,14 +145,6 @@ def check_local(local: str) -> Path:
     return path
 
 
-def check_folder(service: Service, folder_id: str) -> DriveFile:
-    """Fetch the destination folder, refusing anything that is not one."""
-    folder = get_file_metadata(service, folder_id)
-    if not is_folder(folder):
-        raise ValueError(f"destination '{folder['name']}' is not a folder")
-    return folder
-
-
 def check_replaceable(target: DriveFile) -> None:
     """Refuse a target whose content an upload cannot replace."""
     if is_folder(target):
@@ -152,6 +153,12 @@ def check_replaceable(target: DriveFile) -> None:
         raise ValueError(
             f"'{target['name']}' ({target['id']}) is a Google-native file "
             f"({target['mimeType']}); an upload cannot replace its content"
+        )
+    # Reached by --file-id only: a listing leaves out what is trashed.
+    if target.get("trashed"):
+        raise ValueError(
+            f"'{target['name']}' ({target['id']}) is in the trash; restore it "
+            "before replacing its content"
         )
 
 
@@ -191,7 +198,7 @@ def plan_upload(
         check_replaceable(target)
         return UploadPlan(REPLACE, target["name"], None, target["id"], mime, size, md5)
 
-    folder = check_folder(service, str(folder_id))
+    folder = get_folder(service, str(folder_id))
     name = name or path.name
     matches = find_named(service, folder["id"], name, fields=UPLOAD_FIELDS)
     if len(matches) > 1:
@@ -222,22 +229,30 @@ def describe(plan: UploadPlan) -> str:
 
 
 def _send(request: Any) -> DriveFile:
-    """Run a resumable upload request to its end, chunk by chunk."""
+    """Run a resumable upload request to its end, chunk by chunk.
+
+    Each chunk is retried, which is what lets an upload outlive a dropped
+    connection: without it the first failure would end the run. A retry
+    repeats a request of the upload session and never starts a second file.
+    """
     response = None
     while response is None:
-        _, response = request.next_chunk()
+        _, response = request.next_chunk(num_retries=UPLOAD_RETRIES)
     return response
 
 
 def apply_upload(service: Service, path: Path, plan: UploadPlan) -> DriveFile:
     """Send the upload ``plan`` describes and return the file's metadata.
 
-    The upload is resumable, so a large file survives a dropped connection.
-    A replace sends no metadata: the file keeps its name and its parents.
+    The upload is resumable and each chunk is retried (:func:`_send`), so a
+    large file survives a dropped connection. A replace sends no metadata: the
+    file keeps its name and its parents.
     """
     from googleapiclient.http import MediaFileUpload
 
-    media = MediaFileUpload(str(path), mimetype=plan.mime_type, resumable=True)
+    media = MediaFileUpload(
+        str(path), mimetype=plan.mime_type, chunksize=UPLOAD_CHUNK, resumable=True
+    )
     kwargs: dict[str, Any] = {
         "media_body": media,
         "fields": UPLOAD_FIELDS,

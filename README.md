@@ -576,12 +576,16 @@ compare without regard to case, as they do when a path is resolved.
 - **A Doc, Sheet, or Slides file**: refused, since an upload cannot replace the
   content of a Google-native file.
 
+A file or a folder in the trash is refused when `--file-id` or `--dest-id`
+names it; a path never resolves to one.
+
 After the write, the file is read back and its size and MD5 checksum are
 compared with the local file's; a difference exits 1 and names the file. The
 file's URL is printed to stdout, and its ID and the operation to stderr. The
 MIME type is guessed from the local file's extension unless `--mime-type` sets
 it, and nothing is converted: an `.xlsx` stays an `.xlsx`. The upload is
-resumable. Nothing is deleted. Drive keeps the replaced content as a revision
+resumable, in chunks of 8 MiB, each sent again up to five times after a server
+error or a dropped connection. Nothing is deleted. Drive keeps the replaced content as a revision
 by default (see `gdrives revisions`), and the command pins none.
 
 `upload` needs the full `drive` scope, the one `mv` uses, cached in the same
@@ -625,7 +629,8 @@ title given and the others are added after it, in order, so nothing is deleted.
 Without `--tab` the tab is left as it is. Drive permits duplicate names, so a
 file of the same name in the folder is not an error: the command says so on
 stderr, with the ID of each, and creates the spreadsheet. `--dry-run` reports
-the same and creates nothing, on the read-only scope.
+the same and creates nothing, on the read-only scope. A `--folder-id` that
+names a folder in the trash is refused.
 
 The file is created through the Drive API, since the Sheets API creates in the
 root of My Drive only, so `sheets-create` needs the full `drive` scope, cached

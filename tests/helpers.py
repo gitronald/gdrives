@@ -1436,11 +1436,13 @@ class _DriveRequest:
     def __init__(self, run: Any) -> None:
         self._run = run
         self._chunks = 0
+        self.retries: list[int] = []
 
     def execute(self) -> dict[str, Any]:
         return self._run()
 
-    def next_chunk(self) -> tuple[Any, dict[str, Any] | None]:
+    def next_chunk(self, num_retries: int = 0) -> tuple[Any, dict[str, Any] | None]:
+        self.retries.append(num_retries)
         self._chunks += 1
         if self._chunks == 1:
             return object(), None
@@ -1453,12 +1455,15 @@ class FakeDriveFiles:
     ``files`` are dicts with ``id``, ``name``, ``mimeType``, and optionally
     ``parents`` and ``content`` (bytes). A response carries ``size`` and
     ``md5Checksum`` computed from the content, for a file that has any, and
-    never for a Google-native one. ``files.list`` answers the query
+    never for a Google-native one. A file in the trash has ``trashed`` set,
+    and ``files.list`` leaves it out. ``files.list`` answers the query
     ``'<id>' in parents [and name = '<name>'] and trashed = false``, names
     compared without regard to case, in ``pages`` of that many files.
     ``files.create`` and ``files.update`` take a ``media_body`` and store its
-    bytes; with ``corrupt`` set, the stored content loses its last byte, so a
-    read-back finds a file that is not the one sent. Every call is recorded
+    bytes, and each such request is kept in ``requests``, where ``retries``
+    holds the ``num_retries`` of each chunk; with ``corrupt`` set, the stored
+    content loses its last byte, so a read-back finds a file that is not the
+    one sent. Every call is recorded
     in ``calls``, and a request does nothing until it is executed. ``root``
     is the ID of the file the alias ``root`` names.
     """
@@ -1475,6 +1480,7 @@ class FakeDriveFiles:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.corrupt = False
         self.pages = pages
+        self.requests: list[_DriveRequest] = []
 
     def files(self) -> "FakeDriveFiles":
         return self
@@ -1490,6 +1496,12 @@ class FakeDriveFiles:
             shown["size"] = str(len(content))
             shown["md5Checksum"] = hashlib.md5(content).hexdigest()
         return shown
+
+    def _write(self, run: Any) -> _DriveRequest:
+        """A create or an update, kept in ``requests`` for what it was sent with."""
+        request = _DriveRequest(run)
+        self.requests.append(request)
+        return request
 
     def _content(self, media: Any) -> bytes:
         content = media.getbytes(0, media.size())
@@ -1516,6 +1528,7 @@ class FakeDriveFiles:
             self._shown(item)
             for item in self.items.values()
             if parent_id in item.get("parents", [])
+            and not item.get("trashed")
             and (name is None or item["name"].lower() == _unescaped(name[1]).lower())
         ]
         start = int(kwargs.get("pageToken") or 0)
@@ -1526,7 +1539,7 @@ class FakeDriveFiles:
 
     def create(self, **kwargs: Any) -> _DriveRequest:
         self.calls.append(("create", kwargs))
-        return _DriveRequest(lambda: self._create(kwargs))
+        return self._write(lambda: self._create(kwargs))
 
     def _create(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         item = dict(kwargs["body"])
@@ -1540,7 +1553,7 @@ class FakeDriveFiles:
 
     def update(self, **kwargs: Any) -> _DriveRequest:
         self.calls.append(("update", kwargs))
-        return _DriveRequest(lambda: self._update(kwargs))
+        return self._write(lambda: self._update(kwargs))
 
     def _update(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         item = self.items[kwargs["fileId"]]

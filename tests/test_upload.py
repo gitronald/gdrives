@@ -186,6 +186,21 @@ class TestPlanUpload:
         with pytest.raises(ValueError, match="is a folder"):
             upload.plan_upload(svc, local, file_id="D")
 
+    def test_file_id_of_a_file_in_the_trash_is_refused(self, local):
+        svc = FakeDriveFiles([{**held("report.pdf"), "trashed": True}])
+        with pytest.raises(ValueError, match=r"'report.pdf' \(F\) is in the trash"):
+            upload.plan_upload(svc, local, file_id="F")
+
+    def test_a_folder_in_the_trash_is_refused(self, local):
+        svc = FakeDriveFiles([{**folder(), "trashed": True}])
+        with pytest.raises(ValueError, match=r"'reports' \(D\) is in the trash"):
+            upload.plan_upload(svc, local, folder_id="D")
+
+    def test_a_trashed_file_of_that_name_is_no_match(self, local):
+        svc = FakeDriveFiles([folder(), {**held("report.pdf"), "trashed": True}])
+        plan = upload.plan_upload(svc, local, folder_id="D")
+        assert plan.operation == "create"
+
     def test_a_destination_that_is_not_a_folder_is_refused(self, local):
         svc = FakeDriveFiles([held("report.pdf")])
         with pytest.raises(ValueError, match="is not a folder"):
@@ -259,6 +274,21 @@ class TestUploadFile:
         assert svc.items["F"]["parents"] == ["D"]
         assert svc.items["F"]["content"] == local.read_bytes()
         assert svc.named("create") == []
+
+    def test_every_chunk_is_retried(self, local):
+        # Without retries a resumable upload ends at its first dropped connection.
+        svc = FakeDriveFiles([folder(), held("report.pdf")])
+        upload.upload_file(svc, local, folder_id="D")
+        (request,) = svc.requests
+        assert request.retries == [upload.UPLOAD_RETRIES] * 2
+        assert upload.UPLOAD_RETRIES > 0
+
+    def test_chunks_are_a_multiple_of_what_the_api_asks_for(self, local):
+        svc = FakeDriveFiles([folder()])
+        upload.upload_file(svc, local, folder_id="D")
+        (create,) = svc.named("create")
+        assert create["media_body"].chunksize() == upload.UPLOAD_CHUNK
+        assert upload.UPLOAD_CHUNK % (256 * 1024) == 0
 
     def test_a_create_with_no_folder_names_no_parent(self, local):
         # Drive puts a file with no parent in the root of My Drive.

@@ -1,10 +1,11 @@
-"""Tests for gdrives.files.find_named — the files of one name in a folder."""
+"""Tests for gdrives.files: find_named and get_folder, on the Drive files fake."""
 
 from typing import Any
 
+import pytest
 from helpers import FOLDER_MIME, FakeDriveFiles
 
-from gdrives.files import find_named
+from gdrives.files import find_named, get_folder
 
 
 def folder(id: str = "D", name: str = "reports") -> dict[str, Any]:
@@ -62,3 +63,25 @@ def test_every_page_is_read():
     svc = FakeDriveFiles([folder(), *files], pages=2)
     assert len(find_named(svc, "D", "report.pdf")) == 3
     assert len(svc.named("list")) == 2
+
+
+class TestGetFolder:
+    def test_returns_the_folder(self):
+        svc = FakeDriveFiles([folder()])
+        assert get_folder(svc, "D")["name"] == "reports"
+        (call,) = svc.named("get")
+        assert call == {
+            "fileId": "D",
+            "fields": "id, name, mimeType, trashed",
+            "supportsAllDrives": True,
+        }
+
+    def test_a_file_is_refused(self):
+        svc = FakeDriveFiles([held("report.pdf")])
+        with pytest.raises(ValueError, match="'report.pdf' is not a folder"):
+            get_folder(svc, "F")
+
+    def test_a_folder_in_the_trash_is_refused(self):
+        svc = FakeDriveFiles([{**folder(), "trashed": True}])
+        with pytest.raises(ValueError, match=r"'reports' \(D\) is in the trash"):
+            get_folder(svc, "D")
