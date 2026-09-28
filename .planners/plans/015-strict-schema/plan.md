@@ -1,11 +1,11 @@
 ---
 id: 15
 slug: strict-schema
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:18-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # Refuse projection columns the schema does not declare
@@ -69,3 +69,9 @@ has to write.
 ### Out of scope
 
 - Inferring a type for the undeclared column.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 4 ([spec](../018-downstream-adoption-gaps/subplans/4-strict-schema.md)). The spec above is kept as drafted.

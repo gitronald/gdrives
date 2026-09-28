@@ -1,11 +1,11 @@
 ---
 id: 14
 slug: json-entry-store
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:17-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # Add a store for one entry of a multi-tab JSON file
@@ -119,3 +119,9 @@ during a run. That is true of every file store, and the docs say so.
   example, and the note on another process writing the file.
 - README config summary.
 - CHANGELOG `[Unreleased]` / Added.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 3 ([spec](../018-downstream-adoption-gaps/subplans/3-json-entry-store.md)). The spec above is kept as drafted.

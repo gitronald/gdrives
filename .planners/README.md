@@ -3,12 +3,6 @@
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
 | 018 | [Close the remaining gaps that keep a downstream sync off gdrives.sheets](plans/018-downstream-adoption-gaps/plan.md) | draft | — | — |
-| 017 | [List and download a file's Drive revisions, read-only](plans/017-drive-revisions/plan.md) | draft | — | — |
-| 016 | [Make Target.base optional when every tab has a base store](plans/016-optional-target-base/plan.md) | draft | — | — |
-| 015 | [Refuse projection columns the schema does not declare](plans/015-strict-schema/plan.md) | draft | — | — |
-| 014 | [Add a store for one entry of a multi-tab JSON file](plans/014-json-entry-store/plan.md) | draft | — | — |
-| 013 | [Reorder a keyed tab's rows to a given order by moving whole rows](plans/013-reorder-rows/plan.md) | draft | — | — |
-| 012 | [Exclude named columns from a pull](plans/012-pull-exclude-columns/plan.md) | draft | — | — |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
@@ -21,3 +15,9 @@
 | 003 | [Read and write conditional format rules on a Sheet](plans/003-sheets-conditional-formatting/plan.md) | done | 2026-09-11 13:59 PT | [#26](https://github.com/gitronald/gdrives/pull/26) |
 | 002 | [Read and edit Google Docs content via the Docs API](plans/002-docs-read-write/plan.md) | done | 2026-09-05 22:03 PT | [#21](https://github.com/gitronald/gdrives/pull/21) |
 | 001 | [Read and update Google Sheets values via the Sheets API](plans/001-sheets-read-write/plan.md) | done | 2026-07-07 20:44 PT | [#8](https://github.com/gitronald/gdrives/pull/8) |
+| 017 | [List and download a file's Drive revisions, read-only](plans/017-drive-revisions/plan.md) | retired | 2026-09-27 17:04 PT | — |
+| 016 | [Make Target.base optional when every tab has a base store](plans/016-optional-target-base/plan.md) | retired | 2026-09-27 17:04 PT | — |
+| 015 | [Refuse projection columns the schema does not declare](plans/015-strict-schema/plan.md) | retired | 2026-09-27 17:04 PT | — |
+| 014 | [Add a store for one entry of a multi-tab JSON file](plans/014-json-entry-store/plan.md) | retired | 2026-09-27 17:04 PT | — |
+| 013 | [Reorder a keyed tab's rows to a given order by moving whole rows](plans/013-reorder-rows/plan.md) | retired | 2026-09-27 17:04 PT | — |
+| 012 | [Exclude named columns from a pull](plans/012-pull-exclude-columns/plan.md) | retired | 2026-09-27 17:04 PT | — |

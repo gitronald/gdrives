@@ -1,11 +1,11 @@
 ---
 id: 16
 slug: optional-target-base
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:20-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # Make Target.base optional when every tab has a base store
@@ -54,3 +54,9 @@ never used. When a tab with no entry in `base_stores` needs its base on a target
 - The `Target` docstring, the guide section on stores (`docs/sheets-sync.md`), and the
   README if it builds a `Target` in code.
 - CHANGELOG `[Unreleased]` / Changed: `Target.base` is optional.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 5 ([spec](../018-downstream-adoption-gaps/subplans/5-optional-target-base.md)). The spec above is kept as drafted.

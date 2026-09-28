@@ -1,11 +1,11 @@
 ---
 id: 12
 slug: pull-exclude-columns
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:15-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # Exclude named columns from a pull
@@ -79,3 +79,9 @@ project works around this by pulling the grid itself and dropping the columns by
 - `exclude` for sync and push tabs, and for `sheets-pull --all-tabs`, which takes no
   config.
 - Matching by pattern. The field takes exact header names only.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 1 ([spec](../018-downstream-adoption-gaps/subplans/1-pull-exclude-columns.md)). The spec above is kept as drafted.

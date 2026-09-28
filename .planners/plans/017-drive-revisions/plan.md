@@ -1,11 +1,11 @@
 ---
 id: 17
 slug: drive-revisions
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:21-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # List and download a file's Drive revisions, read-only
@@ -107,3 +107,9 @@ decide the design where they differ from it.
 
 - Restoring, pinning (`keepForever`), or deleting revisions.
 - Diffing two revisions.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 6 ([spec](../018-downstream-adoption-gaps/subplans/6-drive-revisions.md)). The spec above is kept as drafted.

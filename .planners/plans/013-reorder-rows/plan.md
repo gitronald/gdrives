@@ -1,11 +1,11 @@
 ---
 id: 13
 slug: reorder-rows
-status: draft
-branch:
+status: retired
+branch: null
 created: 2026-09-27T16:46:16-07:00
-concluded:
-pr:
+concluded: 2026-09-27T17:04:35-07:00
+pr: null
 ---
 
 # Reorder a keyed tab's rows to a given order by moving whole rows
@@ -120,3 +120,9 @@ says this.
 - A config-driven order, and running a reorder as part of `sheets-sync`.
 - Rows that the order does not name keeping a place. The refusal is the defined fate.
   A caller who wants them kept appends them to its order.
+
+## Log
+
+### 2026-09-27
+
+- Retired unimplemented: folded into [plan 018](../018-downstream-adoption-gaps/plan.md) as step 2 ([spec](../018-downstream-adoption-gaps/subplans/2-reorder-rows.md)). The spec above is kept as drafted.
