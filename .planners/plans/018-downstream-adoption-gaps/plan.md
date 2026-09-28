@@ -544,3 +544,10 @@ held before the plan, and no tab of a probe or a test was left behind.
 retrospective asked for, and the close. Interactions between steps that were built
 side by side (`transform` with `link_urls` and `render`, `strict_schema` with
 `entry`) are covered only as far as each step's own tests reach.
+
+Two things wait for the close. The project's untracked instructions file lists the
+package's modules, commands, and tab fields, and describes the checkout it sits in,
+so it is brought up to date when the branch is merged and not before: `order.py`,
+`hooks.py`, and `revisions.py`, the `revisions` command, `JsonEntryStore`, and the
+new fields. And this file is past 500 lines with its Log, so a split of the Log
+into a sidecar is to be put to the owner.
