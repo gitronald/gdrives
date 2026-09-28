@@ -15,6 +15,7 @@ would change, and writes nothing. Add `--apply` to write.
 - [The config file](#the-config-file)
 - [How a sync merges](#how-a-sync-merges)
 - [The base snapshot](#the-base-snapshot)
+- [A workbook in one JSON file](#a-workbook-in-one-json-file)
 - [The first sync](#the-first-sync)
 - [Moving an existing sync over](#moving-an-existing-sync-over)
 - [Pull and push](#pull-and-push)
@@ -107,6 +108,7 @@ to keep in step with local files:
 | `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs |
 | `tabs` | yes | An object of one or more tabs, by tab title |
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
+| `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab must use `RAW` |
 
 ### Tab fields
@@ -114,6 +116,7 @@ to keep in step with local files:
 | Field | Modes | Meaning |
 |---|---|---|
 | `local` | all (required) | The local file. Its extension picks the format: `.csv`, `.tsv`, or `.json` |
+| `entry` | all | An entry of a `.json` `local` file that holds several, as `{"Members": [...], "Dues": [...]}`: the tab's local side is then that entry. Needs a `.json` `local`. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `mode` | all | `sync` (the default), `pull`, or `push` |
 | `sheet_id` | all | The tab's `sheetId`, a whole number. The tab is then found by it, under whatever title it has on the sheet. See [a tab named by its sheetId](#a-tab-named-by-its-sheetid) |
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
@@ -139,7 +142,8 @@ owned columns outside `columns`, a column both `local_owned` and
 `push` tab, `widths` on a `pull` tab, a malformed `insert_above` or schema,
 `USER_ENTERED` on a target with a `sync` tab, and two tabs that would write the
 same file (a local file or a base file, compared case-insensitively, across
-the whole config).
+the whole config), the same entry of a file, or a whole file and an entry of
+it.
 
 Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
@@ -344,13 +348,85 @@ The local file and the base are rewritten only when they change.
 The base is one CSV per sync tab, `<base>/<tab title>.csv`, holding the
 projection columns only. It records what both sides held after the last
 applied sync, which is what lets a sync tell "edited on the sheet" from
-"edited locally".
+"edited locally". A target's `base_file` keeps every tab's base in one JSON
+file instead: see [a workbook in one JSON file](#a-workbook-in-one-json-file).
 
 **Commit the base alongside the local file.** Everyone who syncs the same
 target then shares one base, and a clone of the project syncs correctly on its
 first run. A base that is lost or out of date makes a sync misread which side
 changed, so do not keep it in an ignored or cache directory (the loader refuses
 a base inside `.gdrives/`).
+
+## A workbook in one JSON file
+
+A project may keep a whole workbook in one JSON file, an object of entries
+each holding a tab's rows, with typed values:
+
+```
+{
+  "Members": [{"member_id": "m1", "name": "Ada", "paid": true}],
+  "Dues": [{"member_id": "m1", "amount": 25.5, "due": "2026-10-01"}]
+}
+```
+
+A tab's `entry` names its entry of a `.json` `local` file, and a target's
+`base_file` keeps every `sync` tab's base in a second file of the same shape,
+the entry named by the tab's title:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "base_file": "sheets-base/roster.json",
+    "tabs": {
+      "Members": {
+        "local": "data/workbook.json",
+        "entry": "Members",
+        "key": ["member_id"],
+        "schema": {"paid": {"type": "bool"}}
+      },
+      "Dues": {
+        "local": "data/workbook.json",
+        "entry": "Dues",
+        "key": ["member_id"],
+        "schema": {"amount": {"type": "float"}, "due": {"type": "date"}}
+      },
+      "Summary": {"mode": "pull", "local": "data/workbook.json", "entry": "Summary"}
+    }
+  }
+}
+```
+
+- An entry is read and written as a `.json` local file is: an array of flat
+  objects, each value typed by the tab's `schema`, a blank cell as `null`,
+  and a date as its ISO 8601 string. The base in `base_file` is typed by the
+  same schema. `bom` and `crlf` do not apply.
+- A write reads the file again, replaces the tab's entry, or adds it at the
+  end when it is new, and replaces the whole file through a temporary file
+  and a rename. Every other entry keeps its value and its place.
+- The file is written with a two-space indent, non-ASCII text as it is, and
+  a final newline, so a rewrite that changes nothing leaves a file in that
+  form byte-for-byte the same. A file formatted another way by hand is
+  reformatted on its first write, with every value kept. A run that changes
+  nothing does not write the file at all.
+- A file that is not a JSON object, or whose object names an entry twice, is
+  an error for the tab, and is never taken for a missing entry and
+  overwritten.
+- Two tabs may write two entries of one file. The loader refuses two tabs
+  that would write the same entry, and a tab that writes the whole file
+  beside one that writes an entry of it. A `push` tab only reads its entry.
+- Tabs run one after another, and each write reads the file as the tab
+  before left it. If a later tab fails, the file holds the earlier tab's new
+  entry and the failed tab's old one, as two separate files would: the
+  earlier tab's sheet, local entry, and base entry all landed, and the
+  failed tab's did not.
+- **Another process writing the file during a run is not guarded against**,
+  as it is not for any local file: its write can be lost to the run's, or the
+  run's to it. Do not edit the file, or run a second sync over it, while a
+  run is going.
+
+In code, `JsonEntryStore(path, entry, types=None)` is the store these become,
+for a `TabConfig(store=...)` or a `Target(base_stores=...)` of your own.
 
 ## The first sync
 
@@ -994,10 +1070,11 @@ The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
 ### Stores
 
 A run reads and writes the local side of a tab, and its base, through a
-**store**. A config names files, and each becomes a `FileStore`. A caller
-whose local side is not one flat file per tab gives the tab a store of its
-own: one tab of a file that holds several, typed rows, rows written back in
-an order of its choosing, or a local side that is computed.
+**store**. A config names files, and each becomes a `FileStore`, or a
+`JsonEntryStore` for a tab's `entry` and a target's `base_file`. A caller
+whose local side is none of these gives the tab a store of its own: typed
+rows kept some other way, rows written back in an order of its choosing, or
+a local side that is computed.
 
 A store has a `label`, which reports and errors show where a path was shown,
 and three methods:
@@ -1015,7 +1092,8 @@ file. `MemoryStore` holds records in memory, for tests and for a caller that
 saves them itself after the run.
 
 This store is one tab of a JSON file that holds several, as
-`{"Members": [...], "Summary": [...]}`:
+`{"Members": [...], "Summary": [...]}`. `JsonEntryStore` does this, typed and
+atomically; the example shows the shape of a store of your own:
 
 ```python
 import json
@@ -1074,8 +1152,10 @@ What a store has to keep to:
   schema avoids it.
 - **`write` may raise `ValueError` or `OSError`.** Both are reported for the
   tab, as a file error is.
-- The config loader refuses two tabs that would write one file. It checks
-  files only, so a caller that gives tabs stores of its own owns that check.
+- The config loader refuses two tabs that would write one file, or one entry
+  of one. It checks the stores a config builds (`FileStore` and
+  `JsonEntryStore`) only, so a caller that gives tabs stores of its own owns
+  that check.
 
 ### A retry of your own
 

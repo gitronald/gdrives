@@ -87,6 +87,7 @@ PROMISED = {
         "tab_listing",
     ],
     "reorder rows": ["ReorderResult", "reorder_rows"],
+    "json entry store": ["JsonEntryStore"],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -98,6 +99,7 @@ PROMISED_ATTRIBUTES = [
     (TabConfig, ["newline", "blank_keys", "on_invalid", "clear_links", "sheet_id"]),
     (TabConfig, ["store", "local_store"]),
     (Target, ["base_stores", "base_store"]),
+    (TabConfig, ["entry"]),
 ]
 
 
@@ -170,7 +172,7 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 6
+        assert len(blocks(GUIDE, "json")) == 7
         assert len(blocks(GUIDE, "python")) == 7
 
     def test_a_refused_example_fails(self, tmp_path):

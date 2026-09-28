@@ -6,14 +6,16 @@ says so.
 """
 
 import json
+from datetime import date, datetime
 from typing import Any
 
 import pytest
-from helpers import FakeSheetGrid
+from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     ColumnSchema,
     FileStore,
+    JsonEntryStore,
     MemoryStore,
     Records,
     SheetChangedError,
@@ -476,3 +478,342 @@ class TestReport:
             f"  local file: {tmp_path / 'm.csv'}"
         )
         assert read_records(tmp_path / "m.csv").rows == records(*ROWS)
+
+
+def dump(data):
+    """``data`` as the library writes a JSON file."""
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+TYPES = {
+    "s": "str",
+    "i": "int",
+    "f": "float",
+    "b": "bool",
+    "d": "date",
+    "t": "datetime",
+}
+
+
+class TestJsonEntryStore:
+    @pytest.fixture
+    def book(self, tmp_path):
+        path = tmp_path / "book.json"
+        path.write_text(
+            dump(
+                {
+                    "Summary": [{"total": 2}],
+                    "T": [{"id": "a", "name": "Ada", "amt": 1}],
+                    "Notes": {"kept": ["as", "it", "is"]},
+                }
+            )
+        )
+        return path
+
+    def test_it_reads_exists_and_writes(self, book):
+        store = JsonEntryStore(book, "T", types={"amt": "int"})
+        assert store.label == f"{book} [T]"
+        assert store.exists()
+        assert store.read() == Records(HEADER, records(ROWS[0]))
+        store.write(HEADER, records(*ROWS))
+        assert store.read() == Records(HEADER, records(*ROWS))
+        assert json.loads(book.read_text())["T"] == [
+            {"id": "a", "name": "Ada", "amt": 1},
+            {"id": "b", "name": "Bo", "amt": 2},
+        ]
+
+    def test_other_entries_keep_their_values_and_places(self, book):
+        JsonEntryStore(book, "T").write(["id"], [{"id": "z"}])
+        assert book.read_text() == dump(
+            {
+                "Summary": [{"total": 2}],
+                "T": [{"id": "z"}],
+                "Notes": {"kept": ["as", "it", "is"]},
+            }
+        )
+
+    def test_a_new_entry_is_added_at_the_end(self, book):
+        store = JsonEntryStore(book, "New")
+        assert not store.exists()
+        store.write(["id"], [{"id": "n"}, {"id": ""}])
+        assert list(json.loads(book.read_text())) == ["Summary", "T", "Notes", "New"]
+        assert json.loads(book.read_text())["New"] == [{"id": "n"}, {"id": None}]
+
+    def test_a_missing_file(self, tmp_path):
+        store = JsonEntryStore(tmp_path / "sub" / "book.json", "T")
+        assert not store.exists()
+        with pytest.raises(FileNotFoundError, match="book.json: no such file"):
+            store.read()
+        store.write(["id"], [{"id": "a"}])
+        assert store.path.read_text() == dump({"T": [{"id": "a"}]})
+
+    def test_a_missing_entry_is_refused_by_read(self, book):
+        with pytest.raises(ValueError, match=r"book\.json: has no entry 'Other'$"):
+            JsonEntryStore(book, "Other").read()
+
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ("[]", "expected a JSON object of entries"),
+            ('"T"', "expected a JSON object of entries"),
+            ("{", "not valid JSON"),
+            ('{"T": [], "S": [], "T": [{"id": "a"}]}', "repeats the entry 'T'"),
+        ],
+    )
+    def test_a_file_that_is_not_an_object_of_entries(self, tmp_path, text, message):
+        path = tmp_path / "book.json"
+        path.write_text(text)
+        store = JsonEntryStore(path, "T")
+        for method in (store.exists, store.read):
+            with pytest.raises(ValueError, match=f"^{path}: {message}"):
+                method()
+        with pytest.raises(ValueError, match=f"^{path}: {message}"):
+            store.write(["id"], [{"id": "a"}])
+        assert path.read_text() == text
+
+    def test_a_key_repeated_inside_an_entry_reads_as_a_file_does(self, tmp_path):
+        path = tmp_path / "book.json"
+        path.write_text('{"T": [{"id": "a", "id": "b"}]}')
+        assert JsonEntryStore(path, "T").read() == read_records_of(
+            tmp_path, '[{"id": "a", "id": "b"}]'
+        )
+
+    @pytest.mark.parametrize(
+        ("entry", "message"),
+        [
+            ({"id": "a"}, "expected a JSON array of objects"),
+            (["a"], "item 0 is not an object"),
+            ([{"id": ["a"]}], "item 0, 'id': nested values are not cells"),
+            ([{"id": 1, " id": 2}], "item 0 repeats column name 'id'"),
+            ([{" ": 1}], "blank column name in \\[''\\]"),
+        ],
+    )
+    def test_an_entry_is_refused_as_a_file_is(self, tmp_path, entry, message):
+        path = tmp_path / "book.json"
+        path.write_text(json.dumps({"T": entry}))
+        with pytest.raises(ValueError, match=f"^{path} \\[T\\]: {message}"):
+            JsonEntryStore(path, "T").read()
+        flat = tmp_path / "flat.json"
+        flat.write_text(json.dumps(entry))
+        with pytest.raises(ValueError, match=f"^{flat}: {message}"):
+            read_records(flat)
+
+    def test_it_reads_the_canonical_strings_a_file_reads(self, tmp_path):
+        rows = [{"id": "a", "n": 1.0, "ok": True, "x": None}, {"id": None}]
+        path = tmp_path / "book.json"
+        path.write_text(json.dumps({"T": rows}))
+        assert JsonEntryStore(path, "T").read() == read_records_of(
+            tmp_path, json.dumps(rows)
+        )
+
+    def test_a_failing_encode_leaves_the_file_as_it_was(self, book):
+        before = book.read_bytes()
+        store = JsonEntryStore(book, "T", types={"amt": "int"})
+        with pytest.raises(ValueError, match=r"\[T\]: .*'amt'"):
+            store.write(HEADER, records(["a", "Ada", "one"]))
+        store = JsonEntryStore(book, "T", types={"amt": "float"})
+        with pytest.raises(ValueError, match="Out of range float values"):
+            store.write(HEADER, records(["a", "Ada", "nan"]))
+        with pytest.raises(ValueError, match=r"\[T\]: record 1 has unknown columns"):
+            store.write(["id"], records(ROWS[0]))
+        assert book.read_bytes() == before
+        assert [p.name for p in book.parent.iterdir()] == ["book.json"]
+
+    def test_typed_values_round_trip(self, tmp_path):
+        typed = {
+            "s": "héllo ✓",
+            "i": 12345678901234567890,
+            "f": 0.1,
+            "b": False,
+            "d": "2026-02-03",
+            "t": "2026-02-03 12:00:00.000",
+        }
+        path = tmp_path / "book.json"
+        store = JsonEntryStore(path, "T", types=TYPES)
+        cells = {
+            "s": "héllo ✓",
+            "i": "12345678901234567890",
+            "f": "0.1",
+            "b": "FALSE",
+            "d": "2026-02-03",
+            "t": "2026-02-03 12:00:00.000",
+        }
+        blank = dict.fromkeys(TYPES, "") | {"s": "x"}
+        store.write(list(TYPES), [cells, blank])
+        assert json.loads(path.read_text()) == {
+            "T": [typed, dict.fromkeys(TYPES) | {"s": "x"}]
+        }
+        assert store.read() == Records(list(TYPES), [cells, blank])
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("s", "héllo ✓ 日本"),
+            ("s", "007"),
+            ("s", "TRUE"),
+            ("s", ' "quoted" \\ '),
+            ("i", -42),
+            ("i", 2**63 + 1),
+            ("f", 0.1),
+            ("f", 1e22),
+            ("f", 1e-7),
+            ("f", 3.0),
+            ("f", 123456789.123),
+            ("f", 1.7976931348623157e308),
+            ("b", True),
+            ("b", False),
+            ("d", "2026-02-03"),
+            ("t", "2026-02-03 12:00:00.000"),
+            ("t", "2026-02-03 13:11:57.926"),
+            ("s", None),
+            ("f", None),
+            ("d", None),
+        ],
+    )
+    def test_a_rewrite_that_changes_nothing_is_byte_identical(
+        self, tmp_path, column, value
+    ):
+        row = {
+            "s": "x",
+            "i": 1,
+            "f": 1.5,
+            "b": True,
+            "d": "2026-01-01",
+            "t": "2026-01-01 00:00:00.000",
+        } | {column: value}
+        path = tmp_path / "book.json"
+        path.write_text(
+            dump({"A": [{"k": 1.0, "z": None}], "T": [row], "Z": {"n": [1e22]}})
+        )
+        before = path.read_bytes()
+        store = JsonEntryStore(path, "T", types=TYPES)
+        found = store.read()
+        store.write(found.columns, found.rows)
+        assert path.read_bytes() == before
+
+    def test_a_file_formatted_otherwise_is_reformatted_with_its_values(self, tmp_path):
+        path = tmp_path / "book.json"
+        held = {"A": [{"k": 1.0, "u": "é"}], "T": [{"id": "a"}]}
+        path.write_text(json.dumps(held, separators=(",", ":")))
+        store = JsonEntryStore(path, "T")
+        store.write(*store.read())
+        assert path.read_text() == dump(held)
+
+    def test_dates_are_written_as_their_strings(self, tmp_path):
+        path = tmp_path / "book.json"
+        store = JsonEntryStore(path, "T", types={"d": date, "t": datetime})
+        store.write(["d", "t"], [{"d": "2026-02-03", "t": "2026-02-03 04:05:06"}])
+        assert json.loads(path.read_text()) == {
+            "T": [{"d": "2026-02-03", "t": "2026-02-03 04:05:06"}]
+        }
+
+    def test_a_tab_with_an_entry_has_its_store(self, tmp_path):
+        tab = TabConfig(
+            title="T",
+            local=tmp_path / "book.json",
+            entry="Members",
+            schema={"amt": ColumnSchema(type="int")},
+        )
+        assert tab.local_store == JsonEntryStore(
+            tmp_path / "book.json", "Members", types={"amt": "int"}
+        )
+
+
+def read_records_of(tmp_path, text):
+    """What ``read_records`` makes of a flat ``.json`` file holding ``text``."""
+    flat = tmp_path / "flat.json"
+    flat.write_text(text)
+    return read_records(flat)
+
+
+class TestJsonEntrySync:
+    """Two tabs whose local sides and bases are entries of two files."""
+
+    SCHEMA = {"amt": ColumnSchema(type="int")}
+
+    def scene(self, tmp_path):
+        book, base = tmp_path / "book.json", tmp_path / "base.json"
+        held = [
+            {"id": "a", "name": "Ada", "amt": 1},
+            {"id": "b", "name": "Bo", "amt": 2},
+        ]
+        # Each tab: a local edit to push (a/amt) and a sheet edit to fold (b/name).
+        edited = [{"id": "a", "name": "Ada", "amt": 9}, held[1]]
+        book.write_text(dump({"Notes": [{"n": "kept"}], "A": edited, "B": edited}))
+        base.write_text(dump({"A": held, "B": held}))
+        tabs = tuple(
+            TabConfig(
+                title=title,
+                local=book,
+                entry=title,
+                key=("id",),
+                schema=self.SCHEMA,
+            )
+            for title in ("A", "B")
+        )
+        target = Target(
+            name="t",
+            spreadsheet="S",
+            base=tmp_path / "sheets-base",
+            tabs=tabs,
+            base_stores={
+                tab.title: JsonEntryStore(base, tab.title, types=tab.types)
+                for tab in tabs
+            },
+        )
+        grid = FakeSheetGrid(
+            {
+                "A": [HEADER, ["a", "Ada", "1"], ["b", "Bea", "2"]],
+                "B": [HEADER, ["a", "Ada", "1"], ["b", "Bea", "2"]],
+            }
+        )
+        return grid, target, book, base
+
+    def test_both_tabs_land_in_their_entries(self, tmp_path):
+        grid, target, book, base = self.scene(tmp_path)
+        report = run_target(grid, "S", target, "sync", apply=True)
+        assert report.exit_code == 0, format_report(report)
+        synced = [
+            {"id": "a", "name": "Ada", "amt": 9},
+            {"id": "b", "name": "Bea", "amt": 2},
+        ]
+        assert json.loads(book.read_text()) == {
+            "Notes": [{"n": "kept"}],
+            "A": synced,
+            "B": synced,
+        }
+        assert json.loads(base.read_text()) == {"A": synced, "B": synced}
+        assert report.tabs[0].local_label == f"{book} [A]"
+
+        files = (book.read_bytes(), base.read_bytes())
+        again = run_target(grid, "S", target, "sync", apply=True)
+        assert not any(tab.wrote_local or tab.wrote_base for tab in again.tabs)
+        assert (book.read_bytes(), base.read_bytes()) == files
+
+    def test_the_second_tab_failing_leaves_its_entries_as_they_were(self, tmp_path):
+        grid, target, book, base = self.scene(tmp_path)
+        before = json.loads(book.read_text())
+        # The second tab's push is the second values.batchUpdate of the run.
+        grid.fail("values.batchUpdate", http_error(400, "boom"), occurrence=2)
+        report = run_target(grid, "S", target, "sync", apply=True)
+        first, second = report.tabs
+        assert first.error is None and first.wrote_local and first.wrote_base
+        assert second.error is not None and "boom" in second.error
+        assert not (second.wrote_local or second.wrote_base)
+        assert report.exit_code == 1
+
+        synced = [
+            {"id": "a", "name": "Ada", "amt": 9},
+            {"id": "b", "name": "Bea", "amt": 2},
+        ]
+        assert json.loads(book.read_text()) == before | {"A": synced}
+        assert list(json.loads(book.read_text())) == ["Notes", "A", "B"]
+        assert json.loads(base.read_text()) == {
+            "A": synced,
+            "B": [
+                {"id": "a", "name": "Ada", "amt": 1},
+                {"id": "b", "name": "Bo", "amt": 2},
+            ],
+        }
+        assert grid.values("A") == [HEADER, ["a", "Ada", "9"], ["b", "Bea", "2"]]
+        assert grid.values("B") == [HEADER, ["a", "Ada", "1"], ["b", "Bea", "2"]]

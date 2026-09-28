@@ -27,7 +27,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``order``: ``reorder_rows``, which puts a keyed tab's rows in a given
   order by moving whole rows
 - ``stores``: where a tab's local side and its base are kept (``Store``,
-  ``FileStore``, ``MemoryStore``)
+  ``FileStore``, ``JsonEntryStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
@@ -143,7 +143,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
-from gdrives.sheets.stores import FileStore, MemoryStore, Store
+from gdrives.sheets.stores import FileStore, JsonEntryStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     LINK_FIELDS,
@@ -232,6 +232,7 @@ __all__ = [
     "FORMULA",
     "GridTooLargeError",
     "IDEMPOTENT_STATUSES",
+    "JsonEntryStore",
     "HeldCell",
     "INPUT_OPTIONS",
     "LINK_FIELDS",

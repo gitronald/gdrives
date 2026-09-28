@@ -51,7 +51,7 @@ gdrives/
 │   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
 │   ├── structure.py  # Add and delete columns, create tabs, set column widths
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
-│   ├── stores.py     # Stores for the local side and the base (FileStore, MemoryStore)
+│   ├── stores.py     # Stores for the local side and the base (FileStore, JsonEntryStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
 │   └── commands.py   # run_* entry points for the sheets-* commands
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
@@ -361,7 +361,11 @@ is added to the other. Deleted rows are flagged, never deleted. A `pull` tab
 replaces the local file with the tab, and a `push` tab replaces the tab's
 values with the local file. A pull tab's `exclude` names columns to leave out
 (the other way round from `columns`), so their values never reach the local
-file or a report, even for a column added on the sheet later.
+file or a report, even for a column added on the sheet later. A workbook kept
+in one JSON file, `{"Members": [...], "Dues": [...]}`, is synced by giving each
+tab an `entry` of its `.json` `local` file, and a target's `base_file` keeps
+every sync tab's base as an entry of one `.json` file instead of one CSV per
+tab.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
