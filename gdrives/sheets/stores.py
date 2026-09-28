@@ -3,20 +3,30 @@
 The orchestration in :mod:`gdrives.sheets.sync` reads and writes the local
 side of a tab and its base snapshot through a :class:`Store`, and never
 through a path. :class:`FileStore` is what a config file's ``local`` path and
-a target's base directory become, and :class:`MemoryStore` holds records in
-memory. A caller whose local side is not one flat file per tab writes a small
-class of its own: one tab of a file that holds several, typed rows converted
-with :func:`~gdrives.sheets.cells.encode_rows` and
+a target's base directory become, :class:`JsonEntryStore` is one entry of a
+JSON file that holds several (a tab's ``entry``, or a target's
+``base_file``), and :class:`MemoryStore` holds records in memory. A caller
+whose local side is none of these writes a small class of its own: typed
+rows converted with :func:`~gdrives.sheets.cells.encode_rows` and
 :func:`~gdrives.sheets.cells.decode_rows`, or a local side that is computed.
 """
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from gdrives.local import write_text
 from gdrives.sheets.cells import ColumnType
-from gdrives.sheets.files import Records, read_records, write_records
+from gdrives.sheets.files import (
+    Records,
+    _json_array,
+    _json_text,
+    _records_from_array,
+    read_records,
+    write_records,
+)
 
 
 class Store(Protocol):
@@ -96,6 +106,85 @@ class FileStore:
             bom=self.bom,
             newline=self.newline,
         )
+
+
+class _Repeated(dict[str, Any]):
+    """A JSON object that named a key more than once; ``key`` is the first such."""
+
+    key: str = ""
+
+
+def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A parsed JSON object, marked when it repeats a key (``object_pairs_hook``)."""
+    held: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in held and not isinstance(held, _Repeated):
+            held = _Repeated(held)
+            held.key = key
+        held[key] = value
+    return held
+
+
+@dataclass(frozen=True)
+class JsonEntryStore:
+    """One entry of a JSON file shaped ``{"Tab A": [rows], "Tab B": [rows]}``.
+
+    The entry is an array of flat objects, read as
+    :func:`~gdrives.sheets.files.read_records` reads a ``.json`` file, and
+    written as :func:`~gdrives.sheets.files.write_records` writes one, typed
+    by ``types``. A write reads the file again, replaces the entry (or adds it
+    at the end), keeps every other entry's value and place, and replaces the
+    file atomically. The file is dumped as the library dumps every JSON file,
+    so a rewrite that changes nothing leaves a file in that format
+    byte-for-byte the same; a file formatted another way is reformatted on
+    its first write, with every value kept. A file that is not a JSON object,
+    or whose object names a key twice, raises ValueError from every method,
+    so it is never taken for a missing entry and overwritten. Its label is
+    ``path [entry]``.
+    """
+
+    path: Path
+    entry: str
+    types: Mapping[str, ColumnType] | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.path} [{self.entry}]"
+
+    def _load(self) -> dict[str, Any] | None:
+        """The file's top-level object, fresh from disk; None when there is no file."""
+        try:
+            text = self.path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            return None
+        try:
+            data = json.loads(text, object_pairs_hook=_object)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{self.path}: not valid JSON: {e}") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"{self.path}: expected a JSON object of entries")
+        if isinstance(data, _Repeated):
+            raise ValueError(f"{self.path}: repeats the entry {data.key!r}")
+        return data
+
+    def exists(self) -> bool:
+        data = self._load()
+        return data is not None and self.entry in data
+
+    def read(self) -> Records:
+        data = self._load()
+        if data is None:
+            raise FileNotFoundError(f"{self.path}: no such file")
+        if self.entry not in data:
+            raise ValueError(f"{self.path}: has no entry {self.entry!r}")
+        return _records_from_array(data[self.entry], self.label)
+
+    def write(self, columns: Sequence[str], rows: Sequence[Mapping[str, str]]) -> None:
+        array = _json_array(self.label, columns, rows, self.types)
+        data = self._load() or {}
+        # Assigning to a key the dict has keeps its place; a new key goes last.
+        data[self.entry] = array
+        write_text(self.path, _json_text(self.label, data))
 
 
 class MemoryStore:

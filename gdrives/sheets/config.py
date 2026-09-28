@@ -33,7 +33,7 @@ from typing import Any
 from gdrives.local import safe_filename
 from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
-from gdrives.sheets.stores import FileStore, Store
+from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
 from gdrives.sheets.values import RAW, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
@@ -59,7 +59,7 @@ LOCAL_EXTENSIONS = frozenset({".csv", ".tsv", ".json"})
 # control; a base belongs where it is committed.
 _CACHE_DIR = ".gdrives"
 
-_TARGET_FIELDS = frozenset({"spreadsheet", "base", "input_option", "tabs"})
+_TARGET_FIELDS = frozenset({"spreadsheet", "base", "base_file", "input_option", "tabs"})
 _TAB_FIELDS = frozenset(
     {
         "mode",
@@ -80,6 +80,7 @@ _TAB_FIELDS = frozenset(
         "on_invalid",
         "clear_links",
         "sheet_id",
+        "entry",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -133,7 +134,9 @@ class TabConfig:
     where the Sheets API links a URL when it is written. ``sheet_id`` names
     the tab by its ``sheetId``, which a rename leaves as it is: the tab is
     then found by it, and ``title`` is what reports and the base file call
-    the tab.
+    the tab. ``entry`` names an entry of ``local``, a ``.json`` file
+    holding several: the tab's local side is then that entry
+    (:class:`~gdrives.sheets.stores.JsonEntryStore`).
     """
 
     title: str
@@ -156,6 +159,7 @@ class TabConfig:
     clear_links: bool = False
     sheet_id: int | None = None
     store: Store | None = None
+    entry: str | None = None
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
@@ -166,6 +170,10 @@ class TabConfig:
             raise ValueError(
                 f"tab {self.title!r}: 'exclude' and 'columns' contradict each other"
             )
+        if self.entry is not None and (
+            self.local is None or self.local.suffix.lower() != ".json"
+        ):
+            raise ValueError(f"tab {self.title!r}: 'entry' needs a .json 'local'")
 
     @property
     def types(self) -> dict[str, str]:
@@ -177,11 +185,14 @@ class TabConfig:
         """The store of the local side: ``store``, or the file at ``local``.
 
         The file is read and written with the tab's ``types``, ``bom``, and
-        ``newline``.
+        ``newline``; with an ``entry``, it is that entry of the file, typed by
+        ``types``.
         """
         if self.store is not None:
             return self.store
         assert self.local is not None  # __post_init__ refused a tab with neither
+        if self.entry is not None:
+            return JsonEntryStore(self.local, self.entry, types=self.types)
         return FileStore(
             self.local, types=self.types, bom=self.bom, newline=self.newline
         )
@@ -195,7 +206,9 @@ class Target:
     config. ``base`` is the absolute directory holding the base snapshots,
     one CSV per tab. ``base_stores`` maps a tab's title to the store that
     holds its base instead, for a base kept somewhere else; ``base`` is
-    unused for a tab it names.
+    unused for a tab it names. A config's ``base_file`` becomes one
+    :class:`~gdrives.sheets.stores.JsonEntryStore` here for each sync tab,
+    the entry named by the tab's title and typed by its schema.
     """
 
     name: str
@@ -362,6 +375,7 @@ class _Checker:
                     "directory, which is a cache; keep the base where it is "
                     "committed"
                 )
+        base_file = self._base_file(where, raw)
 
         input_option = raw.get("input_option", RAW)
         if input_option not in INPUT_OPTIONS:
@@ -396,43 +410,99 @@ class _Checker:
                     )
         if len(problems) > start:
             return None
+        base_stores: dict[str, Store] = {}
+        if base_file is not None:
+            base_stores = {
+                tab.title: JsonEntryStore(base_file, tab.title, types=tab.types)
+                for tab in tabs
+                if tab.mode == "sync"
+            }
         return Target(
             name=name,
             spreadsheet=str(spreadsheet),
             base=base,
             tabs=tuple(tabs),
             input_option=str(input_option),
+            base_stores=base_stores,
         )
 
-    def collisions(self, targets: Iterable[Target]) -> None:
-        """Refuse a file that two tabs would write, across the whole config.
+    def _base_file(self, where: str, raw: Mapping[str, Any]) -> Path | None:
+        """The target's ``base_file``, or None when it has none or it is refused."""
+        if "base_file" not in raw:
+            return None
+        text = raw["base_file"]
+        if "base" in raw:
+            self.problems.append(
+                f"{where}: 'base' and 'base_file' contradict each other"
+            )
+        if not isinstance(text, str) or not text.strip():
+            self.problems.append(f"{where}: 'base_file' must be a .json file path")
+            return None
+        path = self._path(text)
+        if path.suffix.lower() != ".json":
+            self.problems.append(f"{where}: 'base_file' {text!r} must end in .json")
+            return None
+        if _CACHE_DIR in path.parts:
+            self.problems.append(
+                f"{where}: 'base_file' {text!r} is inside a {_CACHE_DIR} "
+                "directory, which is a cache; keep the base where it is "
+                "committed"
+            )
+        return path
 
-        A sync or pull tab writes its local file, and a sync tab its base file;
-        a push tab only reads its local file, so push tabs may share one. Paths
-        are compared case-folded, since on a case-insensitive filesystem
-        ``Notes.csv`` and ``notes.csv`` are one file. Only files are checked:
-        a caller that gives a tab a store of its own owns this check.
+    def collisions(self, targets: Iterable[Target]) -> None:
+        """Refuse a file, or an entry of one, that two tabs would write.
+
+        Checked across the whole config. A sync or pull tab writes its local
+        side, and a sync tab its base; a push tab only reads its local side,
+        so push tabs may share one. A writer is keyed by its path and its
+        entry (None for a whole file): two entries of one file may be written
+        by two tabs, and the same entry, or a whole file and an entry of it,
+        may not. Paths are compared case-folded, since on a case-insensitive
+        filesystem ``Notes.csv`` and ``notes.csv`` are one file. Only a
+        :class:`FileStore` or a :class:`JsonEntryStore` is checked: a caller
+        that gives a tab a store of its own owns this check.
         """
-        writers: dict[str, list[str]] = {}
+        writers: dict[str, dict[str | None, list[str]]] = {}
         paths: dict[str, Path] = {}
         for target in targets:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
-                files: list[tuple[Path, str]] = []
-                if tab.mode != "push" and tab.local is not None:
-                    files.append((tab.local, f"{where} (local file)"))
+                stores: list[tuple[Store, str]] = []
+                if tab.mode != "push":
+                    stores.append((tab.local_store, f"{where} (local file)"))
                 if tab.mode == "sync":
-                    files.append((target.base_path(tab), f"{where} (base)"))
-                for path, role in files:
+                    stores.append((target.base_store(tab), f"{where} (base)"))
+                for store, role in stores:
+                    if isinstance(store, FileStore):
+                        path, entry = store.path, None
+                    elif isinstance(store, JsonEntryStore):
+                        path, entry = store.path, store.entry
+                    else:
+                        continue
                     folded = str(path).casefold()
-                    writers.setdefault(folded, []).append(role)
+                    writers.setdefault(folded, {}).setdefault(entry, []).append(role)
                     paths.setdefault(folded, path)
-        for folded, roles in writers.items():
-            if len(roles) > 1:
+        for folded, entries in writers.items():
+            whole = entries.pop(None, [])
+            if whole and entries:
+                roles = whole + [role for named in entries.values() for role in named]
                 self.problems.append(
-                    f"{paths[folded]} would be written by more than one tab: "
+                    f"{paths[folded]} would be written whole and by entry: "
                     + "; ".join(roles)
                 )
+                continue
+            if len(whole) > 1:
+                self.problems.append(
+                    f"{paths[folded]} would be written by more than one tab: "
+                    + "; ".join(whole)
+                )
+            for entry, roles in entries.items():
+                if len(roles) > 1:
+                    self.problems.append(
+                        f"{paths[folded]} [{entry}] would be written by more than "
+                        "one tab: " + "; ".join(roles)
+                    )
 
     def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:
         where = f"{target}, tab {title!r}"
@@ -464,6 +534,7 @@ class _Checker:
             problems.append(f"{where}: 'exclude' applies only to a pull tab")
 
         local = self._local(where, raw)
+        entry = self._entry(where, raw, local)
         bom = raw.get("bom", False)
         if not isinstance(bom, bool):
             problems.append(f"{where}: 'bom' must be true or false")
@@ -558,7 +629,23 @@ class _Checker:
             on_invalid=str(on_invalid),
             clear_links=bool(clear_links),
             sheet_id=sheet_id,
+            entry=entry,
         )
+
+    def _entry(
+        self, where: str, raw: Mapping[str, Any], local: Path | None
+    ) -> str | None:
+        """The tab's ``entry``, or None when it has none or it is refused."""
+        if "entry" not in raw:
+            return None
+        entry = raw["entry"]
+        if not isinstance(entry, str) or not entry.strip():
+            self.problems.append(f"{where}: 'entry' must be a non-blank string")
+            return None
+        if local is not None and local.suffix.lower() != ".json":
+            self.problems.append(f"{where}: 'entry' needs a .json 'local'")
+            return None
+        return entry
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:
         text = raw.get("local")
