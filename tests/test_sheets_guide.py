@@ -96,6 +96,18 @@ PROMISED = {
         "url_link_problems",
     ],
     "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
+    "typed writes": [
+        "DATE_FORMATS",
+        "NUMBER_FORMAT_FIELD",
+        "RetypeCell",
+        "RetypeReport",
+        "cell_data",
+        "dated_cells",
+        "format_requests",
+        "retype_columns",
+        "to_serial",
+        "typed_columns",
+    ],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -114,6 +126,7 @@ PROMISED_ATTRIBUTES = [
     (ApplyResult, ["linked"]),
     (TabReport, ["linked"]),
     (TabConfig, ["hooks"]),
+    (TabConfig, ["typed_writes"]),
 ]
 
 
@@ -186,8 +199,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 12
-        assert len(blocks(GUIDE, "python")) == 10
+        assert len(blocks(GUIDE, "json")) == 13
+        assert len(blocks(GUIDE, "python")) == 11
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -253,6 +266,9 @@ class TestGuidePython:
         # The library example ends by exiting with the run's code.
         assert exits == [0]
         assert grid.tab("Summary").cells[0][:3] == ["id", "total", "paid"]
+        # The typed writes example turned the text the push wrote into values.
+        assert grid.tab("Summary").cells[1][:3] == [1, 2.5, True]
+        assert namespace["found"].changes and not namespace["found"].unparsed
         # The ordering example put the active row m3 above the closed m2.
         assert namespace["preview"].moves == 1
         members = [row[0] for row in grid.values("Members")]

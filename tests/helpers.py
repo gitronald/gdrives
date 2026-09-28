@@ -630,7 +630,8 @@ _BOLD = "userEnteredFormat.textFormat.bold"
 _RUNS = "textFormatRuns"
 _UNDERLINE = "userEnteredFormat.textFormat.underline"
 _COLOR = "userEnteredFormat.textFormat.foregroundColorStyle"
-_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS, _UNDERLINE, _COLOR)
+_NUMBER = "userEnteredFormat.numberFormat"
+_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS, _UNDERLINE, _COLOR, _NUMBER)
 
 # The colour the API shows a link in, #1155cc, as it returns it: float32
 # fractions of each channel.
@@ -680,8 +681,9 @@ class _GridTab:
     when the cell is empty. ``formats[(r, c)]`` is the format of a cell that
     has one, a dict that may hold ``link`` (the target of a link on the whole
     cell), ``bold``, and ``runs`` (its ``textFormatRuns``), and ``underline``
-    and ``color`` (an ``rgbColor``) where they are set as the cell's own
-    format. ``widths`` holds each column's pixel width.
+    and ``color`` (an ``rgbColor``) and ``number`` (its ``numberFormat``)
+    where they are set as the cell's own format. ``widths`` holds each
+    column's pixel width.
     """
 
     def __init__(self, sheet_id: int, title: str, rows: int, columns: int) -> None:
@@ -842,8 +844,12 @@ class FakeSheetGrid:
       asked, and ``effectiveFormat`` for a cell with a value or a format: a
       link underlines its text and shows it in :data:`LINK_BLUE` unless the
       cell's own format says otherwise. Inserted rows and columns take
-      ``bold`` from the side they
-      inherit from, and nothing else.
+      ``bold`` and the number format from the side they inherit from, and
+      nothing else.
+    - A number format (``userEnteredFormat.numberFormat``) is held as set by
+      ``repeatCell`` or ``updateCells`` under a mask naming it, and returned
+      by a grid read whose mask names ``numberFormat``. It changes no read of
+      values: a date serial written as a number reads as that number.
     - Any read or write outside a tab's grid raises the 400 ``HttpError`` the
       API returns; so do an unknown tab, a duplicate tab title, inheriting
       from before row or column 0, and deleting every row or column.
@@ -1144,8 +1150,11 @@ class FakeSheetGrid:
                 entered["underline"] = held["underline"]
             if "color" in held:
                 entered["foregroundColorStyle"] = {"rgbColor": dict(held["color"])}
-        if entered:
-            cell["userEnteredFormat"] = {"textFormat": entered}
+        top: dict[str, Any] = {"textFormat": entered} if entered else {}
+        if "numberFormat" in fields and "number" in held:
+            top["numberFormat"] = dict(held["number"])
+        if top:
+            cell["userEnteredFormat"] = top
         value = tab.cells[r][c]
         if "effectiveFormat" in fields and (value is not None or held):
             cell["effectiveFormat"] = {"textFormat": _shown(held)}
@@ -1216,16 +1225,19 @@ class FakeSheetGrid:
         count = end - start
         source = start - 1 if inherit else start
 
-        # Bold is the one format the fake hands on to what is inserted.
-        bold = [
-            c if rows else r
+        # Bold and the number format are what the fake hands on to what is
+        # inserted.
+        handed = {
+            c if rows else r: {
+                name: held[name] for name in ("bold", "number") if held.get(name)
+            }
             for (r, c), held in tab.formats.items()
-            if (r if rows else c) == source and held.get("bold")
-        ]
+            if (r if rows else c) == source and (held.get("bold") or "number" in held)
+        }
         tab.shift(rows, start, count)
         for at in range(start, end):
-            for other in bold:
-                tab.formats[(at, other) if rows else (other, at)] = {"bold": True}
+            for other, held in handed.items():
+                tab.formats[(at, other) if rows else (other, at)] = dict(held)
         if rows:
             width = tab.column_count
             tab.cells[start:start] = [[None] * width for _ in range(count)]
@@ -1347,6 +1359,7 @@ class FakeSheetGrid:
             _RUNS: ("runs", cell.get(_RUNS)),
             _UNDERLINE: ("underline", text.get("underline")),
             _COLOR: ("color", text.get("foregroundColorStyle", {}).get("rgbColor")),
+            _NUMBER: ("number", cell.get("userEnteredFormat", {}).get("numberFormat")),
         }
         was_set = False
         for name in named:

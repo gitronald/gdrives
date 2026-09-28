@@ -109,7 +109,7 @@ to keep in step with local files:
 | `tabs` | yes | An object of one or more tabs, by tab title |
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
 | `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
-| `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab must use `RAW` |
+| `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab, or a tab that sets `typed_writes`, must use `RAW` |
 | `hooks` | no | The default `hooks` of the target's tabs, hook by hook: a tab's own name for a hook wins. A push tab is not given the target's `transform`. See [hooks in the config](#hooks-in-the-config) |
 
 ### Tab fields
@@ -131,6 +131,7 @@ to keep in step with local files:
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `clear_links` | `sync`, `push` | `true` leaves the cells a run writes with no link, where the sheet links a URL or a domain as it is written. Default `false`. See [links](#links) |
 | `link_urls` | `sync`, `push` | An object with one field, `color`, a `#rrggbb` colour. After a write, each URL cell the run wrote is given a link to its own text, in that colour, not underlined. Contradicts `clear_links`. See [links](#links) |
+| `typed_writes` | `sync`, `push` | `true` writes each column the `schema` declares `int`, `float`, `bool`, `date`, or `datetime`, less the key, as a value of that type instead of as text, so the sheet can sort and compute over it. Default `false`. Needs `render` `unformatted`. See [typed writes](#typed-writes) |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
@@ -430,6 +431,8 @@ apply by range and cover the new rows either way.
 3. The sheet writes: the tab is read again, and the run stops if its header,
    its rows, or their positions changed since the merge was computed; then the
    pushed cells, the new rows, and a read-back that checks every written cell.
+   With `typed_writes` the pushed cells and the new rows go in one request,
+   which lands whole or not at all.
 4. The local file, then the base, then the column widths.
 
 So a failed guard or read-back leaves the local file and the base as they
@@ -1068,13 +1071,92 @@ column see text**: a number pushed as `"250"` is the string `250` to the
 sheet, so a `=SUM()` over that column does not count it.
 
 A date or number that a sync or a push writes is **text on the sheet**, as
-every written value is. The sheet does not sort or format it as a date.
+every written value is. The sheet does not sort or format it as a date. A tab
+that sets `typed_writes` writes its declared columns as values instead: see
+[typed writes](#typed-writes).
 
 **Schema.** A `schema` type is declared, never guessed. A cell that does not
 parse as its declared type (`int` takes digits with an optional minus sign;
 `bool` takes `TRUE` or `FALSE` in any case; `date` and `datetime` take ISO
 8601), a blank `required` cell, or a value outside `allowed` is a problem, and
 a run with any problem writes nothing.
+
+### Typed writes
+
+A tab with `typed_writes: true` writes each column its `schema` declares
+`int`, `float`, `bool`, `date`, or `datetime` as a value of that type: a
+number, a checkbox value, or a date. The people who use the sheet can then
+sort it, filter it, and compute over it: `=A2+7` works on a pushed date, and
+`=SUM()` counts a pushed number.
+
+```json
+"Dues": {
+  "local": "data/dues.csv",
+  "key": ["member_id"],
+  "typed_writes": true,
+  "schema": {
+    "amount": {"type": "float"},
+    "paid": {"type": "bool"},
+    "due": {"type": "date"}
+  }
+}
+```
+
+- **Key columns stay text**, whatever their type. Keys are matched by their
+  text, and `007` written as a number would come back `7` and match no local
+  row. A column whose leading zeros matter is a `str` column.
+- **Other columns stay text**: a `str` column, or one the `schema` does not
+  declare, is written as a literal string, as without the field. So is a
+  formula: a cell starting with `=` is text.
+- **A date is written as the number the sheet holds for it**, which it shows
+  as a date only under a date format. A date cell written that has no date or
+  time format is given `yyyy-mm-dd`, or `yyyy-mm-dd hh:mm:ss` for a
+  `datetime`, and one that has its own keeps it. Finding out costs a read of
+  the date columns' formats on each run that writes a date. A row inserted by
+  `insert_above` takes the format of the row above it, as any inserted row
+  does, and gets the date format only when that row has none.
+- **One request.** A sync sends its pushed cells, its new rows, and the date
+  formats in one request, so the write lands whole or not at all. A push
+  writes the whole tab in one request, as before.
+- **The read-back compares by value.** A `float` written as `3.0` reads back
+  `3`, and a `datetime` written as `2026-09-27 09:05` reads back
+  `2026-09-27 09:05:00.000`; both match. The merge compared typed columns by
+  value already (see [typed columns compare by value](#typed-columns-compare-by-value)),
+  and the base keeps the text it had, so turning the field on changes nothing
+  the next run compares.
+- **Refused together with** `render: "formatted"`, which reads what a number
+  format shows rather than the value written, and a target's
+  `input_option: USER_ENTERED`, which is another way of entering values.
+- **Values the sheet cannot hold exactly are refused** before anything is
+  written: an `int` past 2^53, a `float` that is not finite, and a
+  `datetime` with a time zone or finer than a millisecond. A value that does
+  not parse as its type is a schema problem, as always.
+
+**Cells that are already text.** Turning the field on rewrites no cell by
+itself: a run writes only the cells that change, so a column pushed before
+holds text until each cell is pushed again. `retype_columns` rewrites them
+all at once. It previews by default, lists the text cells that parse as their
+column's type and those that do not, and with `apply=True` rewrites the first
+kind as values and leaves every other cell alone:
+
+```python
+from gdrives.sheets import ColumnSchema, retype_columns
+
+schema = {
+    "id": ColumnSchema("int"),
+    "total": ColumnSchema("float"),
+    "paid": ColumnSchema("bool"),
+}
+found = retype_columns(service, "<spreadsheet-id>", "Summary", schema)
+print(f"{len(found.changes)} to rewrite, {len(found.unparsed)} left as text")
+for cell in found.unparsed:
+    print(cell.row, cell.column, cell.text, cell.problem)
+retype_columns(service, "<spreadsheet-id>", "Summary", schema, apply=True)
+```
+
+Pass the tab's `key` as `key=[...]`, so the key columns stay text. Like a
+sync, it reads the tab again before it writes and stops if anything changed,
+and reads the rewritten cells back.
 
 ## What is never done
 
@@ -1086,10 +1168,11 @@ a run with any problem writes nothing.
   neither read nor copied. A formula cell in a synced column reads as its
   result, and a push to that cell replaces the formula with a literal value,
   so keep formula columns out of the projection or make them `sheet_owned`.
-  Links are the one format a tab can ask a run to touch: `clear_links` takes
+  Links are one format a tab can ask a run to touch: `clear_links` takes
   off the link the sheet gives a URL when it is written, and `link_urls`
   gives a URL cell a link to its text, a colour, and no underline. See
-  [links](#links).
+  [links](#links). The other is the date format `typed_writes` gives a date
+  cell it writes that has none: see [typed writes](#typed-writes).
 - **A changed key is not followed.** Editing a key cell reads as one row
   removed and another added: the old key is flagged as deleted, and the new
   one arrives as a new row. To change a key, edit it on both sides (on the
