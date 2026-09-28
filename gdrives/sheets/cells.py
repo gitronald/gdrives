@@ -13,10 +13,12 @@ declared by its name or by its class (:func:`column_type`), and
 records and back.
 """
 
+import math
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from types import MappingProxyType
 from typing import Any
 
 #: A typed cell value, as :func:`from_cell` returns it.
@@ -217,6 +219,77 @@ def normalize_cell(text: str, type_: ColumnType = "str") -> str:
         return to_cell(from_cell(text, name))
     except ValueError:
         return text
+
+
+# -- typed writes --
+
+#: The number format a date or datetime cell written as a value is given
+#: when it has no date or time format of its own.
+DATE_FORMATS: Mapping[str, Mapping[str, str]] = MappingProxyType(
+    {
+        "date": MappingProxyType({"type": "DATE", "pattern": "yyyy-mm-dd"}),
+        "datetime": MappingProxyType(
+            {"type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss"}
+        ),
+    }
+)
+
+# The largest integer a JSON number, a double, holds exactly.
+_EXACT_INTEGER = 2**53
+
+
+def to_serial(value: date) -> int | float:
+    """The serial number of a date or a naive datetime, as a sheet holds it.
+
+    The count of days since 1899-12-30, with the time of day as the
+    fraction: the inverse of :func:`serial_to_cell`. A date's serial is
+    whole. Raises ValueError for a datetime with a time zone, which a serial
+    cannot hold, and for one finer than a millisecond, which a serial read
+    rounds away.
+    """
+    if not isinstance(value, datetime):
+        return (value - _SERIAL_EPOCH.date()).days
+    if value.tzinfo is not None:
+        raise ValueError(f"{value.isoformat()!r} has a time zone; a serial has none")
+    if value.microsecond % 1000:
+        raise ValueError(
+            f"{value.isoformat()!r} is finer than a millisecond, which a serial "
+            "does not keep"
+        )
+    elapsed = (value - _SERIAL_EPOCH) // timedelta(milliseconds=1)
+    return elapsed / _DAY_MILLISECONDS
+
+
+def cell_data(text: str, type_: ColumnType = "str") -> dict[str, Any]:
+    """The ``CellData`` that writes canonical string ``text`` as a ``type_`` value.
+
+    For ``updateCells`` with the mask ``userEnteredValue``: ``int`` and
+    ``float`` are a ``numberValue``, ``bool`` a ``boolValue``, and ``date``
+    and ``datetime`` their serial (:func:`to_serial`) as a ``numberValue``,
+    which displays as a date only under a date format (:data:`DATE_FORMATS`).
+    A blank is an empty cell under every type, and ``str`` a ``stringValue``,
+    so a formula is written as the text it is.
+
+    Raises ValueError for text that does not parse as ``type_``
+    (:func:`from_cell`), and for a value the sheet would not hold exactly: an
+    integer past 2**53, a float that is not finite, a datetime with a time
+    zone or finer than a millisecond.
+    """
+    name = column_type(type_)
+    if text == "":
+        return {}
+    if name == "str":
+        return {"userEnteredValue": {"stringValue": text}}
+    value = from_cell(text, name)
+    if isinstance(value, bool):
+        return {"userEnteredValue": {"boolValue": value}}
+    if isinstance(value, date):
+        return {"userEnteredValue": {"numberValue": to_serial(value)}}
+    if isinstance(value, int) and abs(value) > _EXACT_INTEGER:
+        raise ValueError(f"{text!r} is past 2**53, which a sheet cannot hold exactly")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{text!r} is not a finite number")
+    return {"userEnteredValue": {"numberValue": value}}
 
 
 # -- typed rows --

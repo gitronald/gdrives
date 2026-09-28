@@ -7,6 +7,8 @@ points patch ``build_sheets_service`` at its source (``gdrives.auth``) since the
 import it lazily.
 """
 
+from types import MappingProxyType
+
 import pytest
 from helpers import FakeSheetsService, patch_sheets_service
 
@@ -971,11 +973,13 @@ SUBMODULES = (
     "merge",
     "order",
     "retry",
+    "retype",
     "rules",
     "stores",
     "structure",
     "sync",
     "table",
+    "typed",
     "values",
 )
 
@@ -988,7 +992,7 @@ def _defined_public(module):
         if not name.startswith("_")
         and (
             getattr(obj, "__module__", None) == module.__name__
-            or (name.isupper() and isinstance(obj, (str, frozenset)))
+            or (name.isupper() and isinstance(obj, (str, frozenset, MappingProxyType)))
         )
     }
 

@@ -70,8 +70,10 @@ from gdrives.sheets.apply import (
     insert_point,
 )
 from gdrives.sheets.cells import (
+    SERIAL_TYPES,
     ColumnSchema,
     _header_row,
+    cell_data,
     cell_problem,
     index_rows,
     normalize_cell,
@@ -90,6 +92,7 @@ from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.structure import (
+    CELL_LINK_FIELD,
     UrlLinkProblem,
     _fix_url_links,
     _rgb,
@@ -104,8 +107,17 @@ from gdrives.sheets.table import (
     EmptyTabError,
     Serials,
     Table,
+    _dated,
     parse_tab,
     pull_serials,
+)
+from gdrives.sheets.typed import (
+    _VALUE_FIELD,
+    _typed_problems,
+    _value_request,
+    dated_cells,
+    format_requests,
+    typed_columns,
 )
 from gdrives.sheets.values import (
     FORMATTED_STRING,
@@ -370,6 +382,30 @@ def _canonical(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
             row.pop()
     while rows and not rows[-1]:
         rows.pop()
+    return rows
+
+
+def _typed_grid(
+    grid: Sequence[Sequence[Any]], types: Mapping[str, str], serials: Serials
+) -> list[list[str]]:
+    """``grid`` as :func:`_canonical` gives it, each typed cell in its value's form.
+
+    Below the header, a cell of a column ``types`` names is normalized
+    (:func:`~gdrives.sheets.cells.normalize_cell`), a date column's cell
+    from its serial in ``serials`` where it has one, so a grid read back
+    compares with the rows written by value.
+    """
+    rows = _canonical(grid)
+    header = _header_row(grid)
+    for number, row in enumerate(rows[1:], start=2):
+        for index, text in enumerate(row):
+            column = header[index] if index < len(header) else ""
+            if column not in types:
+                continue
+            type_ = types[column]
+            if column in serials:
+                text = _dated(text, serials[column], number, type_)
+            row[index] = normalize_cell(text, type_)
     return rows
 
 
@@ -1183,6 +1219,7 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             insert_above=tab.insert_above,
             clear_links=tab.clear_links,
             link_urls=tab.link_urls,
+            typed_writes=tab.typed_writes,
         )
     except ReadBackError:
         report.wrote_sheet = True  # the writes went out; they did not read back
@@ -1599,6 +1636,7 @@ def push_tab(
         listing=listing,
         report=report,
         render=tab.render,
+        typed_writes=tab.typed_writes,
     )
 
 
@@ -1626,6 +1664,7 @@ def push_rows(
     listing: TabListing | None = None,
     report: TabReport | None = None,
     render: str = "unformatted",
+    typed_writes: bool = False,
 ) -> TabReport:
     """Replace the values of the tab ``title`` with ``rows`` (with ``apply``).
 
@@ -1691,10 +1730,29 @@ def push_rows(
     read before the write, the read-back, and the header read of ``widths``
     all follow it. The rows are written as ``RAW`` strings either way, and a
     string reads as written under either setting.
+
+    ``typed_writes`` writes each column ``schema`` declares, less the
+    ``key``, as a value of its type (:mod:`~gdrives.sheets.typed`), with the
+    whole tab in one ``updateCells`` in place of the ``values.update``, and
+    gives each date cell written that has no date or time format one, which
+    costs a grid read of the date columns. Whether the tab already holds the
+    rows, and the read-back, then compare a typed column by value, a date
+    column read as serial numbers. It is refused, before any request, with
+    an ``input_option`` other than ``RAW``, with ``render="formatted"``, and
+    for a value its column's type cannot hold exactly.
     """
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
     _check_render(render)
+    if typed_writes and input_option != RAW:
+        raise ValueError(
+            f"tab {title!r}: typed writes send values themselves; "
+            f"input_option {input_option} contradicts them"
+        )
+    if typed_writes and render != "unformatted":
+        raise ValueError(
+            f"tab {title!r}: typed writes need the tab read unformatted, not {render!r}"
+        )
     if link_urls is not None:
         if clear_links:
             raise ValueError(
@@ -1733,6 +1791,22 @@ def push_rows(
     if key:
         index_rows(rows, key, side=label, blank_keys=blank_keys)
     expected = [out, *([row.get(column, "") for column in out] for row in rows)]
+    types: dict[str, str] = {}
+    if typed_writes:
+        declared = {c: spec.type for c, spec in (schema or {}).items() if c in out}
+        types = typed_columns(declared, key)
+        refused = _typed_problems(
+            (
+                (f"row {number}", column, text)
+                for number, values in enumerate(expected[1:], start=2)
+                for column, text in zip(out, values, strict=True)
+            ),
+            types,
+        )
+        if refused:
+            raise ValueError(
+                f"tab {title!r}: cannot write typed values: " + "; ".join(refused)
+            )
 
     if listing is None:
         listing = tab_listing(service, spreadsheet_id)
@@ -1744,11 +1818,18 @@ def push_rows(
         report.tab_state = "missing"
     records = _sheet_records(title, grid)
     before_rows, before_cells = _grid_counts(grid)
+    if types and grid:
+        serials = pull_serials(service, spreadsheet_id, title, grid, types)
+        unchanged = _typed_grid(grid, types, serials) == _typed_grid(
+            expected, types, {}
+        )
+    else:
+        unchanged = _canonical(grid) == _canonical(expected)
     report.replacement = replace(
         _compare(records or Records([], []), out, rows, key),
         before_rows=before_rows,
         before_cells=before_cells,
-        unchanged=_canonical(grid) == _canonical(expected),
+        unchanged=unchanged,
     )
     if input_option != RAW:
         report.notes.append(
@@ -1775,15 +1856,20 @@ def push_rows(
         [*row, *[""] * (width - len(row))]
         for row in [*expected, *[list[str]()] * (height - len(expected))]
     ]
-    update_values(
-        service,
-        spreadsheet_id,
-        f"{a1_quote(title)}!A1:{column_letter(width - 1)}{height}",
-        padded,
-        input_option=input_option,
-    )
+    if typed_writes:
+        _write_typed(
+            service, spreadsheet_id, title, sheet_id, padded, out, types, clear_links
+        )
+    else:
+        update_values(
+            service,
+            spreadsheet_id,
+            f"{a1_quote(title)}!A1:{column_letter(width - 1)}{height}",
+            padded,
+            input_option=input_option,
+        )
     report.wrote_sheet = True
-    _check_push(service, spreadsheet_id, title, expected, input_option, render)
+    _check_push(service, spreadsheet_id, title, expected, input_option, render, types)
     if clear_links:
         left = strip_links(
             service, spreadsheet_id, title, out, header=out, sheet_id=sheet_id
@@ -1798,6 +1884,58 @@ def push_rows(
         set_column_widths(service, spreadsheet_id, title, widths, render=render)
         report.wrote_widths = True
     return report
+
+
+def _write_typed(
+    service: Service,
+    spreadsheet_id: str,
+    title: str,
+    sheet_id: int,
+    padded: Sequence[Sequence[str]],
+    out: Sequence[str],
+    types: Mapping[str, str],
+    clear_links: bool,
+) -> None:
+    """Write a push's ``padded`` grid from A1 as typed values, in one request.
+
+    The header row and every column ``types`` does not name are literal
+    strings. A date cell written that has no date or time format now is
+    given one in the same request, which a grid read of the date columns
+    finds out first.
+    """
+    dates = [
+        column
+        for index, column in enumerate(out)
+        if types.get(column) in SERIAL_TYPES and any(row[index] for row in padded[1:])
+    ]
+    dated = dated_cells(service, spreadsheet_id, title, out, dates)
+    cells = [
+        [
+            cell_data(
+                text,
+                types.get(out[index], "str") if number and index < len(out) else "str",
+            )
+            for index, text in enumerate(row)
+        ]
+        for number, row in enumerate(padded)
+    ]
+    fields = _VALUE_FIELD
+    if clear_links:
+        fields += f",{CELL_LINK_FIELD}"
+    unformatted = [
+        (number - 1, out.index(column), types[column])
+        for column in dates
+        for number, row in enumerate(padded[1:], start=2)
+        if row[out.index(column)] and (number, column) not in dated
+    ]
+    batch_update_spreadsheet(
+        service,
+        spreadsheet_id,
+        [
+            _value_request(sheet_id, 0, 0, cells, fields),
+            *format_requests(sheet_id, unformatted),
+        ],
+    )
 
 
 def _grow(
@@ -1840,11 +1978,21 @@ def _check_push(
     expected: list[list[str]],
     input_option: str,
     render: str = "unformatted",
+    types: Mapping[str, str] | None = None,
 ) -> None:
-    """Read a pushed tab back and check it, raising :class:`ReadBackError`."""
-    back = _canonical(_read_grid(service, spreadsheet_id, title, render))
-    failed = f"tab {title!r}: the read-back does not match the push"
+    """Read a pushed tab back and check it, raising :class:`ReadBackError`.
+
+    A column ``types`` names, which a typed push wrote as values, is
+    compared by value, a date column read as serial numbers.
+    """
+    read = _read_grid(service, spreadsheet_id, title, render)
+    back = _canonical(read)
     want = _canonical(expected)
+    if types:
+        serials = pull_serials(service, spreadsheet_id, title, read, types)
+        back = _typed_grid(read, types, serials)
+        want = _typed_grid(expected, types, {})
+    failed = f"tab {title!r}: the read-back does not match the push"
     if input_option == RAW:
         if back != want:
             wrong = [
