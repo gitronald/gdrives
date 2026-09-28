@@ -95,6 +95,7 @@ PROMISED = {
         "set_url_links",
         "url_link_problems",
     ],
+    "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -112,6 +113,7 @@ PROMISED_ATTRIBUTES = [
     (TabConfig, ["link_urls"]),
     (ApplyResult, ["linked"]),
     (TabReport, ["linked"]),
+    (TabConfig, ["hooks"]),
 ]
 
 
@@ -184,8 +186,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 9
-        assert len(blocks(GUIDE, "python")) == 9
+        assert len(blocks(GUIDE, "json")) == 10
+        assert len(blocks(GUIDE, "python")) == 10
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError

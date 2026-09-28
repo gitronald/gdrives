@@ -26,7 +26,7 @@ each naming its target and tab, so a single run shows everything to fix. The
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -56,11 +56,17 @@ INPUT_OPTIONS = frozenset({RAW, USER_ENTERED})
 #: The local file formats, by lower-cased extension.
 LOCAL_EXTENSIONS = frozenset({".csv", ".tsv", ".json"})
 
+#: The hooks a config may name, each as ``module:function``
+#: (:mod:`gdrives.sheets.hooks`).
+HOOKS = frozenset({"validate", "check", "warn", "transform"})
+
 # The cache directory gdrives already uses, commonly ignored by version
 # control; a base belongs where it is committed.
 _CACHE_DIR = ".gdrives"
 
-_TARGET_FIELDS = frozenset({"spreadsheet", "base", "base_file", "input_option", "tabs"})
+_TARGET_FIELDS = frozenset(
+    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks"}
+)
 _TAB_FIELDS = frozenset(
     {
         "mode",
@@ -85,6 +91,7 @@ _TAB_FIELDS = frozenset(
         "entry",
         "link_urls",
         "strict_schema",
+        "hooks",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -152,6 +159,10 @@ class TabConfig:
     a sheet column outside the projection are checked too, not just the
     projection. With it, ``schema`` may also name a column outside
     ``columns``, which is refused otherwise.
+    ``hooks`` maps a hook (:data:`HOOKS`) to the ``module:function`` that
+    runs as it, only named here: nothing is imported until a run starts
+    (:func:`~gdrives.sheets.hooks.resolve_hooks`). A push tab takes no
+    ``transform``.
     """
 
     title: str
@@ -178,6 +189,7 @@ class TabConfig:
     store: Store | None = None
     entry: str | None = None
     link_urls: str | None = None
+    hooks: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
@@ -199,6 +211,9 @@ class TabConfig:
                     "contradict each other"
                 )
             _rgb(self.link_urls)
+        hook_problems = _hook_problems(self.hooks, self.mode)
+        if hook_problems:
+            raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
 
     @property
     def types(self) -> dict[str, str]:
@@ -354,6 +369,19 @@ def parse_config(data: Any, path: Path) -> Config:
 # -- checking --
 
 
+def _with_defaults(tab: TabConfig, defaults: Mapping[str, str]) -> TabConfig:
+    """``tab`` with its target's ``hooks`` under its own, hook by hook.
+
+    A push tab is not given the target's ``transform``.
+    """
+    given = {
+        hook: name
+        for hook, name in defaults.items()
+        if not (hook == "transform" and tab.mode == "push")
+    }
+    return replace(tab, hooks={**given, **tab.hooks})
+
+
 def _is_names(value: Any) -> bool:
     """True for a list of non-blank strings."""
     return isinstance(value, list) and all(
@@ -364,6 +392,30 @@ def _is_names(value: Any) -> bool:
 def _is_scalar(value: Any) -> bool:
     """True for a value that can be one cell: a string, number, or boolean."""
     return isinstance(value, (str, int, float, bool))
+
+
+def _is_hook_name(value: Any) -> bool:
+    """True for a string of the form ``module:function``, dotted module allowed."""
+    if not isinstance(value, str) or value.count(":") != 1:
+        return False
+    module, function = value.split(":")
+    return function.isidentifier() and all(
+        part.isidentifier() for part in module.split(".")
+    )
+
+
+def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
+    """What is wrong with a tab's ``hooks`` of the given ``mode``, by form alone."""
+    found: list[str] = []
+    unknown = sorted(set(hooks) - set(HOOKS))
+    if unknown:
+        found.append(f"'hooks' names unknown hook(s) {unknown}; hooks: {sorted(HOOKS)}")
+    for hook, name in hooks.items():
+        if hook in HOOKS and not _is_hook_name(name):
+            found.append(f"hook {hook!r} must be 'module:function', not {name!r}")
+    if mode == "push" and "transform" in hooks:
+        found.append("hook 'transform' applies only to pull and sync tabs")
+    return found
 
 
 def _repeated(names: Sequence[str]) -> list[str]:
@@ -415,6 +467,7 @@ class _Checker:
                     "committed"
                 )
         base_file = self._base_file(where, raw)
+        defaults = self._hooks(where, raw, "sync")
 
         input_option = raw.get("input_option", RAW)
         if input_option not in INPUT_OPTIONS:
@@ -434,6 +487,8 @@ class _Checker:
                 tab = self.tab(where, title, raw_tab)
                 if tab is None:
                     continue
+                if defaults:
+                    tab = _with_defaults(tab, defaults)
                 named = [t.title for t in tabs if t.sheet_id == tab.sheet_id]
                 if tab.sheet_id is not None and named:
                     problems.append(
@@ -631,6 +686,7 @@ class _Checker:
         if not isinstance(clear_links, bool):
             problems.append(f"{where}: 'clear_links' must be true or false")
         link_urls = self._link_urls(where, raw)
+        hooks = self._hooks(where, raw, str(mode))
         if link_urls is not None and clear_links is True:
             problems.append(
                 f"{where}: 'link_urls' and 'clear_links' contradict each other"
@@ -691,7 +747,27 @@ class _Checker:
             entry=entry,
             link_urls=link_urls,
             strict_schema=bool(strict_schema),
+            hooks=hooks,
         )
+
+    def _hooks(self, where: str, raw: Mapping[str, Any], mode: str) -> dict[str, str]:
+        """The ``hooks`` of a tab or a target, checked by form; empty when refused.
+
+        A target's hooks are checked as a sync tab's, since a sync tab takes
+        every hook.
+        """
+        if "hooks" not in raw:
+            return {}
+        given = raw["hooks"]
+        if not isinstance(given, dict) or not given:
+            self.problems.append(
+                f"{where}: 'hooks' must be an object naming one or more of "
+                f"{sorted(HOOKS)}"
+            )
+            return {}
+        found = _hook_problems(given, mode)
+        self.problems.extend(f"{where}: {problem}" for problem in found)
+        return {} if found else {str(hook): str(name) for hook, name in given.items()}
 
     def _link_urls(self, where: str, raw: Mapping[str, Any]) -> str | None:
         """The colour of the tab's ``link_urls``; None when absent or refused."""

@@ -415,6 +415,15 @@ formatting and every column, in the fewest moves, previews unless given
 `apply=True`, and refuses an order that leaves out a row of the tab. See
 [keeping a tab in order](docs/sheets-sync.md#keeping-a-tab-in-order).
 
+A tab's `hooks`, or a target's for all its tabs, names checks of your own
+for the commands to run, as `"module:function"`: `{"validate":
+"roster_checks:known_status"}`, with `check`, `warn`, and `transform` beside
+`validate`. **Running a command on such a config runs those functions**, a
+preview included, so read a config from somewhere else before running it.
+The module is found as `import` finds it, never beside the config, and every
+name is checked before the first request. See
+[hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
+
 ### Read and edit Google Docs content
 
 Operate on the live document via the Docs API — distinct from `export`, which

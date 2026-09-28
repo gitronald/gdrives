@@ -84,6 +84,7 @@ from gdrives.sheets.config import (
     Target,
 )
 from gdrives.sheets.files import Records, read_records, write_records
+from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.structure import (
@@ -542,6 +543,30 @@ def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
 
 
+def _with_tab_hooks(
+    tab: TabConfig,
+    validate: Validate | None,
+    check: Check | None,
+    warn: Check | None,
+    transform: Transform | None,
+) -> tuple[Validate | None, Check | None, Check | None, Transform | None]:
+    """The hooks ``tab``'s config names joined with those given, the config's first.
+
+    Messages are the config hook's, then the given one's; a config
+    ``transform`` runs first, and the given one cleans what it returns.
+    Nothing is imported for a tab with no ``hooks``.
+    """
+    if not tab.hooks:
+        return validate, check, warn, transform
+    named = tab_hooks(tab)
+    return (
+        _joined(named.get("validate"), validate),
+        _joined(named.get("check"), check),
+        _joined(named.get("warn"), warn),
+        _chained(named.get("transform"), transform),
+    )
+
+
 # -- transform --
 
 
@@ -704,6 +729,9 @@ def plan_tab(
     _started(report, tab)
     _refuse_exclude(tab)
     report.adopted = adopt
+    validate, check, warn, transform = _with_tab_hooks(
+        tab, validate, check, warn, transform
+    )
     options: dict[str, Any] = {
         "adopt": adopt,
         "add_missing": add_missing,
@@ -1313,6 +1341,9 @@ def pull_tab(
     store = _started(report, tab)
     report.apply = apply
     _excluded(tab)
+    validate, check, warn, transform = _with_tab_hooks(
+        tab, validate, check, warn, transform
+    )
     left = f"the {_side(store)} is left alone"
     if listing is None:
         listing = tab_listing(service, spreadsheet_id)
@@ -1429,6 +1460,7 @@ def push_tab(
     store = _started(report, tab)
     _refuse_exclude(tab)
     report.apply = apply
+    validate, check, warn, _ = _with_tab_hooks(tab, validate, check, warn, None)
     local = _read_local(tab)
     if not local.rows:
         raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
@@ -1866,6 +1898,12 @@ def run_target(
     Raises ValueError, before any request, for an unknown mode or tab, a
     selected tab of another mode, a sync-only option on another mode, or a
     ``transform`` on a push.
+
+    The hooks a selected tab's config names are found first
+    (:func:`~gdrives.sheets.hooks.resolve_hooks`), and a
+    :class:`~gdrives.sheets.config.ConfigError` lists every name that does
+    not resolve, before any request. Each tab runs its config's hooks, then
+    the ones given here.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
@@ -1890,6 +1928,7 @@ def run_target(
         selected = [tab for tab in target.tabs if tab.mode == mode]
         if not selected:
             raise ValueError(f"target {target.name!r} has no {mode} tabs")
+    resolve_hooks(target, [tab.title for tab in selected])
 
     report = SyncReport(target=target.name)
     listing: TabListing | None = None
