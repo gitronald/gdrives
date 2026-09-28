@@ -238,6 +238,31 @@ class TestDownloadNativeExport:
         download_revision(mock_service, "FID", "R1", str(out), mime_type="csv")
         mock_service._http.request.assert_called_with("https://x/export.csv", "GET")
 
+    @pytest.mark.parametrize("wanted", [CSV_MIME, "csv", ".CSV"])
+    def test_a_format_is_a_mime_type_or_an_extension(
+        self, mock_service, tmp_path, wanted
+    ):
+        self._serve(
+            mock_service,
+            export_links={
+                XLSX_MIME: "https://x/export.xlsx",
+                CSV_MIME: "https://x/export.csv",
+            },
+        )
+        target = download_revision(
+            mock_service, "FID", "R1", str(tmp_path), mime_type=wanted
+        )
+        assert target.suffix == ".csv"
+        mock_service._http.request.assert_called_with("https://x/export.csv", "GET")
+
+    def test_an_unknown_mime_type_is_refused(self, mock_service, tmp_path):
+        self._serve(mock_service, export_links={XLSX_MIME: "https://x/export.xlsx"})
+        with pytest.raises(ValueError, match="no export format for MIME type"):
+            download_revision(
+                mock_service, "FID", "R1", str(tmp_path), mime_type="image/png"
+            )
+        assert list(tmp_path.iterdir()) == []
+
     def test_two_mime_spellings_of_one_format_both_match(self, mock_service, tmp_path):
         alt_ods_mime = "application/vnd.oasis.opendocument.spreadsheet"
         self._serve(mock_service, export_links={alt_ods_mime: "https://x/export.ods"})

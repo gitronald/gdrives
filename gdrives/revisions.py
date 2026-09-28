@@ -135,12 +135,10 @@ def list_revisions(service: Service, file_id: str) -> list[Revision]:
 
 def _get_revision(service: Service, file_id: str, revision_id: str) -> Revision:
     """Fetch one revision's metadata by ID (`revisions.get`, never `get_media`)."""
-    data = (
-        service.revisions()
-        .get(fileId=file_id, revisionId=revision_id, fields=_REVISION_FIELDS)
-        .execute()
+    request = service.revisions().get(
+        fileId=file_id, revisionId=revision_id, fields=_REVISION_FIELDS
     )
-    return _revision_from_api(data)
+    return _revision_from_api(with_retry(request.execute))
 
 
 def _default_format(mime_type: str) -> str:
@@ -158,6 +156,17 @@ def _offered_extensions(export_links: dict[str, str]) -> list[str]:
         for ext, mimes in EXPORT_EXTENSIONS.items()
         if any(mime in export_links for mime in mimes)
     )
+
+
+def _extension(wanted: str) -> str:
+    """The extension (no leading dot) of a format named by extension or MIME type."""
+    if "/" not in wanted:
+        return wanted.lstrip(".").lower()
+    for ext, mimes in EXPORT_EXTENSIONS.items():
+        if wanted in mimes:
+            return ext
+    known = ", ".join(sorted(EXPORT_EXTENSIONS))
+    raise ValueError(f"no export format for MIME type {wanted!r}; known: {known}")
 
 
 def _export_mime(export_links: dict[str, str], fmt: str) -> str:
@@ -213,9 +222,11 @@ def download_revision(
 
     The file's current MIME type decides how: a native Google file (Doc,
     Sheet, Slides) is fetched from the revision's own `exportLinks`, in the
-    format named by `mime_type` (an extension such as ``"xlsx"``, default the
-    one `download.py`/`export.py` use for the type); anything else is fetched
-    as stored, via `revisions.get_media`, and `mime_type` must be left unset.
+    format named by `mime_type`: a MIME type such as ``"text/csv"``, or an
+    extension such as ``"csv"`` (default the one `download.py`/`export.py`
+    use for the type). A format the revision does not offer is refused, with
+    the offered ones listed. Anything else is fetched as stored, via
+    `revisions.get_media`, and `mime_type` must be left unset.
 
     For a directory `output`, the local name is the file's name, the revision
     ID, and the format's extension, joined by a hyphen.
@@ -226,7 +237,7 @@ def download_revision(
     if is_native(meta):
         revision = _get_revision(service, file_id, revision_id)
         export_links = revision.export_links or {}
-        fmt = mime_type or _default_format(meta["mimeType"])
+        fmt = _extension(mime_type) if mime_type else _default_format(meta["mimeType"])
         mime = _export_mime(export_links, fmt)
         content = _fetch_export_link(service, export_links[mime])
         target = _target_path(output, stem, revision_id, f".{fmt}")
@@ -235,7 +246,7 @@ def download_revision(
         return target
 
     if mime_type is not None:
-        raise ValueError("--format only applies to a native Google file")
+        raise ValueError("a format only applies to a native Google file")
 
     ext = Path(safe_filename(meta["name"])).suffix
     target = _target_path(output, stem, revision_id, ext)
