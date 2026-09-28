@@ -85,6 +85,9 @@ from gdrives.sheets.files import Records, read_records, write_records
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.structure import (
+    UrlLinkProblem,
+    _fix_url_links,
+    _rgb,
     add_columns,
     delete_columns,
     ensure_tabs,
@@ -224,6 +227,8 @@ class TabReport:
     step that landed is flagged even when a later one fails. A single sheet
     write that fails with an API error part way is not flagged; the error
     says what failed.
+
+    ``linked`` is each URL cell a run with ``link_urls`` gave a link.
     """
 
     tab: str
@@ -251,6 +256,7 @@ class TabReport:
     wrote_local: bool = False
     wrote_base: bool = False
     wrote_widths: bool = False
+    linked: list[UrlLinkProblem] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -893,11 +899,13 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             plan,
             insert_above=tab.insert_above,
             clear_links=tab.clear_links,
+            link_urls=tab.link_urls,
         )
     except ReadBackError:
         report.wrote_sheet = True  # the writes went out; they did not read back
         raise
     report.applied = result
+    report.linked = result.linked
     if result.pushed or result.appended:
         report.wrote_sheet = True
 
@@ -1254,6 +1262,7 @@ def push_tab(
         warn=warn,
         widths=tab.widths,
         clear_links=tab.clear_links,
+        link_urls=tab.link_urls,
         label=_named(store),
         sheet_id=tab.sheet_id,
         listing=listing,
@@ -1279,6 +1288,7 @@ def push_rows(
     warn: Check | None = None,
     widths: Mapping[str, int] | None = None,
     clear_links: bool = False,
+    link_urls: str | None = None,
     label: str = "rows",
     sheet_id: int | None = None,
     listing: TabListing | None = None,
@@ -1323,6 +1333,15 @@ def push_rows(
     read when it left some. A link that remains raises
     :class:`ReadBackError`.
 
+    ``link_urls``, a ``#rrggbb`` colour, does the opposite: after the write,
+    each URL cell of the columns pushed is given a link to its own text in
+    that colour, not underlined
+    (:func:`~gdrives.sheets.structure.set_url_links`), and the report's
+    ``linked`` lists them. It costs a read of the tab's values and a grid
+    read of its URL cells, and when any needs a link, one write and the two
+    reads again. A colour that is not ``#rrggbb``, or ``link_urls`` with
+    ``clear_links``, is refused before any request.
+
     With ``sheet_id`` the tab is found by it, under whatever title it has
     now, and ``title`` is only what the report calls it; a ``sheet_id`` the
     spreadsheet lacks is an error, and no tab is created. ``listing`` is the
@@ -1337,6 +1356,12 @@ def push_rows(
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
     _check_render(render)
+    if link_urls is not None:
+        if clear_links:
+            raise ValueError(
+                f"tab {title!r}: clear_links and link_urls contradict each other"
+            )
+        _rgb(link_urls)
     out = list(columns)
     if not out or "" in out or len(set(out)) != len(out):
         raise ValueError(
@@ -1417,6 +1442,10 @@ def push_rows(
         )
         if left:
             raise _links_left(title, left, "push")
+    if link_urls is not None:
+        report.linked = _fix_url_links(
+            service, spreadsheet_id, title, link_urls, columns=out, sheet_id=sheet_id
+        )
     if widths:
         set_column_widths(service, spreadsheet_id, title, widths, render=render)
         report.wrote_widths = True
@@ -1795,6 +1824,8 @@ def _format_tab(tab: TabReport) -> list[str]:
     if tab.warnings:
         lines.append(f"  warnings ({len(tab.warnings)}):")
         lines.extend(f"    {printable(warning)}" for warning in tab.warnings)
+    if tab.linked:
+        lines.append(f"  URL cells given a link: {len(tab.linked)}")
     wrote = [
         name
         for name, done in (

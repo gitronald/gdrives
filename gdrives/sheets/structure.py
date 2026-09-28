@@ -16,8 +16,12 @@ The Sheets API formats text that is a URL or a bare domain as a link when it
 is written, under ``RAW`` input too. :func:`linked_cells` finds the cells
 that hold a link, and :func:`clear_link_format` takes the link format off
 cells meant to hold plain text, leaving every other format alone.
+:func:`url_link_problems` and :func:`set_url_links` do the opposite for cells
+whose whole text is a URL: each is to hold a link to its own text, in a
+colour the caller names, and not underlined.
 """
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -462,6 +466,305 @@ def strip_links(
     requests = _link_clears(sheet_id, positions, rows, linked)
     batch_update_spreadsheet(service, spreadsheet_id, requests)
     return found()
+
+
+# -- URL links --
+
+# Why a URL cell is not as set_url_links leaves it, in the order a problem
+# lists them: it holds no link, its link points somewhere other than its
+# text, its text is not in the colour named, its text is underlined, or it
+# has text format runs.
+_URL_REASON_ORDER = ("no_link", "target", "color", "underline", "runs")
+
+#: The reasons a :class:`UrlLinkProblem` can give.
+URL_LINK_REASONS = frozenset(_URL_REASON_ORDER)
+
+# A cell's whole text, stripped, as a URL.
+_URL_CELL = re.compile(r"https?://\S+", re.IGNORECASE)
+
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+# The grid read of URL cells. A link underlines and colours its text with no
+# user-entered property saying so, so the colour and underline are read from
+# the effective format.
+_URL_FIELDS = (
+    "sheets(data(rowData(values(hyperlink,textFormatRuns,"
+    "effectiveFormat(textFormat(underline,foregroundColorStyle))))))"
+)
+
+# The properties the fix writes, and no others, so a cell keeps its bold, its
+# fill, and its font. The runs are not among them: in the request that sets a
+# link they take the link away, so they are cleared by a request of their own.
+_URL_FORMAT_FIELDS = ",".join(
+    f"userEnteredFormat.textFormat.{name}"
+    for name in ("link", "underline", "foregroundColorStyle")
+)
+
+_RGB = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class UrlLinkProblem:
+    """A URL cell whose link is not as wanted, and why.
+
+    ``row`` is the 1-based spreadsheet row, ``column`` the header name, and
+    ``text`` the cell's text, stripped, which is the link's wanted target.
+    ``reasons`` are names from :data:`URL_LINK_REASONS`, in the order
+    ``no_link``, ``target``, ``color``, ``underline``, ``runs``.
+    """
+
+    row: int
+    column: str
+    text: str
+    reasons: tuple[str, ...]
+
+
+def _rgb(color: str) -> _RGB:
+    """The channels of a ``#rrggbb`` colour, each 0 to 255."""
+    if not isinstance(color, str) or not _HEX_COLOR.fullmatch(color):
+        raise ValueError(f"a colour is written '#rrggbb', not {color!r}")
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def _channels(color: Mapping[str, Any]) -> _RGB:
+    """An API colour's channels, each to the nearest of 255 steps.
+
+    The API omits a channel that is zero, so a missing one is 0.
+    """
+    red, green, blue = (
+        round(float(color.get(name, 0)) * 255) for name in ("red", "green", "blue")
+    )
+    return red, green, blue
+
+
+def _check_rows(rows: Sequence[int] | None) -> None:
+    below = [row for row in rows or () if row < 1]
+    if below:
+        raise ValueError(f"rows are spreadsheet rows, from 1: {below}")
+
+
+def _url_reasons(cell: Mapping[str, Any], text: str, rgb: _RGB) -> tuple[str, ...]:
+    """Why one URL cell, as a grid read returned it, is not as wanted."""
+    shown = cell.get("effectiveFormat", {}).get("textFormat", {})
+    color = shown.get("foregroundColorStyle", {}).get("rgbColor", {})
+    link = cell.get("hyperlink")
+    found = {
+        "no_link": link is None,
+        "target": link is not None and link != text,
+        "color": _channels(color) != rgb,
+        "underline": bool(shown.get("underline")),
+        "runs": bool(cell.get(RUNS_FIELD)),
+    }
+    return tuple(reason for reason in _URL_REASON_ORDER if found[reason])
+
+
+def _url_problems(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    rgb: _RGB,
+    columns: Sequence[str] | None,
+    rows: Sequence[int] | None,
+    cells: Collection[tuple[int, str]] | None = None,
+) -> tuple[list[UrlLinkProblem], dict[str, int]]:
+    """The problems of the URL cells named, and each wanted column's index.
+
+    The tab's values are read first, and the grid read is bounded to the
+    rows and columns of the URL cells among them; with none, it is not made.
+    ``cells`` limits the cells to those ``(row, column)`` pairs, for a run
+    that wrote cells rather than whole rows and columns.
+    """
+    grid = _pull_rendered(service, spreadsheet_id, a1_quote(tab), "unformatted")
+    positions, _ = _wanted(service, spreadsheet_id, tab, columns, _header_row(grid))
+    names = {index: name for name, index in positions.items()}
+    wanted = None if rows is None else set(rows)
+    found: dict[tuple[int, int], str] = {}
+    for row, values in enumerate(grid, start=1):
+        if wanted is not None and row not in wanted:
+            continue
+        for index, value in enumerate(values):
+            if index not in names:
+                continue
+            if cells is not None and (row, names[index]) not in cells:
+                continue
+            text = value.strip() if isinstance(value, str) else ""
+            if _URL_CELL.fullmatch(text):
+                found[(row, index)] = text
+    if not found:
+        return [], positions
+    top, bottom = min(row for row, _ in found), max(row for row, _ in found)
+    left, right = min(index for _, index in found), max(index for _, index in found)
+    span = f"{a1_quote(tab)}!{column_letter(left)}{top}:{column_letter(right)}{bottom}"
+    data = pull_grid(service, spreadsheet_id, span, _URL_FIELDS)
+    read: dict[tuple[int, int], dict[str, Any]] = {
+        (row, index): cell
+        for row, held in enumerate(data.get("rowData", []), start=top)
+        for index, cell in enumerate(held.get("values", []), start=left)
+    }
+    problems: list[UrlLinkProblem] = []
+    for (row, index), text in sorted(found.items()):
+        reasons = _url_reasons(read.get((row, index), {}), text, rgb)
+        if reasons:
+            problems.append(UrlLinkProblem(row, names[index], text, reasons))
+    return problems, positions
+
+
+def url_link_problems(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    color: str,
+    columns: Sequence[str] | None = None,
+    rows: Sequence[int] | None = None,
+) -> list[UrlLinkProblem]:
+    """Every URL cell of ``columns`` and ``rows`` whose link is not as wanted.
+
+    A URL cell is one whose whole text, stripped, is ``http://`` or
+    ``https://`` followed by characters with no whitespace; a bare domain, a
+    URL inside a sentence, and an email address are not. Each is to hold a
+    link to its own text, in ``color`` (``#rrggbb``, compared to the nearest
+    of 255 steps a channel), not underlined, and with no text format runs.
+    Returns the cells that break that rule, in row then column order.
+
+    ``columns`` defaults to every named column of the header, and ``rows``
+    (1-based spreadsheet rows) to every row, so a caller can pass the cells
+    an :class:`~gdrives.sheets.apply.ApplyResult` wrote. One read of the
+    tab's values finds the URL cells, and one grid read
+    (:func:`~gdrives.sheets.values.pull_grid`), bounded to the rows and
+    columns that hold them, reads their links and formats; a tab with no URL
+    cell costs the first read only.
+
+    Raises ValueError, before any request, for a colour that is not
+    ``#rrggbb`` or a row below 1, and before the grid read for a blank or
+    repeated column name, or a name the header lacks or repeats.
+    """
+    rgb = _rgb(color)
+    _check_rows(rows)
+    return _url_problems(service, spreadsheet_id, tab, rgb, columns, rows)[0]
+
+
+def _url_link(
+    sheet_id: int, column: int, row: int, text: str, rgb: _RGB
+) -> dict[str, Any]:
+    """The ``repeatCell`` linking one cell to ``text``, in ``rgb``, not underlined."""
+    red, green, blue = (channel / 255 for channel in rgb)
+    text_format = {
+        "link": {"uri": text},
+        "underline": False,
+        "foregroundColorStyle": {
+            "rgbColor": {"red": red, "green": green, "blue": blue}
+        },
+    }
+    return {
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": row - 1,
+                "endRowIndex": row,
+                "startColumnIndex": column,
+                "endColumnIndex": column + 1,
+            },
+            "cell": {"userEnteredFormat": {"textFormat": text_format}},
+            "fields": _URL_FORMAT_FIELDS,
+        }
+    }
+
+
+def _fix_url_links(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    color: str,
+    *,
+    columns: Sequence[str] | None = None,
+    rows: Sequence[int] | None = None,
+    cells: Collection[tuple[int, str]] | None = None,
+    sheet_id: int | None = None,
+) -> list[UrlLinkProblem]:
+    """:func:`set_url_links`, limited to ``cells`` when given.
+
+    For a run that wrote a set of ``(row, column)`` cells, and knows the
+    tab's ``sheet_id``, which saves its read.
+    """
+    rgb = _rgb(color)
+    _check_rows(rows)
+    problems, positions = _url_problems(
+        service, spreadsheet_id, tab, rgb, columns, rows, cells
+    )
+    if not problems:
+        return []
+    if sheet_id is None:
+        sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
+    # The runs go in requests of their own, before the links they would drop.
+    requests = [
+        link_clear(
+            sheet_id,
+            RUNS_FIELD,
+            (positions[cell.column], positions[cell.column] + 1),
+            (cell.row - 1, cell.row),
+        )
+        for cell in problems
+        if "runs" in cell.reasons
+    ]
+    requests.extend(
+        _url_link(sheet_id, positions[cell.column], cell.row, cell.text, rgb)
+        for cell in problems
+    )
+    batch_update_spreadsheet(service, spreadsheet_id, requests)
+    fixed = {(cell.row, cell.column) for cell in problems}
+    left, _ = _url_problems(
+        service,
+        spreadsheet_id,
+        tab,
+        rgb,
+        list(dict.fromkeys(cell.column for cell in problems)),
+        sorted({cell.row for cell in problems}),
+        fixed,
+    )
+    if left:
+        # apply imports this module, so its error is imported here.
+        from gdrives.sheets.apply import ReadBackError
+
+        raise ReadBackError(
+            f"tab {tab!r}: the read-back found URL cells the fix did not link: "
+            + "; ".join(
+                f"row {cell.row}, column {cell.column!r} ({', '.join(cell.reasons)})"
+                for cell in left
+            )
+        )
+    return problems
+
+
+def set_url_links(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    color: str,
+    columns: Sequence[str] | None = None,
+    rows: Sequence[int] | None = None,
+) -> list[UrlLinkProblem]:
+    """Link each URL cell of ``columns`` and ``rows`` to its text; return the cells.
+
+    Runs :func:`url_link_problems` and writes only to the cells it returns,
+    in one ``spreadsheets.batchUpdate``: for each, one ``repeatCell`` sets the
+    link, the colour, and ``underline: false`` under a mask of exactly those
+    three properties, so the cell keeps its bold, its fill, and its font. A
+    cell with text format runs has them cleared by a ``repeatCell`` of its
+    own, earlier in the batch, since the API drops a link sent in the request
+    that clears the runs. A tab of N such cells, R of them with runs, costs
+    one batch of N + R requests.
+
+    **The cell's text is the authority**: a link that points elsewhere is
+    pointed at the text, and the text is never changed. The cells are then
+    checked again, and :class:`~gdrives.sheets.apply.ReadBackError` is raised
+    for any that still break the rule. With no problem, nothing is written.
+    Raises ValueError as :func:`url_link_problems` does.
+    """
+    return _fix_url_links(
+        service, spreadsheet_id, tab, color, columns=columns, rows=rows
+    )
 
 
 def delete_columns(

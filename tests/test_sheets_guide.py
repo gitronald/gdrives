@@ -89,6 +89,12 @@ PROMISED = {
     "reorder rows": ["ReorderResult", "reorder_rows"],
     "json entry store": ["JsonEntryStore"],
     "read as displayed": ["RENDERS"],
+    "url links": [
+        "URL_LINK_REASONS",
+        "UrlLinkProblem",
+        "set_url_links",
+        "url_link_problems",
+    ],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -103,6 +109,9 @@ PROMISED_ATTRIBUTES = [
     (TabConfig, ["store", "local_store"]),
     (Target, ["base_stores", "base_store"]),
     (TabConfig, ["entry"]),
+    (TabConfig, ["link_urls"]),
+    (ApplyResult, ["linked"]),
+    (TabReport, ["linked"]),
 ]
 
 
@@ -175,8 +184,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 7
-        assert len(blocks(GUIDE, "python")) == 7
+        assert len(blocks(GUIDE, "json")) == 8
+        assert len(blocks(GUIDE, "python")) == 8
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError

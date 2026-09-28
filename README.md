@@ -400,6 +400,12 @@ are synced, never formulas or formatting, and are written as literal strings.
 See [docs/sheets-sync.md](docs/sheets-sync.md) for the config fields, the merge
 and ownership rules, the first sync, and the exit codes.
 
+The sheet links a URL as it is written. A `sync` or `push` tab's
+`clear_links: true` leaves the cells a run writes with no link, and its
+`link_urls`, `{"color": "#1155cc"}`, gives each URL cell a run writes a link to
+its own text, in that colour, not underlined. See
+[links](docs/sheets-sync.md#links).
+
 A sync keeps the sheet's row order. To put a keyed tab back in an order of
 your own, compute the order in Python, as the rows' keys first to last, and
 call `reorder_rows` from `gdrives.sheets`. It moves whole rows, with their

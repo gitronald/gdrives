@@ -929,3 +929,69 @@ def test_reorder_moves_whole_rows(seeded, shared_tab):
         ["c", "Cy", "gap c", "third"],
     ]
     assert fills == [None, None, None, None, GREY]
+
+
+def test_set_url_links_keeps_the_bold_and_clears_the_runs(tab, shared_tab):
+    # What the fake's link formats rest on: a link set as the cell's own
+    # format takes, runs cleared in an earlier request of the same batch do
+    # not drop it, and link, underline, and colour under one mask leave the
+    # bold alone.
+    service, sid, name = tab
+    header = ["id", "site"]
+    rows = [["a", "https://example.com/a"], ["b", "https://example.com/b"]]
+    sheets.update_values(
+        service, sid, f"'{name}'!A1:B3", [header, *rows], input_option=sheets.RAW
+    )
+
+    def cell(row):
+        return {"sheetId": shared_tab.sheet_id, "rowIndex": row, "columnIndex": 1}
+
+    part = {"startIndex": 8, "format": {"link": {"uri": "https://part.example"}}}
+    bold = {"userEnteredFormat": {"textFormat": {"bold": True}}}
+    formats = [
+        {
+            "updateCells": {
+                "start": cell(1),
+                "rows": [{"values": [bold]}],
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        },
+        {
+            "updateCells": {
+                "start": cell(2),
+                "rows": [{"values": [{"textFormatRuns": [{"format": {}}, part]}]}],
+                "fields": "textFormatRuns",
+            }
+        },
+    ]
+    _patiently(service, sid, {"requests": formats})
+
+    fixed = sheets.set_url_links(service, sid, name, color="#33aa55")
+    assert [(problem.row, problem.column) for problem in fixed] == [
+        (2, "site"),
+        (3, "site"),
+    ]
+    assert {"color", "underline"} <= set(fixed[0].reasons)
+    assert "runs" in fixed[1].reasons
+
+    data = sheets.pull_grid(
+        service,
+        sid,
+        f"'{name}'!B2:B3",
+        "sheets(data(rowData(values(hyperlink,textFormatRuns,"
+        "userEnteredFormat(textFormat),effectiveFormat(textFormat)))))",
+    )
+    got = [row["values"][0] for row in data["rowData"]]
+    for read, (_, text) in zip(got, rows, strict=True):
+        assert read["hyperlink"] == text
+        assert "textFormatRuns" not in read
+        shown = read["effectiveFormat"]["textFormat"]
+        assert shown["underline"] is False
+        rgb = shown["foregroundColorStyle"]["rgbColor"]
+        assert [round(rgb.get(c, 0) * 255) for c in ("red", "green", "blue")] == [
+            0x33,
+            0xAA,
+            0x55,
+        ]
+    assert got[0]["userEnteredFormat"]["textFormat"]["bold"] is True
+    assert got[0]["effectiveFormat"]["textFormat"]["bold"] is True

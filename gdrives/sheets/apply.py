@@ -32,7 +32,7 @@ other columns of the new rows are left alone.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from gdrives.files import Service
@@ -43,6 +43,9 @@ from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     RUNS_FIELD,
     LinkedCell,
+    UrlLinkProblem,
+    _fix_url_links,
+    _rgb,
     link_clear,
     linked_cells,
 )
@@ -87,6 +90,9 @@ class ApplyResult:
     new rows are every ``appended_rows`` row by every such column. Together
     they are the cells the run wrote, for a pass over them that need not read
     the tab again.
+
+    ``linked`` is each URL cell a run with ``link_urls`` gave a link, as it
+    was before the fix.
     """
 
     pushed: int
@@ -95,6 +101,7 @@ class ApplyResult:
     appended_rows: list[int]
     pushed_cells: list[tuple[int, str]] = field(default_factory=list)
     appended_columns: list[str] = field(default_factory=list)
+    linked: list[UrlLinkProblem] = field(default_factory=list)
 
 
 def _insert_target(
@@ -369,6 +376,36 @@ def _check_links(
         raise _links_left(fresh.tab, left, "run")
 
 
+def _written(result: ApplyResult) -> set[tuple[int, str]]:
+    """The cells a run wrote, as ``(row, column)``."""
+    return {*result.pushed_cells} | {
+        (row, column)
+        for row in result.appended_rows
+        for column in result.appended_columns
+    }
+
+
+def _link_written(
+    service: Service,
+    spreadsheet_id: str,
+    fresh: Table,
+    result: ApplyResult,
+    color: str,
+) -> ApplyResult:
+    """Give the URL cells a run wrote a link to their text, in ``color``."""
+    written = _written(result)
+    linked = _fix_url_links(
+        service,
+        spreadsheet_id,
+        fresh.tab,
+        color,
+        columns=sorted({column for _, column in written}, key=fresh.header.index),
+        rows=sorted({row for row, _ in written}),
+        cells=written,
+    )
+    return replace(result, linked=linked)
+
+
 def apply_plan(
     service: Service,
     spreadsheet_id: str,
@@ -377,6 +414,7 @@ def apply_plan(
     *,
     insert_above: Mapping[str, Any] | None = None,
     clear_links: bool = False,
+    link_urls: str | None = None,
 ) -> ApplyResult:
     """Write ``plan``'s pushed cells and new rows to ``table``'s tab, then verify.
 
@@ -405,11 +443,25 @@ def apply_plan(
     (:func:`~gdrives.sheets.structure.linked_cells`), and
     :class:`ReadBackError` is raised when one remains.
 
+    ``link_urls``, a ``#rrggbb`` colour, does the opposite for the URL cells
+    this run writes, and no others: after the read-back, each is given a
+    link to its own text in that colour, not underlined
+    (:func:`~gdrives.sheets.structure.set_url_links`), and
+    :attr:`ApplyResult.linked` lists them. It costs a read of the tab's
+    values and a grid read of the URL cells written, and when any needs a
+    link, a read of the tab's ``sheetId``, one write, and the two reads again.
+    It contradicts ``clear_links``.
+
     A plan with nothing to push or add makes no request at all. Raises
     ValueError, before any request, when the plan does not fit ``table`` (a
     push to a row or column the table lacks, a new row whose key the tab
-    already has) or ``insert_above`` names a column the header lacks.
+    already has), ``insert_above`` names a column the header lacks, or
+    ``link_urls`` is not ``#rrggbb`` or is given with ``clear_links``.
     """
+    if link_urls is not None:
+        if clear_links:
+            raise ValueError("clear_links and link_urls contradict each other")
+        _rgb(link_urls)
     _check_plan(table, plan)
     column = (
         _insert_target(insert_above, table.header)[0]
@@ -484,6 +536,8 @@ def apply_plan(
     )
     if clear_links:
         _check_links(service, spreadsheet_id, fresh, result)
+    if link_urls is not None:
+        result = _link_written(service, spreadsheet_id, fresh, result, link_urls)
     return result
 
 

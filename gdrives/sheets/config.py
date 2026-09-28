@@ -34,6 +34,7 @@ from gdrives.local import safe_filename
 from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
+from gdrives.sheets.structure import _rgb
 from gdrives.sheets.values import RAW, RENDERS, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
@@ -82,6 +83,7 @@ _TAB_FIELDS = frozenset(
         "clear_links",
         "sheet_id",
         "entry",
+        "link_urls",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
@@ -139,7 +141,11 @@ class TabConfig:
     then found by it, and ``title`` is what reports and the base file call
     the tab. ``entry`` names an entry of ``local``, a ``.json`` file
     holding several: the tab's local side is then that entry
-    (:class:`~gdrives.sheets.stores.JsonEntryStore`).
+    (:class:`~gdrives.sheets.stores.JsonEntryStore`). ``link_urls`` is a
+    ``#rrggbb`` colour: after a write, each URL cell the run wrote is given a
+    link to its own text in that colour, not underlined
+    (:func:`~gdrives.sheets.structure.set_url_links`). It contradicts
+    ``clear_links``.
     """
 
     title: str
@@ -164,6 +170,7 @@ class TabConfig:
     sheet_id: int | None = None
     store: Store | None = None
     entry: str | None = None
+    link_urls: str | None = None
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
@@ -178,6 +185,13 @@ class TabConfig:
             self.local is None or self.local.suffix.lower() != ".json"
         ):
             raise ValueError(f"tab {self.title!r}: 'entry' needs a .json 'local'")
+        if self.link_urls is not None:
+            if self.clear_links:
+                raise ValueError(
+                    f"tab {self.title!r}: 'link_urls' and 'clear_links' "
+                    "contradict each other"
+                )
+            _rgb(self.link_urls)
 
     @property
     def types(self) -> dict[str, str]:
@@ -551,6 +565,8 @@ class _Checker:
                 problems.append(f"{where}: 'widths' do not apply to a pull tab")
             if mode == "pull" and "clear_links" in raw:
                 problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
+            if mode == "pull" and "link_urls" in raw:
+                problems.append(f"{where}: 'link_urls' does not apply to a pull tab")
         if mode != "pull" and "exclude" in raw:
             problems.append(f"{where}: 'exclude' applies only to a pull tab")
 
@@ -607,6 +623,11 @@ class _Checker:
         clear_links = raw.get("clear_links", False)
         if not isinstance(clear_links, bool):
             problems.append(f"{where}: 'clear_links' must be true or false")
+        link_urls = self._link_urls(where, raw)
+        if link_urls is not None and clear_links is True:
+            problems.append(
+                f"{where}: 'link_urls' and 'clear_links' contradict each other"
+            )
         on_invalid = raw.get("on_invalid", "refuse")
         if not isinstance(on_invalid, str) or on_invalid not in ON_INVALID:
             problems.append(
@@ -657,7 +678,28 @@ class _Checker:
             clear_links=bool(clear_links),
             sheet_id=sheet_id,
             entry=entry,
+            link_urls=link_urls,
         )
+
+    def _link_urls(self, where: str, raw: Mapping[str, Any]) -> str | None:
+        """The colour of the tab's ``link_urls``; None when absent or refused."""
+        if "link_urls" not in raw:
+            return None
+        given = raw["link_urls"]
+        if not isinstance(given, dict) or set(given) != {"color"}:
+            self.problems.append(
+                f"{where}: 'link_urls' must be an object with one field, 'color'"
+            )
+            return None
+        color = given["color"]
+        try:
+            _rgb(color)
+        except ValueError:
+            self.problems.append(
+                f"{where}: 'link_urls' color must be '#rrggbb', not {color!r}"
+            )
+            return None
+        return str(color)
 
     def _entry(
         self, where: str, raw: Mapping[str, Any], local: Path | None

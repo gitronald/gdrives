@@ -8,10 +8,13 @@ from datetime import date
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
+from helpers import LINK_BLUE, FakeSheetGrid, http_error
 
 from gdrives.sheets import (
+    URL_LINK_REASONS,
     LinkedCell,
+    ReadBackError,
+    UrlLinkProblem,
     add_columns,
     clear_link_format,
     delete_columns,
@@ -20,7 +23,9 @@ from gdrives.sheets import (
     linked_cells,
     place_columns,
     set_column_widths,
+    set_url_links,
     strip_links,
+    url_link_problems,
 )
 
 READ = "values.get"
@@ -752,3 +757,272 @@ class TestSetColumnWidths:
             set_column_widths(grid, "S", "T", widths)
         assert STRUCTURE not in grid.methods
         assert grid.tab("T").widths == [100] * 26
+
+
+GREEN = "#33aa55"
+GREEN_RGB = {"red": 0x33 / 255, "green": 0xAA / 255, "blue": 0x55 / 255}
+URL_FIELDS = {
+    "userEnteredFormat.textFormat.link",
+    "userEnteredFormat.textFormat.underline",
+    "userEnteredFormat.textFormat.foregroundColorStyle",
+}
+
+
+def url_grid():
+    """A tab of URL cells linked as wanted, and cells that are no URL cell.
+
+    ``site`` and ``home`` hold URLs, each linked to its text, in ``GREEN``,
+    and not underlined. ``other`` holds a bare domain, a URL in a sentence,
+    an email address, and a number, which the API links or not as it does.
+    """
+    grid = FakeSheetGrid(
+        {
+            "T": [
+                ["id", "site", "other", "home"],
+                ["a", "https://a.example", "example.com", "https://ha.example"],
+                ["b", "https://b.example", "see https://x.io", "https://hb.example"],
+                ["c", "https://c.example", "a@x.io", ""],
+                ["d", "", 42, "https://hd.example"],
+            ]
+        }
+    )
+    for (r, c), held in grid.tab("T").formats.items():
+        if c in (1, 3) and "link" in held:
+            held |= {"underline": False, "color": dict(GREEN_RGB)}
+    return grid
+
+
+def fine(grid):
+    return url_link_problems(grid, "S", "T", color=GREEN)
+
+
+class TestUrlLinkProblems:
+    def test_cells_linked_as_wanted_have_no_problem(self):
+        grid = url_grid()
+        assert fine(grid) == []
+        assert grid.methods == [READ, GRID]
+
+    @pytest.mark.parametrize(
+        ("change", "reason"),
+        [
+            (lambda held: held.pop("link"), "no_link"),
+            (lambda held: held.update(link="https://elsewhere.io"), "target"),
+            (lambda held: held.update(color={"red": 1.0}), "color"),
+            (lambda held: held.update(underline=True), "underline"),
+            (
+                lambda held: held.update(runs=[run_link("https://p.io", 8)]),
+                "runs",
+            ),
+        ],
+    )
+    def test_each_reason_alone(self, change, reason):
+        grid = url_grid()
+        change(grid.format("T", 3, 2))
+        assert fine(grid) == [UrlLinkProblem(3, "site", "https://b.example", (reason,))]
+        assert reason in URL_LINK_REASONS
+
+    def test_a_url_as_the_api_writes_it_is_blue_and_underlined(self):
+        grid = url_grid()
+        grid.write("T", [["e", "https://e.example"]], row=6)
+        grid.tab("T").formats[(5, 1)]["runs"] = [run_link("https://p.io", 8)]
+        (bare,) = fine(grid)
+        assert bare == UrlLinkProblem(
+            6, "site", "https://e.example", ("color", "underline", "runs")
+        )
+        # The link's own blue is a colour like any other.
+        assert fine_in(grid, "#1155cc", rows=[6]) == [
+            UrlLinkProblem(6, "site", "https://e.example", ("underline", "runs"))
+        ]
+
+    def test_a_cell_with_every_reason(self):
+        grid = url_grid()
+        held = grid.format("T", 2, 4)
+        held.pop("link")
+        held.update(underline=True, runs=[run_link("https://p.io", 3)], color={})
+        (problem,) = fine(grid)
+        assert problem.reasons == ("no_link", "color", "underline", "runs")
+        held["link"] = "https://elsewhere.io"
+        (problem,) = fine(grid)
+        assert problem.reasons == ("target", "color", "underline", "runs")
+
+    def test_a_channel_the_api_omits_is_zero_and_fractions_round(self):
+        grid = url_grid()
+        grid.format("T", 2, 2)["color"] = {"green": 1.0}
+        grid.format("T", 3, 2)["color"] = {"green": 0.99999994}
+        assert fine_in(grid, "#00ff00", columns=["site"], rows=[2, 3]) == []
+
+    def test_the_text_is_stripped(self):
+        grid = url_grid()
+        grid.write("T", [["e", "  https://e.example  "]], row=6)
+        (problem,) = fine(grid)
+        assert (problem.text, problem.reasons[0]) == ("https://e.example", "no_link")
+
+    def test_cells_that_are_no_url_cell_are_never_returned(self):
+        grid = url_grid()
+        # The bare domain is linked, blue, and underlined, and is left alone.
+        assert grid.links("T")[(2, 3)] == "http://example.com"
+        assert fine_in(grid, GREEN, columns=["other"]) == []
+        assert grid.methods == [READ]
+
+    def test_the_grid_read_is_bounded_to_the_url_cells(self):
+        grid = url_grid()
+        fine(grid)
+        assert grid.calls[-1][1]["ranges"] == ["'T'!B2:D5"]
+        fine_in(grid, GREEN, columns=["home"], rows=[3, 4])
+        assert grid.calls[-1][1]["ranges"] == ["'T'!D3:D3"]
+        assert grid.calls[-1][1]["fields"] == (
+            "sheets(data(rowData(values(hyperlink,textFormatRuns,"
+            "effectiveFormat(textFormat(underline,foregroundColorStyle))))))"
+        )
+
+    def test_columns_and_rows_limit_what_is_returned(self):
+        grid = url_grid()
+        for row, column in [(2, 2), (3, 2), (2, 4), (5, 4)]:
+            grid.format("T", row, column)["underline"] = True
+        found = fine_in(grid, GREEN, columns=["home", "site"], rows=[3, 5])
+        assert [(p.row, p.column) for p in found] == [(3, "site"), (5, "home")]
+        found = fine_in(grid, GREEN, columns=["site"])
+        assert [(p.row, p.column) for p in found] == [(2, "site"), (3, "site")]
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"color": "33aa55"}, "a colour is written '#rrggbb', not '33aa55'"),
+            ({"color": "#33aa5g"}, "not '#33aa5g'"),
+            ({"color": GREEN, "rows": [0, 2]}, r"rows are spreadsheet rows, from 1"),
+        ],
+    )
+    def test_refusals_ask_nothing(self, options, message):
+        grid = url_grid()
+        with pytest.raises(ValueError, match=message):
+            url_link_problems(grid, "S", "T", **options)
+        with pytest.raises(ValueError, match=message):
+            set_url_links(grid, "S", "T", **options)
+        assert grid.calls == []
+
+    def test_an_unknown_column_reads_no_grid(self):
+        grid = url_grid()
+        with pytest.raises(ValueError, match=r"has no column\(s\) \['nope'\]"):
+            fine_in(grid, GREEN, columns=["nope"])
+        assert grid.methods == [READ]
+
+
+def fine_in(grid, color, **options):
+    return url_link_problems(grid, "S", "T", color=color, **options)
+
+
+class TestSetUrlLinks:
+    def broken(self):
+        """``url_grid`` with a problem of each kind, bold kept on one cell."""
+        grid = url_grid()
+        grid.format("T", 2, 2).update(bold=True, underline=True)
+        grid.format("T", 3, 2)["link"] = "https://elsewhere.io"
+        grid.format("T", 4, 2).update(runs=[run_link("https://p.io", 8)])
+        grid.format("T", 3, 4).pop("link")
+        return grid
+
+    def test_the_cells_are_linked_and_every_other_format_kept(self):
+        grid = self.broken()
+        fixed = set_url_links(grid, "S", "T", color=GREEN)
+        assert [(p.row, p.column, p.reasons) for p in fixed] == [
+            (2, "site", ("underline",)),
+            (3, "site", ("target",)),
+            (3, "home", ("no_link",)),
+            (4, "site", ("runs",)),
+        ]
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE, READ, GRID]
+        assert fine(grid) == []
+        assert grid.format("T", 2, 2)["bold"] is True
+        assert grid.format("T", 3, 2)["link"] == "https://b.example"
+        # The text is the authority: the link follows it, never the other way.
+        assert grid.values("T")[2][1] == "https://b.example"
+
+    def test_the_requests_name_no_property_but_the_four(self):
+        grid = self.broken()
+        set_url_links(grid, "S", "T", color=GREEN)
+        sent = requests_of(grid)
+        # The runs are cleared first, each in a request of its own.
+        assert sent[0] == (
+            "repeatCell",
+            {
+                "range": {
+                    "sheetId": 0,
+                    "startRowIndex": 3,
+                    "endRowIndex": 4,
+                    "startColumnIndex": 1,
+                    "endColumnIndex": 2,
+                },
+                "cell": {},
+                "fields": "textFormatRuns",
+            },
+        )
+        assert {kind for kind, _ in sent} == {"repeatCell"}
+        for _, body in sent[1:]:
+            assert set(body["fields"].split(",")) == URL_FIELDS
+            text = body["cell"]["userEnteredFormat"]["textFormat"]
+            assert set(text) == {"link", "underline", "foregroundColorStyle"}
+            assert text["underline"] is False
+            assert text["foregroundColorStyle"] == {"rgbColor": GREEN_RGB}
+        assert [
+            body["cell"]["userEnteredFormat"]["textFormat"]["link"]
+            for _, body in sent[1:]
+        ] == [
+            {"uri": uri}
+            for uri in [
+                "https://a.example",
+                "https://b.example",
+                "https://hb.example",
+                "https://c.example",
+            ]
+        ]
+
+    def test_cells_that_are_no_url_cell_are_never_written(self):
+        grid = url_grid()
+        before = {at: dict(held) for at, held in grid.tab("T").formats.items()}
+        grid.write("T", [["e", "example.org", "https://e.example"]], row=6)
+        set_url_links(grid, "S", "T", color=GREEN)
+        after = grid.tab("T").formats
+        assert {at: after[at] for at in before} == before
+        assert after[(5, 1)] == {"link": "http://example.org"}
+        assert after[(5, 2)] == {
+            "link": "https://e.example",
+            "underline": False,
+            "color": GREEN_RGB,
+        }
+
+    def test_columns_and_rows_limit_the_write(self):
+        grid = self.broken()
+        fixed = set_url_links(grid, "S", "T", color=GREEN, columns=["site"], rows=[3])
+        assert [(p.row, p.column) for p in fixed] == [(3, "site")]
+        assert [(p.row, p.column) for p in fine(grid)] == [
+            (2, "site"),
+            (3, "home"),
+            (4, "site"),
+        ]
+        assert len(requests_of(grid)) == 1
+
+    def test_no_problem_no_write(self):
+        grid = url_grid()
+        assert set_url_links(grid, "S", "T", color=GREEN) == []
+        assert grid.methods == [READ, GRID]
+
+    def test_a_cell_the_fix_did_not_link_fails_the_read_back(self):
+        grid = self.broken()
+        grid.edit_externally(
+            lambda g: g.format("T", 3, 4).update(underline=True),
+            before=GRID,
+            occurrence=3,
+        )
+        with pytest.raises(ReadBackError) as raised:
+            set_url_links(grid, "S", "T", color=GREEN)
+        assert str(raised.value) == (
+            "tab 'T': the read-back found URL cells the fix did not link: "
+            "row 3, column 'home' (underline)"
+        )
+
+    def test_the_link_s_blue_is_replaced(self):
+        grid = FakeSheetGrid({"T": [["site"], ["https://a.example"]]})
+        assert grid.format("T", 2, 1) == {"link": "https://a.example"}
+        set_url_links(grid, "S", "T", color=GREEN)
+        assert grid.format("T", 2, 1)["color"] == GREEN_RGB
+        assert LINK_BLUE != GREEN_RGB
