@@ -327,6 +327,13 @@ class TestPushRefusals:
         with pytest.raises(ValueError, match=r"lacks column\(s\) \['zz'\]"):
             push_tab(FakeSheetGrid(), "S", tab)
 
+    def test_no_rows_is_refused_before_a_lacking_column(self, tmp_path):
+        # The order of 0.13.0: an empty file says so, whatever else it lacks.
+        tab = one_tab(tmp_path, "push", columns=["id", "zz"])
+        write_local(tab)
+        with pytest.raises(ValueError, match="has no rows"):
+            push_tab(FakeSheetGrid(), "S", tab)
+
     def test_a_duplicate_local_key(self, tmp_path):
         tab = one_tab(tmp_path, "push", key=["id"])
         write_local(tab, ROWS[0], ROWS[0])

@@ -1554,10 +1554,11 @@ def push_tab(
     order (the configured columns only, when there are some), and the tab's
     ``key``, ``blank_keys``, ``schema``, ``widths``, ``sheet_id``,
     ``render``, and ``strict_schema`` are passed on, with ``listing``. A local
-    side that does not exist, or lacks a configured column, is refused. A
-    schema column declared ``present`` is checked against the columns being
-    written (the configured columns, or every local column), before the "no
-    rows" refusal, so a local side with no rows is still checked for it.
+    side that does not exist, holds no rows, or lacks a configured column is
+    refused, in that order. A schema column declared ``present`` is checked
+    against the columns being written (the configured columns the local side
+    has, or every local column), before the "no rows" refusal, so a local
+    side with no rows is still checked for it.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
@@ -1565,7 +1566,6 @@ def push_tab(
     report.apply = apply
     validate, check, warn, _ = _with_tab_hooks(tab, validate, check, warn, None)
     local = _read_local(tab)
-    _projection(tab, local)  # refuses a configured column the file lacks
     wanted = tab.columns if tab.columns is not None else local.columns
     out = [column for column in local.columns if column in wanted]
     presence = _presence_problems(tab.title, "local", tab.schema, out)
@@ -1575,6 +1575,7 @@ def push_tab(
         return report
     if not local.rows:
         raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
+    _projection(tab, local)  # refuses a configured column the file lacks
     return push_rows(
         service,
         spreadsheet_id,
