@@ -784,6 +784,10 @@ class FakeSheetGrid:
       ``UNFORMATTED_VALUE`` with ``SERIAL_NUMBER``, which is the API's default
       ``dateTimeRenderOption``, as its serial number. A string that looks like
       a date is a string under every option.
+    - A cell seeded by ``display`` has a number format: it reads as its
+      displayed text under ``FORMATTED_VALUE`` and as its value under
+      ``UNFORMATTED_VALUE``, while it holds that value. A string written over
+      it is displayed as written.
     - ``values.update`` / ``values.batchUpdate`` store each value as given (an
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
@@ -850,6 +854,16 @@ class FakeSheetGrid:
         for r, values in enumerate(grid, start=row - 1):
             for c, value in enumerate(values):
                 tab.put(r, c, value)
+
+    def display(self, title: str, row: int, column: int, value: Any, text: str) -> None:
+        """Store ``value`` at ``row`` and 1-based ``column``, displayed as ``text``.
+
+        Models a number format, such as ``0.5`` shown as ``50%``: a formatted
+        read of the cell returns ``text`` for as long as it holds ``value``.
+        """
+        tab = self.tab(title)
+        tab.put(row - 1, column - 1, value)
+        tab.held(row - 1, column - 1)["shown"] = (value, text)
 
     def format(self, title: str, row: int, column: int) -> dict[str, Any]:
         """The format of the cell at spreadsheet ``row`` and 1-based ``column``."""
@@ -976,7 +990,10 @@ class FakeSheetGrid:
         tab, r1, r2, c1, c2 = self._span(range_)
         rows = self._truncated([row[c1:c2] for row in tab.cells[r1:r2]])
         if render != "UNFORMATTED_VALUE":
-            rows = [[_displayed(v) for v in row] for row in rows]
+            rows = [
+                [self._shown(tab, r, c, v) for c, v in enumerate(row, start=c1)]
+                for r, row in enumerate(rows, start=r1)
+            ]
         else:
             shown = _shown_date if date_time == "FORMATTED_STRING" else _serial
             rows = [
@@ -986,6 +1003,14 @@ class FakeSheetGrid:
         if rows:  # the API omits "values" for an empty range
             result["values"] = rows
         return result
+
+    @staticmethod
+    def _shown(tab: _GridTab, r: int, c: int, value: Any) -> str:
+        """A cell as displayed: its ``display`` text while it holds that value."""
+        shown = tab.formats.get((r, c), {}).get("shown")
+        if shown is not None and shown[0] == value:
+            return shown[1]
+        return _displayed(value)
 
     # -- handlers --
 

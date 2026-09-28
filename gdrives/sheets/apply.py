@@ -217,7 +217,8 @@ def _reread(
     """Read the tab again, raising :class:`SheetChangedError` if it moved on.
 
     ``also`` is a column to read beyond the projection (the ``insert_above``
-    column); the comparison covers the projection only.
+    column); the comparison covers the projection only. The tab is read with
+    ``table``'s own types, ``blank_keys``, and ``render``, as it was first read.
     """
     columns = list(table.columns)
     if also is not None and also not in columns:
@@ -232,6 +233,7 @@ def _reread(
             table.key,
             types=table.types,
             blank_keys=table.blank_keys,
+            render=table.render,
         )
     except ValueError as e:
         raise SheetChangedError(f"{stale}: {e}") from e
@@ -491,9 +493,9 @@ def verify(
     """Read ``table``'s tab back and check that ``plan``'s sheet writes landed.
 
     Rows are found by key, not by number, so rows inserted above them do not
-    matter. The tab is read with ``table``'s declared types, as it was read
-    for the plan. Every pushed cell must hold its ``local`` value, and every new row
-    must exist with its projection cells as sent. Raises
+    matter. The tab is read with ``table``'s declared types and ``render``,
+    as it was read for the plan. Every pushed cell must hold its ``local``
+    value, and every new row must exist with its projection cells as sent. Raises
     :class:`ReadBackError` listing every mismatch at once, or when the tab no
     longer reads cleanly (a key now blank or repeated, a column gone).
     """
@@ -507,6 +509,7 @@ def verify(
             table.key,
             types=table.types,
             blank_keys=table.blank_keys,
+            render=table.render,
         )
     except ValueError as e:
         raise ReadBackError(f"{failed}: {e}") from e

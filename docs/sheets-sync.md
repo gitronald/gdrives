@@ -123,6 +123,7 @@ to keep in step with local files:
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
+| `render` | all | How the tab's cells are read: `unformatted` (the default) reads a number as its value, and `formatted` reads every cell as the sheet displays it, so a cell showing `50%` reads as `50%`, not `0.5`. See [how cells are read and written](#how-cells-are-read-and-written) |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `clear_links` | `sync`, `push` | `true` leaves the cells a run writes with no link, where the sheet links a URL or a domain as it is written. Default `false`. See [links](#links) |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |

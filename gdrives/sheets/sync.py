@@ -104,10 +104,11 @@ from gdrives.sheets.values import (
     RAW,
     UNFORMATTED_VALUE,
     TabListing,
+    _check_render,
+    _pull_rendered,
     batch_update_spreadsheet,
     list_tabs,
     pull_many,
-    pull_values,
     tab_grid,
     tab_listing,
     update_values,
@@ -325,15 +326,14 @@ class TabPlan:
 # -- reading --
 
 
-def _read_grid(service: Service, spreadsheet_id: str, title: str) -> list[list[Any]]:
-    """The whole tab's values, read as :func:`~gdrives.sheets.table.read_tab` reads."""
-    return pull_values(
-        service,
-        spreadsheet_id,
-        a1_quote(title),
-        render=UNFORMATTED_VALUE,
-        date_time_render=FORMATTED_STRING,
-    )
+def _read_grid(
+    service: Service, spreadsheet_id: str, title: str, render: str = "unformatted"
+) -> list[list[Any]]:
+    """The whole tab's values, read as :func:`~gdrives.sheets.table.read_tab` reads.
+
+    ``render`` is the tab's setting, as for :func:`~gdrives.sheets.table.read_tab`.
+    """
+    return _pull_rendered(service, spreadsheet_id, a1_quote(title), render)
 
 
 def _canonical(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
@@ -508,6 +508,8 @@ def plan_tab(
     and block nothing.
     The tab is read with the schema's types: a column declared ``date`` or
     ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
+    Every read of the tab in the run, the re-read guard and the read-back of
+    :func:`apply_tab` included, follows the tab's ``render``.
 
     The schema's types also decide how cells compare: two spellings of one
     value in a typed column are one value
@@ -650,7 +652,7 @@ def _plan(
         report.tab_state = "missing"
     else:
         title = found
-        grid = _read_grid(service, spreadsheet_id, title)
+        grid = _read_grid(service, spreadsheet_id, title, tab.render)
         try:
             whole = parse_tab(title, grid, None)
         except EmptyTabError:
@@ -784,6 +786,7 @@ def _sheet_side(
         types=tab.types,
         serials=serials,
         blank_keys=tab.blank_keys,
+        render=tab.render,
     )
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
@@ -823,6 +826,7 @@ def _insert_row(
             types=tab.types,
             serials=serials,
             blank_keys=tab.blank_keys,
+            render=tab.render,
         )
     return insert_point(table, plan, insert_above)
 
@@ -905,7 +909,9 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
         planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
-        set_column_widths(service, spreadsheet_id, planned.title, tab.widths)
+        set_column_widths(
+            service, spreadsheet_id, planned.title, tab.widths, render=tab.render
+        )
         report.wrote_widths = True
     return report
 
@@ -934,14 +940,16 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         # A listing from before the tab was created is not used again.
         listing = None
     if state != "present":
-        add_columns(service, spreadsheet_id, title, planned.columns)
+        add_columns(service, spreadsheet_id, title, planned.columns, render=tab.render)
         report.wrote_sheet = True
     if added:
         # Placed on the sheet's header as it is now: the deletes run after.
-        place_columns(service, spreadsheet_id, title, planned.columns)
+        place_columns(
+            service, spreadsheet_id, title, planned.columns, render=tab.render
+        )
         report.wrote_sheet = True
     if dropped:
-        delete_columns(service, spreadsheet_id, title, list(dropped))
+        delete_columns(service, spreadsheet_id, title, list(dropped), render=tab.render)
         report.wrote_sheet = True
 
     options: dict[str, Any] = {
@@ -1108,7 +1116,8 @@ def pull_tab(
     whose named columns are all excluded, with its own message.
     :func:`plan_tab` and :func:`push_tab` refuse a tab with ``exclude``.
 
-    ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`.
+    ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`. The
+    tab is read as its ``render`` says.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
@@ -1121,7 +1130,7 @@ def pull_tab(
     if title is None:
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; {left}")
-    grid = _read_grid(service, spreadsheet_id, title)
+    grid = _read_grid(service, spreadsheet_id, title, tab.render)
     columns: Sequence[str] | None = tab.columns
     if tab.exclude:
         header = _header_row(grid)
@@ -1151,6 +1160,7 @@ def pull_tab(
             types=tab.types,
             serials=serials,
             blank_keys=tab.blank_keys,
+            render=tab.render,
         )
     except EmptyTabError:
         report.tab_state = "empty"
@@ -1215,9 +1225,9 @@ def push_tab(
     :func:`push_rows`, which says what is checked, written, and refused. The
     header row and every local row are written in the local file's column
     order (the configured columns only, when there are some), and the tab's
-    ``key``, ``blank_keys``, ``schema``, ``widths``, and ``sheet_id`` are
-    passed on, with ``listing``. A local side that does not exist, holds no
-    rows, or lacks a configured column is refused.
+    ``key``, ``blank_keys``, ``schema``, ``widths``, ``sheet_id``, and
+    ``render`` are passed on, with ``listing``. A local side that does not
+    exist, holds no rows, or lacks a configured column is refused.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
@@ -1248,6 +1258,7 @@ def push_tab(
         sheet_id=tab.sheet_id,
         listing=listing,
         report=report,
+        render=tab.render,
     )
 
 
@@ -1272,6 +1283,7 @@ def push_rows(
     sheet_id: int | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    render: str = "unformatted",
 ) -> TabReport:
     """Replace the values of the tab ``title`` with ``rows`` (with ``apply``).
 
@@ -1315,9 +1327,16 @@ def push_rows(
     now, and ``title`` is only what the report calls it; a ``sheet_id`` the
     spreadsheet lacks is an error, and no tab is created. ``listing`` is the
     spreadsheet's tab listing when the caller has read it.
+
+    ``render`` is how the tab is read, as for
+    :func:`~gdrives.sheets.table.read_tab`: the read of what it holds, the
+    read before the write, the read-back, and the header read of ``widths``
+    all follow it. The rows are written as ``RAW`` strings either way, and a
+    string reads as written under either setting.
     """
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
+    _check_render(render)
     out = list(columns)
     if not out or "" in out or len(set(out)) != len(out):
         raise ValueError(
@@ -1347,7 +1366,7 @@ def push_rows(
     found = _sheet_title(title, sheet_id, listing, report)
     exists = found is not None
     title = found if found is not None else title
-    grid = _read_grid(service, spreadsheet_id, title) if exists else []
+    grid = _read_grid(service, spreadsheet_id, title, render) if exists else []
     if not exists:
         report.tab_state = "missing"
     records = _sheet_records(title, grid)
@@ -1367,7 +1386,7 @@ def push_rows(
         return report
 
     if exists:
-        again = _read_grid(service, spreadsheet_id, title)
+        again = _read_grid(service, spreadsheet_id, title, render)
         if again != grid:
             raise SheetChangedError(
                 f"tab {title!r} changed since it was read, so nothing was written"
@@ -1391,7 +1410,7 @@ def push_rows(
         input_option=input_option,
     )
     report.wrote_sheet = True
-    _check_push(service, spreadsheet_id, title, expected, input_option)
+    _check_push(service, spreadsheet_id, title, expected, input_option, render)
     if clear_links:
         left = strip_links(
             service, spreadsheet_id, title, out, header=out, sheet_id=sheet_id
@@ -1399,7 +1418,7 @@ def push_rows(
         if left:
             raise _links_left(title, left, "push")
     if widths:
-        set_column_widths(service, spreadsheet_id, title, widths)
+        set_column_widths(service, spreadsheet_id, title, widths, render=render)
         report.wrote_widths = True
     return report
 
@@ -1443,9 +1462,10 @@ def _check_push(
     title: str,
     expected: list[list[str]],
     input_option: str,
+    render: str = "unformatted",
 ) -> None:
     """Read a pushed tab back and check it, raising :class:`ReadBackError`."""
-    back = _canonical(_read_grid(service, spreadsheet_id, title))
+    back = _canonical(_read_grid(service, spreadsheet_id, title, render))
     failed = f"tab {title!r}: the read-back does not match the push"
     want = _canonical(expected)
     if input_option == RAW:

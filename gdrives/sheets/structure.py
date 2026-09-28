@@ -5,6 +5,8 @@ is nothing to do, and refuses a bad request before sending anything. Columns
 are named by their header cell, never by position, so a helper still hits the
 right column after someone moves it. Header cells are read the way
 :func:`~gdrives.sheets.table.read_tab` reads them: canonical strings, stripped.
+The helpers a run calls take the tab's ``render`` setting, so a run reads its
+header as it reads the rest of the tab.
 
 :func:`add_columns` adds one group of columns at one place, and
 :func:`place_columns` puts each column a header lacks at its place in a wanted
@@ -24,13 +26,11 @@ from gdrives.files import Service
 from gdrives.sheets.a1 import a1_quote, column_letter
 from gdrives.sheets.cells import _header_row
 from gdrives.sheets.values import (
-    FORMATTED_STRING,
-    UNFORMATTED_VALUE,
     TabGrid,
+    _pull_rendered,
     batch_update_spreadsheet,
     list_tabs,
     pull_grid,
-    pull_values,
     tab_grid,
 )
 
@@ -58,15 +58,14 @@ def _check_names(names: Sequence[str], what: str) -> None:
         raise ValueError(f"{what}(s) {repeated} named twice")
 
 
-def _header(service: Service, spreadsheet_id: str, tab: str) -> list[str]:
-    """``tab``'s header row, each cell a stripped canonical string."""
-    grid = pull_values(
-        service,
-        spreadsheet_id,
-        f"{a1_quote(tab)}!1:1",
-        render=UNFORMATTED_VALUE,
-        date_time_render=FORMATTED_STRING,
-    )
+def _header(
+    service: Service, spreadsheet_id: str, tab: str, render: str = "unformatted"
+) -> list[str]:
+    """``tab``'s header row, each cell a stripped canonical string.
+
+    ``render`` is the tab's setting, as for :func:`~gdrives.sheets.table.read_tab`.
+    """
+    grid = _pull_rendered(service, spreadsheet_id, f"{a1_quote(tab)}!1:1", render)
     return _header_row(grid)
 
 
@@ -145,6 +144,7 @@ def add_columns(
     *,
     before: str | None = None,
     after: str | None = None,
+    render: str = "unformatted",
 ) -> None:
     """Add a column for each of ``names``, in order, with its header cell.
 
@@ -158,7 +158,8 @@ def add_columns(
 
     Raises ValueError, with nothing written, for a blank or repeated name, a
     name the header already has, both ``before`` and ``after``, or one of
-    them the header lacks or repeats.
+    them the header lacks or repeats. ``render`` is how the header is read,
+    as for :func:`~gdrives.sheets.table.read_tab`.
     """
     if before is not None and after is not None:
         raise ValueError(
@@ -167,7 +168,7 @@ def add_columns(
     if not names:
         return
     _check_names(names, "column")
-    header = _header(service, spreadsheet_id, tab)
+    header = _header(service, spreadsheet_id, tab, render)
     present = [name for name in names if name in header]
     if present:
         raise ValueError(f"tab {tab!r} already has column(s) {present}")
@@ -184,7 +185,12 @@ def add_columns(
 
 
 def place_columns(
-    service: Service, spreadsheet_id: str, tab: str, columns: Sequence[str]
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    columns: Sequence[str],
+    *,
+    render: str = "unformatted",
 ) -> list[str]:
     """Add each of ``columns`` the header lacks, at its place in that order.
 
@@ -204,12 +210,13 @@ def place_columns(
     add, nothing is sent.
 
     Raises ValueError, with nothing written, for a blank or repeated name, or
-    a name the header repeats.
+    a name the header repeats. ``render`` is how the header is read, as for
+    :func:`~gdrives.sheets.table.read_tab`.
     """
     _check_names(columns, "column")
     if not columns:
         return []
-    header = _header(service, spreadsheet_id, tab)
+    header = _header(service, spreadsheet_id, tab, render)
     repeated = [name for name in columns if header.count(name) > 1]
     if repeated:
         raise ValueError(f"tab {tab!r}: header repeats {repeated}")
@@ -458,18 +465,26 @@ def strip_links(
 
 
 def delete_columns(
-    service: Service, spreadsheet_id: str, tab: str, names: Sequence[str]
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    names: Sequence[str],
+    *,
+    render: str = "unformatted",
 ) -> None:
     """Delete the columns whose header cells are ``names``, with their data.
 
     The columns are deleted right to left in one request, so each index is
     still true when its delete runs. Raises ValueError, with nothing deleted,
     for a blank or repeated name, or a name the header lacks or repeats.
+    ``render`` is how the header is read, as for
+    :func:`~gdrives.sheets.table.read_tab`.
     """
     if not names:
         return
     _check_names(names, "column")
-    positions = _positions(_header(service, spreadsheet_id, tab), names, tab)
+    header = _header(service, spreadsheet_id, tab, render)
+    positions = _positions(header, names, tab)
     sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
     requests = [
         {"deleteDimension": {"range": _columns(sheet_id, index, index + 1)}}
@@ -533,12 +548,18 @@ def get_column_widths(
 
 
 def set_column_widths(
-    service: Service, spreadsheet_id: str, tab: str, widths: Mapping[str, int]
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    widths: Mapping[str, int],
+    *,
+    render: str = "unformatted",
 ) -> None:
     """Set each named column's width in pixels: ``{header name: pixels}``.
 
     Raises ValueError, with nothing changed, for a width below 1, a blank name,
-    or a name the header lacks or repeats.
+    or a name the header lacks or repeats. ``render`` is how the header is
+    read, as for :func:`~gdrives.sheets.table.read_tab`.
     """
     if not widths:
         return
@@ -546,7 +567,8 @@ def set_column_widths(
     narrow = {name: width for name, width in widths.items() if width < 1}
     if narrow:
         raise ValueError(f"column widths must be at least 1 pixel: {narrow}")
-    positions = _positions(_header(service, spreadsheet_id, tab), list(widths), tab)
+    header = _header(service, spreadsheet_id, tab, render)
+    positions = _positions(header, list(widths), tab)
     sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
     requests = [
         {

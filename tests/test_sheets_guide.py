@@ -87,6 +87,7 @@ PROMISED = {
         "tab_listing",
     ],
     "reorder rows": ["ReorderResult", "reorder_rows"],
+    "read as displayed": ["RENDERS"],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -96,6 +97,8 @@ PROMISED_ATTRIBUTES = [
     (ApplyResult, ["pushed_cells", "appended_columns"]),
     (TabReport, ["insert_row", "last_row", "warnings", "local_label", "applied"]),
     (TabConfig, ["newline", "blank_keys", "on_invalid", "clear_links", "sheet_id"]),
+    (TabConfig, ["render"]),
+    (Table, ["render"]),
     (TabConfig, ["store", "local_store"]),
     (Target, ["base_stores", "base_store"]),
 ]
