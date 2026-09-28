@@ -417,9 +417,36 @@ def _check(
     context: CheckContext,
     validate: Validate | None,
     check: Check | None,
+    *,
+    strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every schema, ``validate``, and ``check`` problem of a tab at one stage."""
-    return _problems(tab.schema, tab.key, context, validate, check)
+    """Every schema, ``validate``, and ``check`` problem of a tab at one stage.
+
+    ``strict_columns`` is the columns :attr:`TabConfig.strict_schema` checks
+    for a schema entry, when it differs from ``context.columns`` (as for a
+    pull, where the sheet's header holds more than the projection).
+    """
+    return _problems(
+        tab.schema,
+        tab.key,
+        context,
+        validate,
+        check,
+        strict_schema=tab.strict_schema,
+        strict_columns=strict_columns,
+    )
+
+
+def _strict_schema_problems(
+    tab: str, stage: str, schema: Mapping[str, ColumnSchema], columns: Iterable[str]
+) -> list[str]:
+    """One problem per column of ``columns`` that ``schema`` does not declare."""
+    label = f"{tab} ({stage})"
+    return [
+        f"{label}: column {column!r} has no schema entry, and the tab is strict_schema"
+        for column in columns
+        if column not in schema
+    ]
 
 
 def _problems(
@@ -428,12 +455,26 @@ def _problems(
     context: CheckContext,
     validate: Validate | None,
     check: Check | None,
+    *,
+    strict_schema: bool = False,
+    strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every schema, ``validate``, and ``check`` problem at one stage, as messages."""
+    """Every schema, ``validate``, and ``check`` problem at one stage, as messages.
+
+    With ``strict_schema``, a column of ``strict_columns`` (``context.columns``
+    when None) that ``schema`` does not declare is a problem too, one per
+    column, independent of ``on_invalid`` and of the row-by-row schema check
+    above.
+    """
     label = f"{context.tab} ({context.stage})"
     found = [
         str(problem) for problem in problems(context.rows, schema, tab=label, key=key)
     ]
+    if strict_schema:
+        checked = strict_columns if strict_columns is not None else context.columns
+        found.extend(
+            _strict_schema_problems(context.tab, context.stage, schema, checked)
+        )
     if validate is not None:
         found.extend(f"{label}: {text}" for text in validate(context.rows))
     if check is not None:
@@ -506,6 +547,11 @@ def plan_tab(
     (:class:`CheckContext`). ``warn`` runs once, on the merged result, when
     no check found a problem; its messages go to the report's ``warnings``
     and block nothing.
+    With the tab's ``strict_schema``, a local column with no ``schema`` entry
+    is a problem too, at the ``"local"`` stage (every local column, in and out
+    of the projection); a sheet column outside the projection is the same,
+    at the ``"sheet"`` stage, once the tab is read, less a column already
+    reported at the local stage and one this run drops with ``drop_extra``.
     The tab is read with the schema's types: a column declared ``date`` or
     ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
 
@@ -737,7 +783,21 @@ def _plan(
             dropping=tuple(report.drop_columns),
             plan=plan,
         )
-        report.problems = _check(tab, merged, *hooks)
+        # strict_schema already checked the local side at the "local" stage
+        # above, before the sheet was read; a column it found undeclared
+        # there already stopped the plan, so a column that reaches here is
+        # never one the local side also carries: reported once, at "local".
+        report.problems = _check(tab, merged, *hooks, strict_columns=())
+        if tab.strict_schema and sheet_columns is not None:
+            sheet_extra = [
+                column
+                for column in sheet_columns
+                if column not in columns and column not in report.drop_columns
+            ]
+            report.problems = [
+                *report.problems,
+                *_strict_schema_problems(tab.title, "sheet", tab.schema, sheet_extra),
+            ]
         _warn(report, merged, options["warn"])
     return planned(table, plan, base)
 
@@ -1090,7 +1150,10 @@ def pull_tab(
     tab, a tab with no header row, or one with no rows is refused, and the
     local file is left alone. The records are checked against the schema,
     ``validate``, and ``check`` before anything is written, at the stage
-    ``"sheet"``, and ``warn`` runs when they pass. The report's ``replacement``
+    ``"sheet"``, and ``warn`` runs when they pass. With ``strict_schema``, a
+    named header column with no ``schema`` entry is a problem too, checked at
+    the same stage, whether or not it is read: every named column, less any
+    ``exclude`` names, not just ``columns``. The report's ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
     local file is simply created. An unchanged file is not rewritten. A
@@ -1166,7 +1229,10 @@ def pull_tab(
         sheet_columns=tuple(name for name in table.header if name),
     )
     report.warnings = list[str]()
-    report.problems = _check(tab, context, validate, check)
+    # strict_schema checks every named header column, not just the ones read
+    # (table.columns), less any 'exclude' names, which are not read at all.
+    checked = [name for name in table.header if name and name not in tab.exclude]
+    report.problems = _check(tab, context, validate, check, strict_columns=checked)
     if report.problems:
         return report
     _warn(report, context, warn)
@@ -1215,9 +1281,9 @@ def push_tab(
     :func:`push_rows`, which says what is checked, written, and refused. The
     header row and every local row are written in the local file's column
     order (the configured columns only, when there are some), and the tab's
-    ``key``, ``blank_keys``, ``schema``, ``widths``, and ``sheet_id`` are
-    passed on, with ``listing``. A local side that does not exist, holds no
-    rows, or lacks a configured column is refused.
+    ``key``, ``blank_keys``, ``schema``, ``widths``, ``sheet_id``, and
+    ``strict_schema`` are passed on, with ``listing``. A local side that does
+    not exist, holds no rows, or lacks a configured column is refused.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
@@ -1246,6 +1312,7 @@ def push_tab(
         clear_links=tab.clear_links,
         label=_named(store),
         sheet_id=tab.sheet_id,
+        strict_schema=tab.strict_schema,
         listing=listing,
         report=report,
     )
@@ -1270,6 +1337,7 @@ def push_rows(
     clear_links: bool = False,
     label: str = "rows",
     sheet_id: int | None = None,
+    strict_schema: bool = False,
     listing: TabListing | None = None,
     report: TabReport | None = None,
 ) -> TabReport:
@@ -1291,7 +1359,9 @@ def push_rows(
     ``validate``, and ``check`` first, before any request, at the stage
     ``"local"``; ``warn`` runs when they pass. With a ``key`` the rows are
     indexed by it, which refuses a blank or repeated key (``blank_keys`` as
-    for :func:`~gdrives.sheets.cells.index_rows`).
+    for :func:`~gdrives.sheets.cells.index_rows`). With ``strict_schema``, a
+    column any row holds that ``schema`` does not declare is a problem too,
+    checked at the same stage.
 
     The report's ``replacement`` says what the sheet holds that the rows do
     not: rows by key when there is a key, and always row and cell counts and
@@ -1334,7 +1404,9 @@ def push_rows(
         projection=tuple(out),
     )
     report.warnings = list[str]()
-    report.problems = _problems(schema or {}, key, context, validate, check)
+    report.problems = _problems(
+        schema or {}, key, context, validate, check, strict_schema=strict_schema
+    )
     if report.problems:
         return report
     _warn(report, context, warn)

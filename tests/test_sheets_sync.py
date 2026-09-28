@@ -1792,3 +1792,111 @@ class TestPaths:
         assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
             ".._a_b.csv"
         ]
+
+
+class TestStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        report = run(FakeSheetGrid({"T": [HEADER, *ROWS]}), target, apply=True)
+        assert report.problems == [] and report.exit_code == 0
+
+    def test_an_undeclared_projection_column_blocks_before_any_request(self, tmp_path):
+        target = make_target(
+            tmp_path, schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_key_column_needs_a_schema_entry_too(self, tmp_path):
+        target = make_target(
+            tmp_path, schema={"name": {}, "amt": {}}, strict_schema=True
+        )
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'id' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        report = run(FakeSheetGrid({"T": [HEADER, *ROWS]}), target, apply=True)
+        assert report.problems == [] and report.exit_code == 0
+
+    def test_a_carried_local_column_needs_a_schema_entry(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, ["a", "Ada", "1", "n"], header=[*HEADER, "notes"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"]]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'notes' has no schema entry, and the tab is "
+            "strict_schema"
+        ]
+        # A column both sides hold is reported once, at the local stage,
+        # before the sheet holding it too is even read.
+        assert grid.calls == []
+
+    def test_a_sheet_column_outside_the_projection_is_a_problem(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {
+                "T": [
+                    [*HEADER, "region"],
+                    [*ROWS[0], "east"],
+                    [*ROWS[1], "west"],
+                ]
+            }
+        )
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'region' has no schema entry, and the tab is "
+            "strict_schema"
+        ]
+        assert writes(grid) == []
+
+    def test_a_column_dropped_with_drop_extra_is_not_reported(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {
+                "T": [
+                    [*HEADER, "region"],
+                    [*ROWS[0], "east"],
+                    [*ROWS[1], "west"],
+                ]
+            }
+        )
+        report = run(grid, target, apply=True, drop_extra=True)
+        assert report.problems == []

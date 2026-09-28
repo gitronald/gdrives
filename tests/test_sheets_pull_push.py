@@ -1666,3 +1666,119 @@ class TestBlankCells:
             "  row count drops by 1",
             "  rows removed (1): z",
         ]
+
+
+class TestPushStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "push")
+        write_local(tab, *ROWS)
+        report = push_tab(FakeSheetGrid({"T": [HEADER, *ROWS]}), "S", tab, apply=True)
+        assert report.problems == []
+
+    def test_an_undeclared_local_column_blocks_before_any_request(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "push", schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "push",
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_push_rows_takes_the_flag_directly(self):
+        report = push_rows(
+            FakeSheetGrid({"T": [HEADER]}),
+            "S",
+            "T",
+            ["id", "name"],
+            [{"id": "a", "name": "Ada", "amt": "1"}],
+            schema={"id": ColumnSchema(), "name": ColumnSchema()},
+            strict_schema=True,
+        )
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+
+    def test_push_rows_default_is_off(self):
+        report = push_rows(
+            FakeSheetGrid({"T": [HEADER]}),
+            "S",
+            "T",
+            ["id", "name"],
+            [{"id": "a", "name": "Ada", "amt": "1"}],
+            schema={"id": ColumnSchema(), "name": ColumnSchema()},
+        )
+        assert report.problems == []
+
+
+class TestPullStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "pull")
+        report = pull_tab(FakeSheetGrid({"T": [HEADER, *ROWS]}), "S", tab, apply=True)
+        assert report.problems == []
+
+    def test_an_undeclared_header_column_blocks_before_any_write(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "pull", schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert not local_file(tab).exists()
+
+    def test_a_header_column_outside_columns_is_checked_too(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            columns=["id", "name"],
+            schema={"id": {}, "name": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert not local_file(tab).exists()
+
+    def test_an_excluded_column_is_not_checked(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            exclude=["amt"],
+            schema={"id": {}, "name": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert rows_of(tab.local) == [["a", "Ada"], ["b", "Bo"]]
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert rows_of(tab.local) == ROWS
