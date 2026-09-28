@@ -1,10 +1,10 @@
 ---
 id: 10
 slug: sheets-typed-writes
-status: active
+status: done
 branch: feature/sheets-typed-writes
 created: 2026-09-27T11:29:26-07:00
-concluded:
+concluded: 2026-09-27T21:45:23-07:00
 pr: https://github.com/gitronald/gdrives/pull/61
 ---
 
@@ -142,3 +142,59 @@ Coverage is gated at 100%.
 - **`USER_ENTERED` targets.** A target can already push with `USER_ENTERED`
   (`input_option`). Whether `typed_writes` replaces that option, or the two are
   refused together, is settled with the first question.
+
+## Log
+
+### 2026-09-27
+
+- The owner settled the open questions at activation: **C** (typed
+  `userEnteredValue` by `updateCells`); a date format only on a written date
+  cell that has **no date or time format** (one grid read); `retype_columns`
+  as a **library helper only**; `typed_writes` and a `USER_ENTERED` target
+  **refused together**.
+- `1f0f317` — `cell_data`, `to_serial`, and `DATE_FORMATS` in `cells.py`;
+  new `typed.py` (`typed_columns`, `dated_cells`, `format_requests`); new
+  `retype.py` (`retype_columns`, `RetypeReport`, `RetypeCell`);
+  `apply_plan`/`verify`/`push_rows` take `typed_writes`; config field
+  `typed_writes` with its refusals. Beyond the spec, `cell_data` refuses a
+  value the sheet would not hold exactly (an int past 2**53, a non-finite
+  float, an aware or sub-millisecond datetime), before any request, and
+  `typed_writes` is refused with `render: formatted`, whose read returns the
+  displayed text, not the value.
+- `retype_columns` takes a `key=` the plan's signature lacked, so the key
+  columns stay text as they do in a typed write.
+- `c5a3ae8` — `FakeSheetGrid` holds number formats (masked writes, grid read,
+  inherited by inserted rows); `tests/test_sheets_typed.py` (77 tests);
+  the guide's "Typed writes" section, with a runnable `retype_columns`
+  example. `DATE_FORMATS` became a `MappingProxyType`, and the package
+  surface test counts such constants.
+- `421f35f` — live test: a sync pushes a date, a 09:05 date-time, a float, and
+  a boolean as values; `yyyy-mm-dd` and `yyyy-mm-dd hh:mm:ss` display as
+  expected (a zero-padded 24-hour hour); `=B2+7` over the pushed date computes;
+  a pushed edit reads back by value; the next run writes nothing.
+- `5acb19c` — changelog.
+
+#### Review follow-up
+
+- `/code-review` at medium (correctness and reuse finders): the correctness
+  pass found nothing. Two cleanups were confirmed and fixed in `afe7a5e`:
+  `_write_typed` hoisted `out.index(column)` out of its per-row loop, and
+  `apply.py` uses `typed._VALUE_FIELD` for its value mask instead of two
+  literals. Both are behavior-preserving; the existing tests cover them.
+
+## Retrospective
+
+- The four open questions were the real gate: each changed code shape
+  (C's single batch, a grid read for formats, no CLI surface, a config
+  refusal), so asking them at activation, with recommendations, kept the
+  implementation to one pass.
+- "Only where the cell lacks a date format" was more work than it sounds,
+  because a new row's format is decided by where it lands: an inserted row
+  inherits (from above, or below under the header), an in-place row keeps the
+  grid's, and a row past the grid has none. Modelling inheritance in the fake
+  made that testable.
+- Plan 007's typed comparison paid off: the merge and base needed no change,
+  and the read-backs reused `normalize_cell` and the serial read.
+- The live suite showed the formats and the formula behave as designed; it did
+  not exercise format inheritance on an inserted row against the real API,
+  which rests on the fake's model.
