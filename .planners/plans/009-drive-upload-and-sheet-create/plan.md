@@ -131,3 +131,92 @@ Coverage is gated at 100%.
   caller needs to pin one.
 - **Cleanup of live test files.** The package deletes nothing, so a live test leaves
   what it creates. One fixed file name, replaced on every run, keeps that to one file.
+
+## Log
+
+### 2026-09-27: implementation
+
+Both commands are in, on one branch and one PR.
+
+Commits:
+
+- `41bbc61` add upload command and gdrives.upload
+- `dbad2ea` add sheets-create command and create_spreadsheet
+- `39b5214` document upload and sheets-create
+- `9221bae` retry upload chunks and refuse trashed targets
+- `b8fe7f7` fix a test that built a real drive service
+
+What was built:
+
+- `gdrives/upload.py`: `check_arguments`, `plan_upload` (an `UploadPlan`, `create` or
+  `replace`), `apply_upload`, `verify`, `upload_file`, and `run`.
+- `gdrives/sheets/create.py`: `create_spreadsheet`, `name_tabs`, and `check_tabs`, with
+  `run_create` in `gdrives/sheets/commands.py`.
+- `gdrives/files.py`: `find_named`, the files of one name in a folder, and `get_folder`,
+  the folder a write goes in. Both commands use both.
+- `gdrives/mv.py`: `resolve_destination` keeps the bare-name branch and hands the path
+  to a new `resolve_folder`, which `upload` shares.
+- `tests/helpers.py`: `FakeDriveFiles`, a Drive fake that holds files with their content
+  and answers `files.list`, `files.create`, and `files.update` with a media body. The
+  fake in `tests/test_mv.py` is left as it is, since its tests depend on how it answers.
+
+Decisions where the plan left room:
+
+- **Exactly one of `DEST`, `--dest-id`, or `--file-id` names the target.** The plan has
+  `--file-id` naming one of several matches. It is an alternative to the path, as `mv`'s
+  by-ID flags are, and not a modifier of it: a replace by ID needs no folder.
+- **`--name` was added**, to go with `--dest-id`. Without it a create by folder ID could
+  only take the local file's name.
+- **Names compare without regard to case**, as path resolution compares them. A folder
+  of the same name is not a match.
+- **The URL goes to stdout, and the ID and the operation to stderr**, as `docs-create`
+  does, so a script reads the URL alone.
+- **`sheets-create` prints the ID before it names the tabs**, so a failure there still
+  names the file that was created.
+- **The first tab is found by reading the new spreadsheet**, not assumed to be `Sheet1`,
+  since its title follows the account's language.
+- **No retry on the Drive `files.create`.** No other Drive call in the package retries.
+- **No automated live test.** The live suite runs as the service account, which the
+  test folder is not shared with, so the writes are checked by hand, as planned.
+
+Checked against the API, read-only, with `--dry-run`:
+
+- An upload into the test folder plans a `create`.
+- An upload under the name of a spreadsheet there is refused as Google-native.
+- `sheets-create` under the name of a file there notes the file and would create.
+- A `files.list` query of `name = '...'` finds a file whose name differs by case, so
+  the server compares without regard to case and the filter in `find_named` agrees
+  with it.
+
+The requests of a create, a replace, and a spreadsheet create were also built with the
+client library and not sent, to confirm their method, their URL, and their body.
+
+### 2026-09-27: review follow-up
+
+A review of the PR at the medium level: two finders, three verifiers, and a sweep.
+It is posted on the PR.
+
+Actioned, each with tests:
+
+- **The resumable upload never retried a chunk**, so the first dropped connection
+  ended the run, against Design 1. Each chunk is sent with `num_retries` of 5, in
+  chunks of 8 MiB where the client library's default is 100 MiB.
+- **A target in the trash, named by ID, was written to without a word.** `--file-id`,
+  `--dest-id`, and `sheets-create --folder-id` refuse one.
+- **The folder check existed twice.** Both commands call `get_folder`.
+- **`patch_drive_service` duplicated `tests/test_mv.py`'s `patch_service`.** That file
+  imports the shared one.
+
+Conscious no-ops:
+
+- **`verify` reads the file back with its own `files.get`**, though the write's
+  response carries the same fields. Design 1 asks for the read-back.
+- **`check_tabs` runs twice on one path.** `name_tabs` is public and checks its input.
+- **Two fakes of the Drive `files` resource.** They answer differently, and the tests
+  of `mv` depend on how theirs does.
+- **Two uploads at once of one name both create.** Drive has no precondition for a
+  create and permits duplicates. A later run refuses the pair and lists both.
+
+Found by CI, not by the review: a test called `resolve_folder` with no service, so
+path resolution built a real one. It passed where credentials are configured and
+failed in CI from the first commit of the branch. It now passes a stand-in.
