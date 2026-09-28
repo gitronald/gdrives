@@ -43,7 +43,7 @@ PR of its own. Every step from 3 on lands on one branch,
 |---|---|---|---|
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
 | 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
-| 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | not started |
+| 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, on the branch |
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | not started |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | not started |
@@ -231,3 +231,56 @@ What follows from it:
 - CI runs on the branch's PR after each step is pushed.
 - Nothing is merged into `dev` until the plan is closed, so the review of the whole
   diff that plan 007's retrospective asked for comes before the merge.
+
+### 2026-09-27 — the steps run in parallel
+
+Written at 2026-09-27T17:55:21-07:00, at the owner's word: the steps were going too
+slowly one at a time. The rule of one step at a time, in the execution order and in
+the entry above, no longer holds. What replaces it:
+
+- Each step is implemented in a worktree and on a working branch of its own
+  (`feature/downstream-adoption-gaps-<step>`), which is never pushed and has no PR.
+  The orchestrating session merges each into `feature/downstream-adoption-gaps` as it
+  finishes, runs the checks on the result, and resolves what conflicts.
+- A step starts as soon as the steps it depends on are merged: 5 after 3, 12 after 4,
+  9 after 8, and 11 after 9. Steps 4, 6, 8, and 10 started together while step 3 was
+  finishing, and steps 5 and 7 when it was merged.
+- Each agent is told that others are at work, to keep its edits to the shared files
+  small and local, to add to the end of the changelog's list, and to list the shared
+  files it changed.
+- The live requests are still the orchestrating session's alone.
+
+The owner named the spreadsheet for step 7's live check: the test spreadsheet, on a
+temporary tab made for the probe and deleted after it.
+
+### 2026-09-27 — step 3: a store for one entry of a JSON file
+
+Working branch `feature/json-entry-store`, merged into the plan's branch as `5c6065a`.
+
+**What landed.** `JsonEntryStore` in `stores.py`, the `entry` tab field, the
+`base_file` target field, and `_Checker.collisions` keyed by path and entry. The
+JSON reading and writing of `files.py` is in three helpers that `read_records`,
+`write_records`, and the store share: the two the spec named, and `_json_text`, which
+holds the dump's settings, so the two ways of writing a JSON file cannot differ.
+
+**Decisions where the spec was silent.**
+
+- A tab's local entry and the `base_file` entry of the same file are two entries when
+  their names differ, and are allowed. The same name is refused.
+- A path written whole by one tab and by entry by another is refused with a message
+  of its own.
+- `base_file` on a target with no sync tabs is accepted and unused, as `base` is.
+- `entry` with `bom` or with `newline: "crlf"` is refused by the checks a `.json`
+  local file already had.
+
+**Byte stability has one exception, which is not new.** A `float` cell that holds
+`-0.0` is rewritten as `0.0` by a write that changes nothing else, since `to_cell`
+gives `0` for it. The library writes `-0.0` itself when given the cell `-0`. A flat
+`.json` file has the same behaviour today. It is left as it is, and no test covers
+it. Every other value tried is byte-identical after a rewrite: floats such as `0.1`,
+`1e22`, and `5e-324`, whole numbers past 64 bits, dates, blanks, and text outside
+ASCII.
+
+**Tests.** 2632 unit tests pass at 100% line and branch coverage on the plan's branch
+after the merge, with ruff and pyrefly clean. The spec asks for no live test, and
+none was run.
