@@ -128,6 +128,7 @@ to keep in step with local files:
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `clear_links` | `sync`, `push` | `true` leaves the cells a run writes with no link, where the sheet links a URL or a domain as it is written. Default `false`. See [links](#links) |
+| `link_urls` | `sync`, `push` | An object with one field, `color`, a `#rrggbb` colour. After a write, each URL cell the run wrote is given a link to its own text, in that colour, not underlined. Contradicts `clear_links`. See [links](#links) |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
@@ -728,10 +729,70 @@ API cannot take a link out of a run without rewriting the run, so
 hold no link keeps them. `runs=False` leaves runs alone and saves the read
 that finds them.
 
-A caller that wants links, not plain text, looks for a target that differs
-from the cell's text. Setting a link is the caller's to do. A link sent as a
-text format run over the whole text takes; a link set as the cell's own
-format on plain text did not, when tried.
+A link set as the cell's own format (`userEnteredFormat.textFormat.link`,
+sent with `repeatCell`) takes, on plain text and on a cell whose link points
+elsewhere. A link sent as a text format run over the whole text takes too,
+and the API stores it as the cell's own link. A link sent in the request
+that clears the cell's text format runs does not: the API drops it without
+an error, so the runs are cleared by an earlier request, which may be in the
+same batch.
+
+### URL cells that keep a link
+
+A tab meant to hold links wants the opposite: each cell whose whole text is
+a URL holds a link to exactly that text, in a colour of its own, and not
+underlined. A **URL cell** is one whose text, stripped, is `http://` or
+`https://` followed by characters with no whitespace. A bare domain, a URL
+inside a sentence, and an email address are not URL cells, and are never
+read or written here.
+
+`link_urls` on a sync or a push tab gives the URL cells a run writes their
+link, and touches no other cell:
+
+```json
+"Members": {
+  "local": "data/members.csv",
+  "key": ["member_id"],
+  "link_urls": {"color": "#1155cc"}
+}
+```
+
+- A **push** checks the URL cells of the columns it pushed, after the
+  write. A **sync** checks the cells it pushed and the rows it added.
+- The check reads the tab's values, then one grid read bounded to the rows
+  and columns of the URL cells. A run that wrote no URL costs the first read
+  only.
+- A cell is fixed when it holds no link, its link points somewhere other
+  than its text, its text is not in the colour, its text is underlined, or
+  it has text format runs. **The text is the authority**: a link that points
+  elsewhere is pointed at the text, and the text is never changed.
+- The fix sends one request, in which each cell gets its link, its colour,
+  and `underline: false` under a mask of exactly those three properties, so
+  the cell keeps its bold, its fill, and its font. A cell with text format
+  runs has them cleared by a request of its own, earlier in the batch. The
+  cells are then checked again, and one that is still wrong stops the run
+  with a read-back error.
+- A preview does not run the check. The report of an apply says how many
+  cells were given a link: `URL cells given a link: 2`.
+- It is refused on a pull tab, and together with `clear_links`.
+
+As a library, `url_link_problems` returns each URL cell that breaks the rule
+as a `UrlLinkProblem` (its row, its column, its text, and its `reasons`, from
+`URL_LINK_REASONS`), and `set_url_links` fixes them and returns them. Both
+take `columns` and `rows` as `clear_link_format` does, so a caller can pass
+the cells an `ApplyResult` wrote:
+
+```python
+from gdrives.sheets import set_url_links, url_link_problems
+
+for cell in url_link_problems(service, "<spreadsheet-id>", "Members", color="#1155cc"):
+    print(cell.row, cell.column, cell.text, cell.reasons)
+
+set_url_links(service, "<spreadsheet-id>", "Members", color="#1155cc")
+```
+
+The colour is compared with the one the API returns, a fraction per channel,
+to the nearest of 255 steps. A tab with no problem gets no write.
 
 ## Keeping a tab in order
 
@@ -890,7 +951,9 @@ a run with any problem writes nothing.
   result, and a push to that cell replaces the formula with a literal value,
   so keep formula columns out of the projection or make them `sheet_owned`.
   Links are the one format a tab can ask a run to touch: `clear_links` takes
-  off the link the sheet gives a URL when it is written. See [links](#links).
+  off the link the sheet gives a URL when it is written, and `link_urls`
+  gives a URL cell a link to its text, a colour, and no underline. See
+  [links](#links).
 - **A changed key is not followed.** Editing a key cell reads as one row
   removed and another added: the old key is flagged as deleted, and the new
   one arrives as a new row. To change a key, edit it on both sides (on the
