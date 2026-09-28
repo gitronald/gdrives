@@ -92,6 +92,7 @@ _TAB_FIELDS = frozenset(
         "link_urls",
         "strict_schema",
         "hooks",
+        "typed_writes",
     }
 )
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
@@ -163,6 +164,10 @@ class TabConfig:
     runs as it, only named here: nothing is imported until a run starts
     (:func:`~gdrives.sheets.hooks.resolve_hooks`). A push tab takes no
     ``transform``.
+    ``typed_writes`` writes each column ``schema`` declares ``int``,
+    ``float``, ``bool``, ``date``, or ``datetime``, less the key, as a value
+    of that type rather than as text, on a sync or a push
+    (:mod:`~gdrives.sheets.typed`). It needs ``render`` ``unformatted``.
     """
 
     title: str
@@ -190,6 +195,7 @@ class TabConfig:
     entry: str | None = None
     link_urls: str | None = None
     hooks: Mapping[str, str] = field(default_factory=dict)
+    typed_writes: bool = False
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
@@ -211,6 +217,10 @@ class TabConfig:
                     "contradict each other"
                 )
             _rgb(self.link_urls)
+        if self.typed_writes and self.render != "unformatted":
+            raise ValueError(
+                f"tab {self.title!r}: 'typed_writes' needs 'render' unformatted"
+            )
         hook_problems = _hook_problems(self.hooks, self.mode)
         if hook_problems:
             raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
@@ -502,6 +512,11 @@ class _Checker:
                         f"USER_ENTERED rewrites values, so they would never "
                         f"read back as written"
                     )
+                elif tab.typed_writes and input_option == USER_ENTERED:
+                    problems.append(
+                        f"{where}, tab {title!r}: 'typed_writes' sends values "
+                        "itself; the target's USER_ENTERED contradicts it"
+                    )
         if len(problems) > start:
             return None
         base_stores: dict[str, Store] = {}
@@ -629,6 +644,8 @@ class _Checker:
                 problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
             if mode == "pull" and "link_urls" in raw:
                 problems.append(f"{where}: 'link_urls' does not apply to a pull tab")
+            if mode == "pull" and "typed_writes" in raw:
+                problems.append(f"{where}: 'typed_writes' does not apply to a pull tab")
         if mode != "pull" and "exclude" in raw:
             problems.append(f"{where}: 'exclude' applies only to a pull tab")
 
@@ -706,6 +723,14 @@ class _Checker:
         if not isinstance(strict_schema, bool):
             problems.append(f"{where}: 'strict_schema' must be true or false")
             strict_schema = False
+        typed_writes = raw.get("typed_writes", False)
+        if not isinstance(typed_writes, bool):
+            problems.append(f"{where}: 'typed_writes' must be true or false")
+        elif typed_writes and render == "formatted":
+            problems.append(
+                f"{where}: 'typed_writes' needs 'render' unformatted: a formatted "
+                "read returns what a number format shows, not the value written"
+            )
         schema = self._schema(where, raw.get("schema", {}), columns, strict_schema)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
@@ -748,6 +773,7 @@ class _Checker:
             link_urls=link_urls,
             strict_schema=bool(strict_schema),
             hooks=hooks,
+            typed_writes=bool(typed_writes),
         )
 
     def _hooks(self, where: str, raw: Mapping[str, Any], mode: str) -> dict[str, str]:

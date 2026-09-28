@@ -995,3 +995,74 @@ def test_set_url_links_keeps_the_bold_and_clears_the_runs(tab, shared_tab):
         ]
     assert got[0]["userEnteredFormat"]["textFormat"]["bold"] is True
     assert got[0]["effectiveFormat"]["textFormat"]["bold"] is True
+
+
+def test_sync_with_typed_writes_writes_values_the_sheet_computes_over(tab, tmp_path):
+    # A date, a date-time before 10:00, a float, and a boolean go to the sheet
+    # as values, with the date formats the package sets; a formula over the
+    # pushed date computes; and the next run finds everything in sync.
+    service, sid, name = tab
+    schema = {
+        "due": {"type": "date"},
+        "at": {"type": "datetime"},
+        "amt": {"type": "float"},
+        "paid": {"type": "bool"},
+    }
+    tab_config = {
+        "local": "dues.csv",
+        "key": ["id"],
+        "typed_writes": True,
+        "schema": schema,
+    }
+    target = _target(tmp_path, sid, name, tab_config)
+    local = local_file(target.tabs[0])
+    header = ["id", "due", "at", "amt", "paid"]
+    sheets.write_values_csv(
+        str(local),
+        [header, ["007", "2026-09-27", "2026-09-27 09:05:00", "2.5", "true"]],
+    )
+    first = sheets.run_target(service, sid, target, "sync", apply=True, adopt=True)
+    assert first.exit_code == 0, sheets.format_report(first)
+
+    serials = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!A2:E2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert serials == [["007", 46292, 46292 + (9 * 60 + 5) / 1440, 2.5, True]]
+    shown = sheets.pull_values(service, sid, f"'{name}'!B2:C2")
+    assert shown == [["2026-09-27", "2026-09-27 09:05:00"]]
+
+    # A formula over the pushed date computes, where over text it would not.
+    sheets.update_values(service, sid, f"'{name}'!F1:F2", [["next"], ["=B2+7"]])
+    (row,) = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!F2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert row == [46299]
+
+    # A local edit is pushed as a value, and the read-back compares by value.
+    sheets.write_values_csv(
+        str(local),
+        [header, ["007", "2026-10-01", "2026-09-27 09:05:00", "3.0", "FALSE"]],
+    )
+    second = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert second.exit_code == 0, sheets.format_report(second)
+    serials = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!A2:D2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert serials == [["007", 46296, 46292 + (9 * 60 + 5) / 1440, 3]]
+
+    third = sheets.run_target(service, sid, target, "sync")
+    assert third.exit_code == 0, sheets.format_report(third)
+    (report,) = third.tabs
+    assert report.plan is not None and not report.plan.has_writes

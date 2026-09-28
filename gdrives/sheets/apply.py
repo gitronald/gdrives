@@ -23,6 +23,15 @@ Every value is written as a literal string: ``USER_ENTERED`` rewrites values
 on the way in (``01`` becomes ``1``), which would make the same cell differ,
 and push again, on every run.
 
+With ``typed_writes`` the declared columns are written as values instead
+(:mod:`~gdrives.sheets.typed`), and steps 2 and 3 are one
+``spreadsheets.batchUpdate``: the new rows first, then each pushed cell by
+``updateCells`` at its row as it is once they are in, then the date formats
+of the date cells written that have none. Every sheet write of the run is
+one request, so it lands whole or not at all. The read-back compares a typed
+column by value (:func:`~gdrives.sheets.cells.normalize_cell`): ``3.0``
+written reads back ``3``.
+
 New rows never go through ``values.append``, which takes the first blank row
 it finds as the table's end and so writes over rows below a cleared gap. They
 go to explicit rows: after the last row holding anything, or with
@@ -37,7 +46,13 @@ from typing import Any
 
 from gdrives.files import Service
 from gdrives.sheets.a1 import a1_quote, column_letter
-from gdrives.sheets.cells import row_key, to_cell
+from gdrives.sheets.cells import (
+    SERIAL_TYPES,
+    cell_data,
+    normalize_cell,
+    row_key,
+    to_cell,
+)
 from gdrives.sheets.merge import MergePlan
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
@@ -50,6 +65,14 @@ from gdrives.sheets.structure import (
     linked_cells,
 )
 from gdrives.sheets.table import Table, read_tab
+from gdrives.sheets.typed import (
+    _VALUE_FIELD,
+    _typed_problems,
+    _value_request,
+    dated_cells,
+    format_requests,
+    typed_columns,
+)
 from gdrives.sheets.values import (
     RAW,
     batch_update_spreadsheet,
@@ -266,11 +289,6 @@ def _runs(positions: Sequence[tuple[int, str]]) -> list[tuple[int, list[str]]]:
     return runs
 
 
-def _string_cell(text: str) -> dict[str, Any]:
-    """A literal-string ``CellData``; a blank one is left empty."""
-    return {"userEnteredValue": {"stringValue": text}} if text else {}
-
-
 def _row_requests(
     fresh: Table,
     plan: MergePlan,
@@ -279,15 +297,19 @@ def _row_requests(
     at: int,
     insert: bool,
     clear_links: bool = False,
+    types: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """The requests that open rows at 0-based row ``at`` and fill them.
 
     With ``insert`` the rows are inserted there, shifting the rows below down;
     otherwise they are written in place, after appending grid rows if they
     would not fit. With ``clear_links`` the cell link is in the mask of the
-    write, so a URL is written with no link, in the same request.
+    write, so a URL is written with no link, in the same request. A column
+    ``types`` names is written as a value of its type, and every other
+    column as a literal string.
     """
-    fields = "userEnteredValue"
+    types = types or {}
+    fields = _VALUE_FIELD
     if clear_links:
         fields += f",{CELL_LINK_FIELD}"
     count = len(plan.appends)
@@ -321,28 +343,64 @@ def _row_requests(
         )
     positions = [(fresh.header.index(column), column) for column in fresh.columns]
     for first, columns in _runs(positions):
-        requests.append(
-            {
-                "updateCells": {
-                    "start": {
-                        "sheetId": sheet_id,
-                        "rowIndex": at,
-                        "columnIndex": first,
-                    },
-                    "rows": [
-                        {
-                            "values": [
-                                _string_cell(new.values.get(column, ""))
-                                for column in columns
-                            ]
-                        }
-                        for new in plan.appends
-                    ],
-                    "fields": fields,
-                }
-            }
-        )
+        rows = [
+            [
+                cell_data(new.values.get(column, ""), types.get(column, "str"))
+                for column in columns
+            ]
+            for new in plan.appends
+        ]
+        requests.append(_value_request(sheet_id, at, first, rows, fields))
     return requests
+
+
+def _typed_refusals(table: Table, plan: MergePlan, types: Mapping[str, str]) -> None:
+    """Refuse a plan holding a value its column's type cannot be written as."""
+    cells = [(f"row {cell.key}", cell.column, cell.local) for cell in plan.pushes]
+    cells.extend(
+        (f"new row {new.key}", column, text)
+        for new in plan.appends
+        for column, text in new.values.items()
+    )
+    problems = _typed_problems(cells, types)
+    if problems:
+        raise ValueError(
+            f"tab {table.tab!r}: cannot write typed values: " + "; ".join(problems)
+        )
+
+
+def _unformatted_dates(
+    fresh: Table,
+    plan: MergePlan,
+    types: Mapping[str, str],
+    dated: set[tuple[int, str]],
+    at: int,
+    inserted: bool,
+    after: Any,
+) -> list[tuple[int, int, str]]:
+    """The date cells a typed run writes that will have no date format.
+
+    Each is ``(row, column, type)``, 0-based, placed as the tab is once the
+    new rows are in. A pushed cell has the format it had. A new row inserted
+    has the format of the row it inherits from (the row above, or below when
+    that is the header), and one written in place has the format of the row
+    it is written over, or none past the grid's end. ``dated`` is what
+    :func:`~gdrives.sheets.typed.dated_cells` found before the write.
+    """
+    found: list[tuple[int, int, str]] = []
+    for cell in plan.pushes:
+        type_ = types.get(cell.column, "str")
+        row = fresh.row_numbers[cell.key]
+        if type_ in SERIAL_TYPES and cell.local and (row, cell.column) not in dated:
+            found.append((after(row) - 1, fresh.header.index(cell.column), type_))
+    source = at if at > 1 else at + 1  # the spreadsheet row inserted rows copy
+    for offset, new in enumerate(plan.appends):
+        was = source if inserted else at + offset + 1
+        for column, text in new.values.items():
+            type_ = types.get(column, "str")
+            if type_ in SERIAL_TYPES and text and (was, column) not in dated:
+                found.append((at + offset, fresh.header.index(column), type_))
+    return found
 
 
 def _links_left(tab: str, left: Sequence[LinkedCell], by: str) -> ReadBackError:
@@ -415,6 +473,7 @@ def apply_plan(
     insert_above: Mapping[str, Any] | None = None,
     clear_links: bool = False,
     link_urls: str | None = None,
+    typed_writes: bool = False,
 ) -> ApplyResult:
     """Write ``plan``'s pushed cells and new rows to ``table``'s tab, then verify.
 
@@ -452,17 +511,37 @@ def apply_plan(
     link, a read of the tab's ``sheetId``, one write, and the two reads again.
     It contradicts ``clear_links``.
 
+    ``typed_writes`` writes each column ``table.types`` declares, less the
+    key, as a value of its type (:func:`~gdrives.sheets.cells.cell_data`),
+    and every sheet write in the one ``spreadsheets.batchUpdate``. A date
+    cell written that has no date or time format is given ``yyyy-mm-dd``
+    (``yyyy-mm-dd hh:mm:ss`` for a datetime) in that request, which costs a
+    grid read of the date columns first (:func:`~gdrives.sheets.typed.dated_cells`).
+    It needs a table read ``unformatted``: a formatted read returns what a
+    number format shows, not the value written.
+
     A plan with nothing to push or add makes no request at all. Raises
     ValueError, before any request, when the plan does not fit ``table`` (a
     push to a row or column the table lacks, a new row whose key the tab
-    already has), ``insert_above`` names a column the header lacks, or
-    ``link_urls`` is not ``#rrggbb`` or is given with ``clear_links``.
+    already has), ``insert_above`` names a column the header lacks,
+    ``link_urls`` is not ``#rrggbb`` or is given with ``clear_links``, or,
+    with ``typed_writes``, the table was read ``formatted`` or a value
+    cannot be written as its column's type.
     """
     if link_urls is not None:
         if clear_links:
             raise ValueError("clear_links and link_urls contradict each other")
         _rgb(link_urls)
     _check_plan(table, plan)
+    types: dict[str, str] = {}
+    if typed_writes:
+        if table.render != "unformatted":
+            raise ValueError(
+                f"tab {table.tab!r}: typed writes need a table read unformatted, "
+                f"not {table.render!r}"
+            )
+        types = typed_columns(table.types, table.key)
+        _typed_refusals(table, plan, types)
     column = (
         _insert_target(insert_above, table.header)[0]
         if insert_above is not None
@@ -489,14 +568,53 @@ def apply_plan(
     pushed_cells = [
         (after(fresh.row_numbers[cell.key]), cell.column) for cell in plan.pushes
     ]
-    if count or (clear_links and pushed_cells):
+    dated: set[tuple[int, str]] = set()
+    if typed_writes:
+        written = {cell.column for cell in plan.pushes if cell.local}
+        written.update(
+            c for new in plan.appends for c, text in new.values.items() if text
+        )
+        dates = [
+            c for c in fresh.columns if types.get(c) in SERIAL_TYPES and c in written
+        ]
+        # Read before any write, so a failed read leaves the tab untouched.
+        dated = dated_cells(service, spreadsheet_id, fresh.tab, fresh.header, dates)
+    if count or (clear_links or typed_writes) and pushed_cells:
         # Read before any write, so a failed read leaves the tab untouched.
         grid = tab_grid(service, spreadsheet_id, fresh.tab)
         if count:
             requests = _row_requests(
-                fresh, plan, grid.sheet_id, grid.row_count, at, inserted, clear_links
+                fresh,
+                plan,
+                grid.sheet_id,
+                grid.row_count,
+                at,
+                inserted,
+                clear_links,
+                types,
             )
-        if clear_links:
+        if typed_writes:
+            # After the inserts, so by the rows as they are once those are in.
+            fields = _VALUE_FIELD
+            if clear_links:
+                fields += f",{CELL_LINK_FIELD},{RUNS_FIELD}"
+            requests.extend(
+                _value_request(
+                    grid.sheet_id,
+                    row - 1,
+                    fresh.header.index(cell.column),
+                    [[cell_data(cell.local, types.get(cell.column, "str"))]],
+                    fields,
+                )
+                for (row, _), cell in zip(pushed_cells, plan.pushes, strict=True)
+            )
+            requests.extend(
+                format_requests(
+                    grid.sheet_id,
+                    _unformatted_dates(fresh, plan, types, dated, at, inserted, after),
+                )
+            )
+        elif clear_links:
             # After the inserts, so by the rows as they are once those are in.
             requests.extend(
                 link_clear(
@@ -518,11 +636,11 @@ def apply_plan(
         for cell in plan.pushes
     ]
     # Pushes first: the row numbers they use are only true before any insert.
-    if data:
+    if data and not typed_writes:
         batch_update_values(service, spreadsheet_id, data, input_option=RAW)
     if requests:
         batch_update_spreadsheet(service, spreadsheet_id, requests)
-    verify(service, spreadsheet_id, table, plan)
+    verify(service, spreadsheet_id, table, plan, typed_writes=typed_writes)
 
     pushed_rows = sorted({fresh.row_numbers[cell.key] for cell in plan.pushes})
     written = sorted(table.columns, key=fresh.header.index) if count else []
@@ -542,7 +660,12 @@ def apply_plan(
 
 
 def verify(
-    service: Service, spreadsheet_id: str, table: Table, plan: MergePlan
+    service: Service,
+    spreadsheet_id: str,
+    table: Table,
+    plan: MergePlan,
+    *,
+    typed_writes: bool = False,
 ) -> None:
     """Read ``table``'s tab back and check that ``plan``'s sheet writes landed.
 
@@ -552,7 +675,21 @@ def verify(
     value, and every new row must exist with its projection cells as sent. Raises
     :class:`ReadBackError` listing every mismatch at once, or when the tab no
     longer reads cleanly (a key now blank or repeated, a column gone).
+
+    With ``typed_writes`` a column the write sent as values is compared by
+    value (:func:`~gdrives.sheets.cells.normalize_cell`), since a sheet holds
+    ``3.0`` as ``3``; the key and every text column are compared as text.
     """
+    types: dict[str, str] = {}
+    if typed_writes:
+        types = typed_columns(table.types, table.key)
+
+    def differs(read: str, sent: str, column: str) -> bool:
+        if column in types:
+            type_ = types[column]
+            return normalize_cell(read, type_) != normalize_cell(sent, type_)
+        return read != sent
+
     failed = f"tab {table.tab!r}: the read-back does not match the write"
     try:
         after = read_tab(
@@ -575,7 +712,7 @@ def verify(
         if row is None:
             if cell.key not in missing:
                 missing.append(cell.key)
-        elif row[cell.column] != cell.local:
+        elif differs(row[cell.column], cell.local, cell.column):
             problems.append(
                 f"row {cell.key}, column {cell.column!r}: wrote {cell.local!r}, "
                 f"read {row[cell.column]!r}"
@@ -587,7 +724,7 @@ def verify(
             continue
         for column in table.columns:
             sent = new.values.get(column, "")
-            if row[column] != sent:
+            if differs(row[column], sent, column):
                 problems.append(
                     f"new row {new.key}, column {column!r}: wrote {sent!r}, "
                     f"read {row[column]!r}"

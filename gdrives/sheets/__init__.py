@@ -28,6 +28,10 @@ pull_values`` works regardless of which submodule defines a name:
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back, and ``insert_point``, the row its new rows go above
+- ``typed``: typed writes, declared columns written as values
+  (``typed_columns``, ``dated_cells``, ``format_requests``)
+- ``retype``: ``retype_columns``, which turns the text a typed column holds
+  into values
 - ``order``: ``reorder_rows``, which puts a keyed tab's rows in a given
   order by moving whole rows
 - ``stores``: where a tab's local side and its base are kept (``Store``,
@@ -60,10 +64,12 @@ from gdrives.sheets.apply import (
 from gdrives.sheets.cells import (
     BLANK_KEYS,
     COLUMN_TYPES,
+    DATE_FORMATS,
     SERIAL_TYPES,
     STRICT_TYPES,
     ColumnSchema,
     Problem,
+    cell_data,
     cell_problem,
     check_blank_keys,
     column_type,
@@ -77,6 +83,7 @@ from gdrives.sheets.cells import (
     row_key,
     serial_to_cell,
     to_cell,
+    to_serial,
 )
 from gdrives.sheets.commands import (
     format_values,
@@ -147,6 +154,7 @@ from gdrives.sheets.retry import (
     retry_notices,
     with_retry,
 )
+from gdrives.sheets.retype import RetypeCell, RetypeReport, retype_columns
 from gdrives.sheets.rules import (
     add_conditional_rule,
     build_formula_rule,
@@ -204,6 +212,12 @@ from gdrives.sheets.table import (
     pull_serials,
     read_tab,
 )
+from gdrives.sheets.typed import (
+    NUMBER_FORMAT_FIELD,
+    dated_cells,
+    format_requests,
+    typed_columns,
+)
 from gdrives.sheets.values import (
     FORMATTED_STRING,
     FORMATTED_VALUE,
@@ -233,6 +247,16 @@ from gdrives.sheets.values import (
 )
 
 __all__ = [
+    "DATE_FORMATS",
+    "NUMBER_FORMAT_FIELD",
+    "RetypeCell",
+    "RetypeReport",
+    "cell_data",
+    "dated_cells",
+    "format_requests",
+    "retype_columns",
+    "to_serial",
+    "typed_columns",
     "BLANK_KEYS",
     "ApplyError",
     "ApplyResult",
