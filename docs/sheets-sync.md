@@ -493,13 +493,13 @@ The header is checked before anything is read into a row: every name in
 and the local file is left alone, naming every name it could not find. A
 denylist that quietly matched nothing after a column was renamed on the sheet
 would start writing that column's data to the local file, which is the
-failure this refusal exists to prevent — a renamed sensitive column is a
+failure this refusal exists to prevent. A renamed sensitive column is a
 likely cause. A tab whose named columns are all excluded is refused too, since
 there would be nothing left to pull.
 
 An excluded column's values are never read into a row: they cannot reach the
 local file, the preview report, or a `validate`, `check`, or `warn` hook. A
-report may still show the excluded column's *name* — `sheet_columns` lists
+report may still show the excluded column's *name*: `sheet_columns` lists
 every header column, since it describes the sheet's structure, and a local
 file written before `exclude` was added has that column counted, and dropped,
 like any other column the sheet no longer carries.

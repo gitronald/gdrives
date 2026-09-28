@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- An `exclude` tab field for `pull` tabs: columns to leave out, by header name, the other way round from `columns`. Their values never reach the local file, a hook, or a report; a column added on the sheet later is still pulled. Contradicts `columns`, and a `key`, `schema`, or `widths` column may not be named in it. A name `exclude` lists that is not one of the tab's header columns refuses the pull and leaves the local file alone, naming every such name, since a renamed sensitive column would otherwise start writing that column's data to disk.
+- An `exclude` tab field for `pull` tabs, and `TabConfig.exclude`: columns to leave out of a pull, by header name, where `columns` names the ones to keep. Their values never reach the local file, a hook, or a report, and a column added on the sheet later is still pulled. It is refused together with `columns`, on a `sync` or `push` tab, and when it names a `key`, `schema`, or `widths` column. A name in `exclude` that is not one of the tab's header columns refuses the pull and leaves the local file alone, listing every such name, since a sensitive column renamed on the sheet would otherwise be written to disk.
 
 ### Changed
 

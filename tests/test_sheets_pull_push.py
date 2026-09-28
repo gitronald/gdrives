@@ -7,6 +7,8 @@ and ``run_target`` runs the tabs of one mode. Each runs against
 the file bytes, and the calls a run leaves behind.
 """
 
+from typing import Any
+
 import pytest
 from googleapiclient.errors import HttpError
 from helpers import FakeSheetGrid, http_error, local_file
@@ -26,9 +28,12 @@ from gdrives.sheets import (
     RowFlag,
     SheetChangedError,
     SyncReport,
+    TabConfig,
     TabReport,
+    Target,
     format_report,
     parse_config,
+    plan_tab,
     pull_all_tabs,
     pull_tab,
     push_rows,
@@ -1057,7 +1062,34 @@ class TestPullExclude:
         pull_tab(grid, "S", tab, check=check)
         assert seen == [("id", "name", "amt")]
 
-    def test_no_serial_request_is_made_for_an_excluded_date_column(self, tmp_path):
+    def test_hooks_see_no_excluded_column(self, tmp_path):
+        sentinel = "sentinel-5d7e1c90"
+        seen: list[tuple[Any, ...]] = []
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", sentinel]]})
+
+        def validate(rows):
+            seen.append(("validate", [dict(row) for row in rows]))
+            return []
+
+        def hook(name):
+            def run(context):
+                rows = [dict(row) for row in context.rows]
+                seen.append((name, rows, context.columns, context.projection))
+                return []
+
+            return run
+
+        report = pull_tab(
+            grid, "S", tab, validate=validate, check=hook("check"), warn=hook("warn")
+        )
+        assert [entry[0] for entry in seen] == ["validate", "check", "warn"]
+        assert all(entry[1] == [{"id": "a", "name": "Ada"}] for entry in seen)
+        assert all(entry[2:] == (("id", "name"),) * 2 for entry in seen[1:])
+        assert sentinel not in repr(seen)
+        assert sentinel not in format_report(SyncReport(tabs=[report]))
+
+    def test_the_serial_read_names_no_excluded_column(self, tmp_path):
         tab = one_tab(
             tmp_path,
             "pull",
@@ -1066,8 +1098,50 @@ class TestPullExclude:
         )
         grid = FakeSheetGrid({"T": [["id", "on", "at"], ["a", "2026-09-27", "x"]]})
         pull_tab(grid, "S", tab, apply=True)
-        # One batchGet for the declared 'on' column; none for excluded 'at'.
         assert grid.methods.count("values.batchGet") == 1
+        assert rows_of(tab.local) == [["a", "2026-09-27"]]
+
+    @pytest.mark.parametrize(
+        ("fields", "what"),
+        [
+            ({"key": ("id",)}, "key"),
+            ({"schema": {"id": ColumnSchema(type="int")}}, "schema"),
+        ],
+    )
+    def test_a_tab_built_in_code_may_not_exclude_a_column_it_reads(
+        self, tmp_path, fields, what
+    ):
+        tab = TabConfig(
+            title="T",
+            local=tmp_path / "local.csv",
+            mode="pull",
+            exclude=("id",),
+            **fields,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(ValueError, match=rf"names {what} column\(s\) \['id'\]"):
+            pull_tab(grid, "S", tab, apply=True)
+        assert grid.methods == []
+        assert not (tmp_path / "local.csv").exists()
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_a_sync_or_a_push_refuses_a_tab_with_exclude(self, tmp_path, mode):
+        tab = TabConfig(
+            title="T",
+            local=tmp_path / "local.csv",
+            mode=mode,
+            key=("id",),
+            exclude=("amt",),
+        )
+        target = Target("roster", "S", tmp_path / "base", (tab,))
+        write_values_csv(str(tmp_path / "local.csv"), [HEADER, *ROWS])
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(ValueError, match="'exclude' applies only to a pull"):
+            if mode == "sync":
+                plan_tab(grid, "S", target, tab)
+            else:
+                push_tab(grid, "S", tab)
+        assert grid.methods == []
 
 
 # -- the one-off dump --
