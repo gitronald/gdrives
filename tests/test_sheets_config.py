@@ -136,6 +136,7 @@ class TestValidConfig:
             title="Members", local=ROOT / "data/members.csv", key=("id",)
         )
         assert tab.columns is None
+        assert tab.exclude == ()
         assert tab.insert_above is None
         assert tab.newline == "lf"
         assert tab.blank_keys == "refuse"
@@ -689,6 +690,74 @@ class TestTabProblems:
             members(columns=["id"], widths={"id": 10, "b": 20}),
             "widths column(s) ['b'] not in 'columns'",
         )
+
+    def test_exclude_accepted_on_a_pull_tab(self):
+        tab = {"mode": "pull", "local": "m.csv", "exclude": ["ssn"]}
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].exclude == ("ssn",)
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_exclude_on_a_sync_or_a_push_tab(self, mode):
+        tab = {"mode": mode, "local": "m.csv", "exclude": ["ssn"]}
+        if mode == "sync":
+            tab["key"] = ["id"]
+        self.tab_refused(tab, "'exclude' applies only to a pull tab")
+
+    def test_exclude_with_columns(self):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "columns": ["a"], "exclude": ["b"]},
+            "'exclude' and 'columns' contradict each other",
+        )
+
+    @pytest.mark.parametrize("exclude", ["id", [""], [1], ["id", " "]])
+    def test_malformed_exclude(self, exclude):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "exclude": exclude},
+            "'exclude' must be a list of column names",
+        )
+
+    def test_repeated_exclude(self):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "exclude": ["a", "a"]},
+            "'exclude' repeats ['a']",
+        )
+
+    def test_exclude_names_a_key_column(self):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "key": ["id"], "exclude": ["id"]},
+            "'exclude' names key column(s) ['id'], which would be read anyway",
+        )
+
+    def test_exclude_names_a_schema_column(self):
+        self.tab_refused(
+            {
+                "mode": "pull",
+                "local": "m.csv",
+                "schema": {"a": {}},
+                "exclude": ["a"],
+            },
+            "'exclude' names schema column(s) ['a'], which would be read anyway",
+        )
+
+    def test_exclude_names_a_widths_column(self):
+        # widths applies only to sync and push tabs, and exclude only to pull,
+        # so this combination is refused twice at once.
+        assert problems_of(
+            config(
+                {
+                    "Members": {
+                        "mode": "push",
+                        "local": "m.csv",
+                        "widths": {"a": 10},
+                        "exclude": ["a"],
+                    }
+                }
+            )
+        ) == [
+            f"{self.WHERE}: 'exclude' applies only to a pull tab",
+            f"{self.WHERE}: 'exclude' names widths column(s) ['a'], which would "
+            "be read anyway",
+        ]
 
 
 class TestEveryProblemAtOnce:
