@@ -208,6 +208,61 @@ class TestConfig:
         )
 
 
+class TestOptionalBase:
+    """``Target.base`` is optional when every sync tab has a base store."""
+
+    def test_a_sync_runs_with_no_base_and_touches_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        local = memory(*ROWS)
+        base = MemoryStore(HEADER, records(*ROWS), label="the base")
+        tab = TabConfig(title="T", store=local, key=("id",))
+        target = Target(name="t", spreadsheet="S", tabs=(tab,), base_stores={"T": base})
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+
+        report = run_target(grid, "S", target, "sync", apply=True)
+
+        (tab_report,) = report.tabs
+        assert not tab_report.failed and report.exit_code == 0
+        assert not list(tmp_path.iterdir())
+
+    def test_a_tab_with_no_store_is_refused_and_the_next_tab_runs(self, tmp_path):
+        refused = TabConfig(title="A", store=memory(*ROWS, label="a"), key=("id",))
+        runs = TabConfig(title="B", store=memory(*ROWS, label="b"), key=("id",))
+        target = Target(
+            name="t",
+            spreadsheet="S",
+            tabs=(refused, runs),
+            base_stores={"B": MemoryStore(HEADER, records(*ROWS), label="the base")},
+        )
+        grid = FakeSheetGrid({"A": [HEADER, *ROWS], "B": [HEADER, *ROWS]})
+
+        report = run_target(grid, "S", target, "sync", apply=True)
+
+        first, second = report.tabs
+        assert first.error == (
+            "target 't' has no base directory, and tab 'A' has no entry in base_stores"
+        )
+        assert not second.failed
+        assert grid.methods.count("values.get") == 1
+
+    def test_positional_construction_with_a_base_still_works(self, tmp_path):
+        tab = TabConfig(title="T", store=memory(*ROWS), key=("id",))
+        target = Target("t", "S", tmp_path / "sheets-base", (tab,))
+        assert target.base == tmp_path / "sheets-base"
+        assert target.base_path(tab) == tmp_path / "sheets-base" / "T.csv"
+
+    def test_a_pull_only_target_needs_no_base(self, tmp_path):
+        local = MemoryStore()
+        tab = TabConfig(title="T", store=local, mode="pull")
+        target = Target(name="t", spreadsheet="S", tabs=(tab,))
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+
+        report = run_target(grid, "S", target, "pull", apply=True)
+
+        (tab_report,) = report.tabs
+        assert not tab_report.failed and rows_of(local) == ROWS
+
+
 class TestSync:
     def test_a_first_sync_a_second_and_the_adopt_refusal(self, tmp_path):
         local, base = memory(*ROWS), MemoryStore(label="the base")
