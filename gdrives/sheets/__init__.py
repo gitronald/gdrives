@@ -24,6 +24,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
 - ``apply``: ``apply_plan``, which writes a merge plan's sheet side, guarded
   and read back, and ``insert_point``, the row its new rows go above
+- ``order``: ``reorder_rows``, which puts a keyed tab's rows in a given
+  order by moving whole rows
 - ``stores``: where a tab's local side and its base are kept (``Store``,
   ``FileStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
@@ -122,6 +124,7 @@ from gdrives.sheets.merge import (
     RowFlag,
     merge,
 )
+from gdrives.sheets.order import ReorderResult, reorder_rows
 from gdrives.sheets.retry import (
     IDEMPOTENT_STATUSES,
     RATE_LIMIT_STATUSES,
@@ -249,6 +252,7 @@ __all__ = [
     "RUNS_FIELD",
     "RetryNotice",
     "ReadBackError",
+    "ReorderResult",
     "Records",
     "Replacement",
     "RowFlag",
@@ -332,6 +336,7 @@ __all__ = [
     "read_rule_json",
     "read_tab",
     "read_values_csv",
+    "reorder_rows",
     "row_key",
     "run_add_rule",
     "run_append",
