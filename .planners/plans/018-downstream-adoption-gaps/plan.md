@@ -47,9 +47,9 @@ PR of its own. Every step from 3 on lands on one branch,
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, on the branch |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | done, on the branch |
-| 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | not started |
+| 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | done, on the branch |
 | 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, on the branch |
-| 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | not started |
+| 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | done, on the branch |
 | 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, on the branch |
 | 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | not started |
 | 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | not started |
@@ -370,3 +370,65 @@ test spreadsheet as `.xlsx` passed. The test of a file stored as-is was skipped,
 since the test setup has no such file: it reads `GDRIVES_TEST_FILE_ID`, which is not
 set. The probe did fetch a stored file's revision by `get_media`, and got the bytes
 its `size` named.
+
+### 2026-09-27 — steps 7 and 9
+
+Written at 2026-09-27T18:10:41-07:00. Both are merged into the plan's branch
+(`5631dc5`). 2819 unit tests pass at 100% line and branch coverage, with ruff and
+pyrefly clean.
+
+**Merging found the first conflict of meaning.** Step 7 read a tab's values with
+`pull_values` and two render constants, which step 8 had taken out of
+`structure.py` for its own helper. Git merged the file without a word, and ruff and
+pyrefly both named the three missing names. The read now goes through
+`_pull_rendered`, unformatted, since a URL cell is text and reads the same either
+way. The guide test's counts of examples conflicted as expected and were set from
+the guide: 8 JSON and 9 Python.
+
+**Step 7, the links of URL cells.** The live probe, run with the owner's word on a
+temporary tab of the test spreadsheet, is in
+[implementation-notes/003-url-links.md](implementation-notes/003-url-links.md):
+
+- A link set as the cell's own format takes, on plain text and on a URL. The guide
+  said it did not, and is corrected.
+- A link sent in the request that clears the text format runs is dropped, with no
+  error. The runs are cleared by an earlier request of the same batch.
+- The link, the colour, and the underline go in one request, and bold survives.
+- A link alone underlines and colours the text in the effective format only, so the
+  check reads the effective format.
+- The oversized grid read was not reproduced on a fresh tab of 1000 rows. The read
+  is bounded all the same, to the rows and columns of the URL cells.
+
+What landed: `url_link_problems`, `set_url_links`, `UrlLinkProblem`,
+`URL_LINK_REASONS`, the `link_urls` tab field, `link_urls=` on `apply_plan` and
+`push_rows`, `ApplyResult.linked`, and `TabReport.linked`. A tab with N cells to
+fix, R of them with runs, costs one batch of N + R requests. Where the spec was
+silent: `URL_LINK_REASONS` is a frozenset, as the package's other sets of names are;
+the match of `http` ignores case; and a run fixes exactly the cells it wrote, not
+their rows by their columns.
+
+The live test, `test_set_url_links_keeps_the_bold_and_clears_the_runs`, was run once
+by the orchestrating session and passed.
+
+**Step 9, the transform hook.** The sync part landed with the pull part, and the
+spec's way out was not needed. `TabPlan.table` stays the tab as read, and the new
+`TabPlan.seen` is the table the transform returned, which the merge compares. So the
+guard compares a raw read with a raw read, the read-back checks pushed cells
+against a raw read, and a cell the transform alone changed is equal on all three
+sides and is not pushed. `apply.py` is unchanged. One helper, `_on_sheet`, renames a
+push from its transformed key to the key its row has on the sheet.
+
+Where the spec was silent, or the work differs:
+
+- **`Transform` and `TitledTransform` are in `gdrives.sheets.sync` and not in
+  `gdrives.sheets`**, as `Validate` and `Check` are. The package's surface test
+  takes only names a submodule defines, and a type alias is not one.
+- `insert_above` matches the values as read, not as cleaned, since the insert point
+  is worked out on the raw re-read.
+- The transform runs a second time in the merge that follows a restructure, so it
+  has to be deterministic as well as idempotent. The guide says both.
+- **A local row whose key equals a sheet row's key as read, but not as transformed,
+  is refused at apply and not flagged by a preview.** It takes a transform that
+  changes key cells. It is left as it is.
+
+No live test was asked for or run for step 9.
