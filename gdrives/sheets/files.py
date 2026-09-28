@@ -232,23 +232,22 @@ def write_records(
     """
     delimiter = _format(path)
     _terminator(newline)
-    if delimiter is None:
-        if bom:
-            raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
-        if newline != "lf":
-            raise ValueError(f"{path}: newline applies only to .csv and .tsv")
-        write_text(
-            Path(path), _json_text(path, _json_array(path, columns, rows, types))
+    _check_columns(path, columns)
+    grid = _row_cells(path, columns, rows)
+    if delimiter is not None:
+        write_values_csv(
+            str(path),
+            [list(columns), *grid],
+            delimiter=delimiter,
+            bom=bom,
+            newline=newline,
         )
         return
-    _check_columns(path, columns)
-    write_values_csv(
-        str(path),
-        [list(columns), *_row_cells(path, columns, rows)],
-        delimiter=delimiter,
-        bom=bom,
-        newline=newline,
-    )
+    if bom:
+        raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
+    if newline != "lf":
+        raise ValueError(f"{path}: newline applies only to .csv and .tsv")
+    write_text(Path(path), _json_text(path, _json_objects(path, columns, grid, types)))
 
 
 def _json_array(
@@ -265,7 +264,16 @@ def _json_array(
     :func:`_json_text`, which refuses the ``NaN`` a ``float`` column can parse.
     """
     _check_columns(where, columns)
-    grid = _row_cells(where, columns, rows)
+    return _json_objects(where, columns, _row_cells(where, columns, rows), types)
+
+
+def _json_objects(
+    where: str | Path,
+    columns: Sequence[str],
+    grid: Sequence[Sequence[str]],
+    types: Mapping[str, ColumnType] | None,
+) -> list[dict[str, Any]]:
+    """``grid``, the checked cells of :func:`_json_array`'s rows, as its objects."""
     cells = [dict(zip(columns, row, strict=True)) for row in grid]
     try:
         typed_rows = decode_rows(cells, types or {})
