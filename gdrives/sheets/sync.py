@@ -1923,10 +1923,10 @@ def _write_typed(
     if clear_links:
         fields += f",{CELL_LINK_FIELD}"
     unformatted = [
-        (number - 1, out.index(column), types[column])
-        for column in dates
+        (number - 1, index, types[column])
+        for column, index in ((column, out.index(column)) for column in dates)
         for number, row in enumerate(padded[1:], start=2)
-        if row[out.index(column)] and (number, column) not in dated
+        if row[index] and (number, column) not in dated
     ]
     batch_update_spreadsheet(
         service,

@@ -66,6 +66,7 @@ from gdrives.sheets.structure import (
 )
 from gdrives.sheets.table import Table, read_tab
 from gdrives.sheets.typed import (
+    _VALUE_FIELD,
     _typed_problems,
     _value_request,
     dated_cells,
@@ -308,7 +309,7 @@ def _row_requests(
     column as a literal string.
     """
     types = types or {}
-    fields = "userEnteredValue"
+    fields = _VALUE_FIELD
     if clear_links:
         fields += f",{CELL_LINK_FIELD}"
     count = len(plan.appends)
@@ -594,7 +595,7 @@ def apply_plan(
             )
         if typed_writes:
             # After the inserts, so by the rows as they are once those are in.
-            fields = "userEnteredValue"
+            fields = _VALUE_FIELD
             if clear_links:
                 fields += f",{CELL_LINK_FIELD},{RUNS_FIELD}"
             requests.extend(
