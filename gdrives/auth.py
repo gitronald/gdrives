@@ -622,6 +622,18 @@ def describe_credentials(
     sa_path = _service_account_path()
     service_account = sa_path if sa_path is not None and sa_path.exists() else None
     passed_over: list[PassedToken] = []
+
+    def found(kind: str, **chosen: Any) -> CredentialInfo:
+        """The credential chosen, with what was found on the way to it."""
+        return CredentialInfo(
+            kind=kind,
+            oauth_client=oauth_client,
+            terminal=terminal,
+            service_account=service_account,
+            passed_over=tuple(passed_over),
+            **chosen,
+        )
+
     if credentials_path is not None:
         for token_path, creds, reason in _cached_tokens_detailed(scopes, warn=False):
             if creds is None:
@@ -629,57 +641,23 @@ def describe_credentials(
                 passed_over.append(PassedToken(path=token_path, reason=reason))
                 continue
             if _needs_refresh(creds):
-                return CredentialInfo(
-                    kind="oauth",
-                    refresh=True,
-                    source=token_path,
-                    oauth_client=oauth_client,
-                    terminal=terminal,
-                    service_account=service_account,
-                    passed_over=tuple(passed_over),
-                )
+                return found("oauth", refresh=True, source=token_path)
             if creds.valid:
-                return CredentialInfo(
-                    kind="oauth",
-                    source=token_path,
-                    oauth_client=oauth_client,
-                    terminal=terminal,
-                    service_account=service_account,
-                    passed_over=tuple(passed_over),
-                )
+                return found("oauth", source=token_path)
             passed_over.append(PassedToken(path=token_path, reason="invalid"))
         if _can_consent(credentials_path, force=force):
-            return CredentialInfo(
-                kind="oauth",
-                consent=True,
-                source=credentials_path,
-                oauth_client=oauth_client,
-                terminal=terminal,
-                service_account=service_account,
-                passed_over=tuple(passed_over),
-            )
+            return found("oauth", consent=True, source=credentials_path)
     if force:
         raise _no_consent(credentials_path)
     consent_skipped = oauth_client is not None and not terminal
-    if sa_path is not None and sa_path.exists():
-        return CredentialInfo(
-            kind="service_account",
-            identity=_service_account_email(sa_path),
-            source=sa_path,
-            oauth_client=oauth_client,
-            terminal=terminal,
+    if service_account is not None:
+        return found(
+            "service_account",
+            identity=_service_account_email(service_account),
+            source=service_account,
             consent_skipped=consent_skipped,
-            service_account=service_account,
-            passed_over=tuple(passed_over),
         )
-    return CredentialInfo(
-        kind="adc",
-        oauth_client=oauth_client,
-        terminal=terminal,
-        consent_skipped=consent_skipped,
-        service_account=service_account,
-        passed_over=tuple(passed_over),
-    )
+    return found("adc", consent_skipped=consent_skipped)
 
 
 # The scope sets whose credential line this run has printed, or None when
