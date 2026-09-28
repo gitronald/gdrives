@@ -48,6 +48,7 @@ gdrives/
 │   ├── table.py      # Read a whole tab as header-named, keyed records
 │   ├── merge.py      # The pure three-way merge by row key
 │   ├── apply.py      # Write a merge plan to a tab, guarded and read back
+│   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
 │   ├── structure.py  # Add and delete columns, create tabs, set column widths
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
 │   ├── stores.py     # Stores for the local side and the base (FileStore, MemoryStore)
@@ -372,6 +373,13 @@ write scope (`sheets-pull` writes only local files and stays read-only). Values
 are synced, never formulas or formatting, and are written as literal strings.
 See [docs/sheets-sync.md](docs/sheets-sync.md) for the config fields, the merge
 and ownership rules, the first sync, and the exit codes.
+
+A sync keeps the sheet's row order. To put a keyed tab back in an order of
+your own, compute the order in Python, as the rows' keys first to last, and
+call `reorder_rows` from `gdrives.sheets`. It moves whole rows, with their
+formatting and every column, in the fewest moves, previews unless given
+`apply=True`, and refuses an order that leaves out a row of the tab. See
+[keeping a tab in order](docs/sheets-sync.md#keeping-a-tab-in-order).
 
 ### Read and edit Google Docs content
 

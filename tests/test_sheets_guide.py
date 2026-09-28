@@ -86,6 +86,7 @@ PROMISED = {
         "run_widths",
         "tab_listing",
     ],
+    "reorder rows": ["ReorderResult", "reorder_rows"],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -170,7 +171,7 @@ class TestGuideConfigs:
 
     def test_the_guide_has_the_examples_this_reads(self):
         assert len(blocks(GUIDE, "json")) == 6
-        assert len(blocks(GUIDE, "python")) == 6
+        assert len(blocks(GUIDE, "python")) == 7
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -210,7 +211,11 @@ class TestGuidePython:
     def test_the_examples_run_in_order(self, tmp_path, monkeypatch):
         """Each block runs in one namespace, as a reader following the guide."""
         header = ["member_id", "name", "status", "website"]
-        rows = [["m1", "Ada", "active", "example.com"], ["m2", "Bea", "closed", ""]]
+        rows = [
+            ["m1", "Ada", "active", "example.com"],
+            ["m2", "Bea", "closed", ""],
+            ["m3", "Cy", "active", ""],
+        ]
         grid = FakeSheetGrid({"Members": [header, *rows]})
         write_values_csv(tmp_path / "data" / "members.csv", [header, *rows])
         held = [dict(zip(header[:3], row[:3], strict=True)) for row in rows]
@@ -232,6 +237,10 @@ class TestGuidePython:
         # The library example ends by exiting with the run's code.
         assert exits == [0]
         assert grid.tab("Summary").cells[0][:3] == ["id", "total", "paid"]
+        # The ordering example put the active row m3 above the closed m2.
+        assert namespace["preview"].moves == 1
+        members = [row[0] for row in grid.values("Members")]
+        assert members == ["member_id", "m1", "m3", "m2"]
         assert json.loads(workbook.read_text())["Members"] == held
         # The last one runs the hooks, and its check finds the column that the
         # links example reads, which the store's tab does not declare.

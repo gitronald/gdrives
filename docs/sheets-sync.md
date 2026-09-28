@@ -19,6 +19,7 @@ would change, and writes nothing. Add `--apply` to write.
 - [Moving an existing sync over](#moving-an-existing-sync-over)
 - [Pull and push](#pull-and-push)
 - [Links](#links)
+- [Keeping a tab in order](#keeping-a-tab-in-order)
 - [How cells are read and written](#how-cells-are-read-and-written)
 - [What is never done](#what-is-never-done)
 - [A usage rule: no defaults in sheet-owned columns](#a-usage-rule-no-defaults-in-sheet-owned-columns)
@@ -655,6 +656,75 @@ A caller that wants links, not plain text, looks for a target that differs
 from the cell's text. Setting a link is the caller's to do. A link sent as a
 text format run over the whole text takes; a link set as the cell's own
 format on plain text did not, when tried.
+
+## Keeping a tab in order
+
+A sync keeps the sheet's row order: a row typed on the sheet stays where it
+was typed, and a new local row goes after the last row, or above an
+`insert_above` row. A tab meant to stay in one order drifts as people add
+rows. `reorder_rows` puts it back in an order the caller computes, as the
+keys of its rows, first to last. An order no sort on the sheet can express,
+such as a status ranked by a custom order rather than alphabetically, is then
+a few lines of Python. It is a library call; no command runs it.
+
+```python
+from gdrives.sheets import read_tab, reorder_rows
+
+RANK = {"active": 0, "paused": 1, "closed": 2}
+
+
+def place(row):
+    """Active rows first, then paused, then closed, and by name within each."""
+    return (RANK.get(row["status"], len(RANK)), row["name"])
+
+
+table = read_tab(service, "<spreadsheet-id>", "Members", None, ["member_id"])
+order = [row["member_id"] for row in sorted(table.rows, key=place)]
+preview = reorder_rows(service, "<spreadsheet-id>", "Members", ["member_id"], order)
+print(f"{preview.moves} move(s): {preview.moved}")
+if not preview.unchanged:
+    reorder_rows(
+        service, "<spreadsheet-id>", "Members", ["member_id"], order, apply=True
+    )
+```
+
+Each key in `order` is a sequence of cell strings, one per key column, or a
+plain string for a one-column key. Keys are compared as a sync compares them,
+with surrounding and doubled spaces ignored. Like the commands, it previews by
+default and writes only with `apply=True`, which needs the `spreadsheets`
+scope. It returns a `ReorderResult`: `moves`, the number of rows it moves;
+`moved`, their keys; `unchanged`, True when the tab is already in order; and
+`applied`, True when the moves were written.
+
+- **The order names every row once.** The tab is read whole with the key,
+  so a blank or repeated key on the tab is refused, as a sync refuses it
+  (`blank_keys` works as for a sync). A row the order leaves out, a key the
+  tab lacks, a key the order repeats, and a key of the wrong length are
+  refused too, all listed in one error, and nothing is written. To keep rows
+  the order does not care about, append them to it.
+- **Blank rows stay put.** The rows reordered are rows 2 to the last row
+  holding anything. An entirely blank row among them keeps its position,
+  and the keyed rows fill the other positions in the order given.
+- **Rows move whole.** Each row is moved with the API's `moveDimension`, not
+  rewritten, so it takes its formatting, notes, validation, and the cells of
+  columns that were never read with it.
+- **Few moves.** The rows already in order relative to each other stay where
+  they are, and every other row is moved once, so a tab with one row added
+  out of place costs one move. A row that has to cross a blank row is always
+  among those moved. All the moves go in one request, which the API applies
+  all or nothing.
+- **Guarded and read back.** With `apply=True` the tab is read again first,
+  and `SheetChangedError` is raised, with nothing written, when its header,
+  rows, or row numbers changed since the preview read. After the moves the
+  tab is read back, and `ReadBackError` is raised when a row no longer holds
+  the cells it held or is not in its place. A tab already in order gets no
+  write.
+
+Moving a row has the effects of dragging it on the sheet: formulas,
+conditional format ranges, and named ranges are adjusted, so a formula that
+refers to another row by position follows that row to its new place. A
+filter view or a sort someone applied on the sheet is not applied again: the
+tab is left in the order given.
 
 ## How cells are read and written
 
