@@ -1204,3 +1204,72 @@ class TestStrictSchema:
             config({"Members": members(columns=["id"], schema={"id": {}, "a": {}})}),
             "target 'roster', tab 'Members': schema column(s) ['a'] not in 'columns'",
         )
+
+
+class TestSchemaPresent:
+    def test_accepted(self):
+        data = config({"Members": members(schema={"id": {"present": True}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].present is True
+
+    def test_defaults_to_false(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].present is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(schema={"id": {"present": "yes"}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'present' must be true or false",
+        )
+
+    def test_excluding_a_present_column_is_refused(self):
+        # A present column always has a schema entry, so the generic
+        # 'exclude' names schema column(s) refusal already covers it.
+        refused(
+            config(
+                {
+                    "Members": {
+                        "mode": "pull",
+                        "local": "data/members.csv",
+                        "schema": {"a": {"present": True}},
+                        "exclude": ["a"],
+                    }
+                }
+            ),
+            "target 'roster', tab 'Members': 'exclude' names schema column(s) "
+            "['a'], which would be read anyway",
+        )
+
+
+class TestSchemaStrict:
+    @pytest.mark.parametrize("type_", ["bool", "date"])
+    def test_accepted_for_bool_and_date(self, type_):
+        data = config(
+            {"Members": members(schema={"id": {"type": type_, "strict": True}})}
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].strict is True
+
+    def test_defaults_to_false(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].strict is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(schema={"id": {"strict": "yes"}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'strict' must be true or false",
+        )
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "datetime"])
+    def test_refused_for_any_other_type(self, type_):
+        refused(
+            config(
+                {"Members": members(schema={"id": {"type": type_, "strict": True}})}
+            ),
+            "target 'roster', tab 'Members': schema 'id': 'strict' is only for "
+            f"a column of ['bool', 'date'], not {type_!r}",
+        )
