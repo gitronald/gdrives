@@ -4,7 +4,8 @@ Command-line tools for Google Drive.
 
 Browse Google Drives, list folder contents by path or ID, export Google Docs,
 Sheets, and Slides to Office formats, download individual files or whole folder
-trees, rename and move files and folders, read and write Google Sheet cell
+trees, list and download a file's past revisions, rename and move files and
+folders, read and write Google Sheet cell
 ranges, keep a Sheet tab and a local file in step, read and edit Google Docs
 content in place, and generate hyperlinked folder maps — all from the terminal.
 Human-readable Drive paths (e.g. `My Drive/projects`) resolve against a local
@@ -27,7 +28,7 @@ Typer CLI.
 
 ```
 gdrives/
-├── cli.py       # Typer CLI: ls, export, download, mv, show-drives, sheets-*, docs-*
+├── cli.py       # Typer CLI: ls, export, download, revisions, mv, show-drives, sheets-*, docs-*
 ├── auth.py      # OAuth, service-account, and ADC authentication
 ├── drives.py    # Drive name→ID cache (fetch, save, resolve)
 ├── resolve.py   # Path→ID resolution (drive paths and "shared with me")
@@ -35,6 +36,7 @@ gdrives/
 ├── listing.py   # DriveEntry, recursive collection, and table/markdown/CSV formatters
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
+├── revisions.py # List a file's revisions, and download one (read-only)
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
 ├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
@@ -446,6 +448,27 @@ exit status 1. Rerun with `--skip-existing` to pick up where it stopped. Each
 entry maps to the same local path it got the first time, and entries already
 there are skipped instead of saved again as ` (1)` copies. Control characters
 in Drive names are replaced with `_` in local file names.
+
+### List and download a file's revisions
+
+```bash
+gdrives revisions <file-url>                                     # List revisions (id, modified time, by, size)
+gdrives revisions "My Drive/refs/paper.pdf"                       # By path
+gdrives revisions <file-url> --json                               # Raw revision list, as JSON
+gdrives revisions <sheet-url> --download <revision-id>            # Download one revision into ./
+gdrives revisions <sheet-url> --download <revision-id> -o out.csv # ...to a chosen path
+gdrives revisions <sheet-url> --download <revision-id> --format csv -o out/  # ...into a directory, as CSV
+```
+
+Read-only: this lists and downloads revisions but never restores, pins
+(`keepForever`), or deletes one, and it never touches Drive's write scopes.
+A binary file downloads its stored bytes as-is; a Google Doc, Sheet, or
+Slides file is fetched from that revision's own export links (an older
+revision, not just the latest, since Drive keeps them), in the format named
+by `--format` (an extension such as `xlsx`, `csv`, or `pdf`; default the
+type's usual export) — `--format` is refused for anything else. `-o` takes a
+file path or a directory; for a directory the local name is the file's name,
+the revision ID, and the format's extension.
 
 ### Rename and move files and folders
 
