@@ -1,8 +1,8 @@
 ---
 id: 10
 slug: sheets-typed-writes
-status: draft
-branch:
+status: active
+branch: feature/sheets-typed-writes
 created: 2026-09-27T11:29:26-07:00
 concluded:
 pr:
