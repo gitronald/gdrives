@@ -46,7 +46,7 @@ PR of its own. Every step from 3 on lands on one branch,
 | 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, on the branch |
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, on the branch |
-| 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | not started |
+| 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | done, on the branch |
 | 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | not started |
 | 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, on the branch |
 | 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | not started |
@@ -323,3 +323,50 @@ as specified. Two things the spec did not say:
   token already was. The other three reasons come from `_load_token_reason`, which
   `_load_token` now calls, so `authenticate_oauth` and `describe_credentials` pass
   over a token for the same reason by the same code.
+
+### 2026-09-27 — step 6: Drive revisions, read-only
+
+Merged into the plan's branch, with a fix from the review after it (`e9c4f4d`). 2722
+unit tests pass at 100% line and branch coverage, with ruff and pyrefly clean.
+
+**The live probe** was run before the step, by the orchestrating session, on the
+`drive.readonly` scope, and is in
+[implementation-notes/002-drive-revisions.md](implementation-notes/002-drive-revisions.md).
+What it changed in the design:
+
+- An export link answers with a body when it fails: a 429 after about ten fetches in
+  a few seconds, and a 401 without credentials, each an HTML page. The download
+  checks the status, retries a 429 or a 5xx, and writes nothing but the body of a
+  200.
+- `revisions.get_media` on a native file fails with a 404 that reads as a missing
+  revision. The file's MIME type decides, before any such call.
+- `revisions.list` returned a 500 once and succeeded on every repeat, so it is
+  retried, and `revisions.get` with it.
+- An old revision of a native file can be exported, not only the head.
+- `acknowledgeAbuse` is refused on a metadata read and is left out.
+
+**What landed.** `gdrives/revisions.py` (`Revision`, `list_revisions`,
+`download_revision`, `EXPORT_EXTENSIONS`, `LIST_FIELDS`) and the `revisions` command.
+A test runs each public function against a fake service that raises on any method
+outside `files.get`, `revisions.list`, `revisions.get`, `revisions.get_media`, and
+the GET of an export link.
+
+**From the review.** The subagent's `download_revision` took an extension in the
+argument the spec names `mime_type`. It now takes a MIME type or an extension, and
+the command's `--format` passes an extension as before.
+
+**Decisions where the spec was silent.**
+
+- A directory output names the file `<name>-<revision id>.<extension>`.
+- An output that is not an existing directory is taken as a file path.
+- A format given for a file stored as-is is refused, not ignored.
+- `--json` prints the fields of `Revision`, not the API's own objects.
+- `with_retry` is imported from `gdrives.sheets.retry`. It is the only backoff in the
+  package, and it was not moved.
+
+**Live test.** `tests/test_revisions_integration.py` was run once by the
+orchestrating session: the listing and the download of the newest revision of the
+test spreadsheet as `.xlsx` passed. The test of a file stored as-is was skipped,
+since the test setup has no such file: it reads `GDRIVES_TEST_FILE_ID`, which is not
+set. The probe did fetch a stored file's revision by `get_media`, and got the bytes
+its `size` named.
