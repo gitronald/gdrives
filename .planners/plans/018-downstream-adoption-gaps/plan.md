@@ -1,10 +1,10 @@
 ---
 id: 18
 slug: downstream-adoption-gaps
-status: active
+status: done
 branch: feature/downstream-adoption-gaps
 created: 2026-09-27T17:04:20-07:00
-concluded:
+concluded: 2026-09-27T20:12:27-07:00
 pr: https://github.com/gitronald/gdrives/pull/59
 ---
 
@@ -43,16 +43,16 @@ PR of its own. Every step from 3 on lands on one branch,
 |---|---|---|---|
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
 | 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
-| 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, on the branch |
-| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | done, on the branch |
-| 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, on the branch |
-| 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | done, on the branch |
-| 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | done, on the branch |
-| 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, on the branch |
-| 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | done, on the branch |
-| 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, on the branch |
-| 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | done, on the branch |
-| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | done, on the branch |
+| 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
+| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | done, [#59](https://github.com/gitronald/gdrives/pull/59) |
 
 ### Execution order
 
@@ -551,3 +551,100 @@ so it is brought up to date when the branch is merged and not before: `order.py`
 `hooks.py`, and `revisions.py`, the `revisions` command, `JsonEntryStore`, and the
 new fields. And this file is past 500 lines with its Log, so a split of the Log
 into a sidecar is to be put to the owner.
+
+### 2026-09-27 — the review of the whole diff, and the close
+
+Written at 2026-09-27T20:13:48-07:00. The review the entry above left undone was run on
+the branch's PR, [#59](https://github.com/gitronald/gdrives/pull/59), against
+`dev`: three finders, two on correctness split by area and one on reuse, then four
+verifiers. One correctness finder was told to look hardest at the steps that were
+built side by side. Eight candidates came back, six were confirmed, and two were
+rejected. The review is posted on the PR.
+
+**Review follow-up.** Four were fixed, each in a commit of its own:
+
+- **A revision ID went into a file name as given** (`fb73c07`). The file's own
+  name goes through `safe_filename`, and the ID beside it did not. For a file
+  stored as-is, an ID holding `../` put the temporary file of the download
+  outside the output directory, and the rename then failed. No file was left
+  behind. The ID is made safe as the name is, and the line printed after a
+  download passes it through `printable`. A test downloads with such an ID and
+  checks the directory above holds nothing new.
+- **`push_tab` refused in another order than 0.13.0** (`f5a0cb9`). Step 12 put
+  the check of `present` before the "has no rows" refusal, and the check of the
+  configured columns went in front with it. An empty local file that lacks a
+  configured column got the second error where it had the first, with no new
+  field in use. The order is `present`, no rows, configured columns. A test holds
+  it.
+- **`write_records` refused in another order for a `.json` path**
+  (`e7f92c0`). Step 3 moved the check of the columns and rows into a helper the
+  store shares, which put it after the refusals of `bom` and `newline`. The
+  check is back in front, and the helper is in two parts, `_json_array` and
+  `_json_objects`. A test holds it.
+- **`describe_credentials` built `CredentialInfo` at five places**
+  (`e710818`), each with the same four fields. One local function builds it. No
+  test was added, since nothing it returns changed. The verifier walked
+  `consent_skipped` through every case and found it right in each.
+
+Two are conscious no-ops:
+
+- `JsonEntryStore.exists()` and `read()` each parse the file, so a run parses it
+  twice for each tab. These are reads of a local file. A cache would work against
+  the rule that a write reads the file again.
+- The contradiction of `link_urls` and `clear_links` is refused in four places
+  with two wordings. Each wording belongs to an entry point, and tests assert
+  both.
+
+Two were rejected: an extra read of the tab under `link_urls`, in `apply_plan`
+and in `push_rows`. No value in scope holds the tab as it is after the writes,
+and the cost is stated in the docstrings and the guide.
+
+**The interactions between steps.** The finder that was asked for them reported
+none. The orchestrating session checked two by a probe, and both were clean: a
+strict column whose sheet value does not parse, which the respelling check leaves
+to the merge, and a `transform` with `blank_keys: "partial"`. `push_rows` was
+checked for a changed order of refusals and has none. This is a review, not a
+test: no test was added that sets two of the new fields on one tab.
+
+**The gate.** `ruff check`, `ruff format --check`, and `pyrefly check` are
+clean. 2988 tests pass and 1 is skipped, at 100% line and branch coverage. That
+run found the live setup and ran the live suite with the rest, in 118 seconds. The
+one skipped is the download of a revision of a file stored as-is, as before.
+
+**Still open after the close.** This file is past 600 lines. The split of its Log
+into a sidecar is the owner's to decide and is not made here. The project's
+untracked instructions file is brought up to date in the main checkout once the
+branch is merged.
+
+## Retrospective
+
+- **"Additive" was tested for requests and not for refusals.** Step 8 recorded the
+  requests of four default runs before any code changed, and no step changed one.
+  Nothing recorded which error a bad call gets first, and two steps changed that
+  while doing what their subplans asked: one moved a check into a shared helper,
+  and one put a new check in front of an old refusal. A table of bad calls and
+  their first errors, recorded on `dev` beside the requests, would have caught
+  both at the step.
+- **Conflicts of text were cheap, and the one conflict of meaning was caught by
+  the type checker.** Ten steps in parallel gave conflicts in more than a dozen files, nearly
+  all two additions at one place. The one that git merged in silence, a helper one
+  step removed and another still called, was named by ruff and pyrefly at once.
+  Running the checks after every merge, and not only at the end, is what made the
+  parallel run safe.
+- **A live probe before the step changed the design in three steps of three.**
+  `moveDimension` refuses a move that leaves its row in place, an export link
+  answers a failure with a page of HTML, and a link sent with the request that
+  clears the runs is dropped. None is in the reference. Each would have been a
+  defect found by a live test after the code was written.
+- **The review of subagent work earned its place at every step.** It removed a
+  fallback written to keep coverage at 100%, a message that could print a tab's
+  cells, and a guard left out on the ground that a config never gets there. Each
+  passed its subagent's own tests.
+- **One input was sanitized and the one beside it was not.** The file's name came
+  from Drive and the revision ID from the caller, and only the first was treated
+  as text to be made safe. Whatever becomes part of a path is made safe where the
+  path is built, whoever gave it.
+- **Twelve steps was too many for one plan file.** The subplans kept the specs
+  out of it, and the Log alone passed 500 lines by step 11. A plan of this size
+  wants its Log in a sidecar from the start, or a second plan for the second list
+  of gaps.
