@@ -49,7 +49,8 @@ The service account can only see what's explicitly shared with it.
 Viewer is enough for every read command. `mv` calls `files.update`, so anything
 you want to rename or move must be shared as **Contributor** or higher —
 otherwise `mv` fails with a 403 even though it requested the full `drive` scope,
-because the sharing role, not the OAuth scope, is the blocker.
+because the sharing role, not the OAuth scope, is the blocker. The same holds
+for `upload` and `sheets-create`, which write to the folder they are given.
 
 ## Managing keys
 

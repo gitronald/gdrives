@@ -8,6 +8,7 @@ are asserted without the API.
 from typing import Any
 
 import pytest
+from helpers import patch_drive_service
 
 from gdrives import mv
 from gdrives.resolve import AmbiguousPathError, DrivePathError
@@ -65,16 +66,6 @@ class FakeDriveService:
     @property
     def updates(self) -> list[dict[str, Any]]:
         return [kwargs for method, kwargs in self.calls if method == "update"]
-
-
-def patch_service(monkeypatch: pytest.MonkeyPatch, svc: FakeDriveService) -> dict:
-    """Make build_drive_service return ``svc``; the dict records its ``scopes``."""
-    rec: dict[str, Any] = {}
-    monkeypatch.setattr(
-        "gdrives.auth.build_drive_service",
-        lambda scopes=None: rec.update(scopes=scopes) or svc,
-    )
-    return rec
 
 
 def patch_paths(
@@ -333,7 +324,7 @@ class TestApplyMove:
 class TestRun:
     def test_rename_in_place(self, monkeypatch, capsys):
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         mv.run("F", "renamed.txt")
 
@@ -354,7 +345,7 @@ class TestRun:
                 "A": item("archive", id="A", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
         patch_paths(monkeypatch, {"My Drive": "R"}, {("R", "archive"): "A"})
 
         mv.run("F", "My Drive/archive")
@@ -378,7 +369,7 @@ class TestRun:
                 "A": item("archive", id="A", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
         patch_paths(monkeypatch, {"My Drive/archive": "A"}, {})
 
         mv.run("F", "My Drive/archive/new.txt")
@@ -405,7 +396,7 @@ class TestRun:
                 "A": item("archive", id="A", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         def boom(path, service):  # resolution must not be reached
             raise AssertionError("resolve_path should not be called")
@@ -421,7 +412,7 @@ class TestRun:
     def test_name_alone_renames_by_id(self, monkeypatch):
         # --name with no DEST and no --dest-id is a valid rename-by-ID.
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         mv.run(None, None, source_id="F", name="new.txt")
 
@@ -439,7 +430,7 @@ class TestRun:
                 "root": item("My Drive", id="R", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         mv.run(None, None, source_id="F", dest_id="root", name="new.txt")
 
@@ -455,7 +446,7 @@ class TestRun:
                 "alias": item("archive", id="A", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         mv.run(None, None, source_id="F", dest_id="alias")
 
@@ -465,7 +456,7 @@ class TestRun:
 
     def test_dry_run_makes_no_update_and_stays_read_only(self, monkeypatch, capsys):
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
-        rec = patch_service(monkeypatch, svc)
+        rec = patch_drive_service(monkeypatch, svc)
 
         mv.run("F", "renamed.txt", dry_run=True)
 
@@ -477,7 +468,7 @@ class TestRun:
         from gdrives.auth import DRIVE_WRITE_SCOPES
 
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
-        rec = patch_service(monkeypatch, svc)
+        rec = patch_drive_service(monkeypatch, svc)
 
         mv.run("F", "renamed.txt")
 
@@ -485,7 +476,7 @@ class TestRun:
 
     def test_same_name_same_folder_is_a_no_op(self, monkeypatch, capsys):
         svc = FakeDriveService({"F": item("notes.txt", parents=["P"])})
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
 
         mv.run("F", "notes.txt")
 
@@ -499,7 +490,7 @@ class TestRun:
                 "A": item("archive", id="A", folder=True),
             }
         )
-        patch_service(monkeypatch, svc)
+        patch_drive_service(monkeypatch, svc)
         patch_paths(monkeypatch, {"My Drive/archive": "A"}, {})
 
         mv.run("F", "My Drive/archive/new.txt")

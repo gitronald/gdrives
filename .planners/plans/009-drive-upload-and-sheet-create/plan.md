@@ -1,11 +1,11 @@
 ---
 id: 9
 slug: drive-upload-and-sheet-create
-status: active
+status: done
 branch: feature/drive-upload-and-sheet-create
 created: 2026-09-27T11:03:58-07:00
-concluded:
-pr:
+concluded: 2026-09-27T21:03:52-07:00
+pr: https://github.com/gitronald/gdrives/pull/60
 ---
 
 # Add file upload and spreadsheet creation to Drive writes
@@ -131,3 +131,146 @@ Coverage is gated at 100%.
   caller needs to pin one.
 - **Cleanup of live test files.** The package deletes nothing, so a live test leaves
   what it creates. One fixed file name, replaced on every run, keeps that to one file.
+
+## Log
+
+### 2026-09-27: implementation
+
+Both commands are in, on one branch and one PR.
+
+Commits:
+
+- `41bbc61` add upload command and gdrives.upload
+- `dbad2ea` add sheets-create command and create_spreadsheet
+- `39b5214` document upload and sheets-create
+- `9221bae` retry upload chunks and refuse trashed targets
+- `b8fe7f7` fix a test that built a real drive service
+
+What was built:
+
+- `gdrives/upload.py`: `check_arguments`, `plan_upload` (an `UploadPlan`, `create` or
+  `replace`), `apply_upload`, `verify`, `upload_file`, and `run`.
+- `gdrives/sheets/create.py`: `create_spreadsheet`, `name_tabs`, and `check_tabs`, with
+  `run_create` in `gdrives/sheets/commands.py`.
+- `gdrives/files.py`: `find_named`, the files of one name in a folder, and `get_folder`,
+  the folder a write goes in. Both commands use both.
+- `gdrives/mv.py`: `resolve_destination` keeps the bare-name branch and hands the path
+  to a new `resolve_folder`, which `upload` shares.
+- `tests/helpers.py`: `FakeDriveFiles`, a Drive fake that holds files with their content
+  and answers `files.list`, `files.create`, and `files.update` with a media body. The
+  fake in `tests/test_mv.py` is left as it is, since its tests depend on how it answers.
+
+Decisions where the plan left room:
+
+- **Exactly one of `DEST`, `--dest-id`, or `--file-id` names the target.** The plan has
+  `--file-id` naming one of several matches. It is an alternative to the path, as `mv`'s
+  by-ID flags are, and not a modifier of it: a replace by ID needs no folder.
+- **`--name` was added**, to go with `--dest-id`. Without it a create by folder ID could
+  only take the local file's name.
+- **Names compare without regard to case**, as path resolution compares them. A folder
+  of the same name is not a match.
+- **The URL goes to stdout, and the ID and the operation to stderr**, as `docs-create`
+  does, so a script reads the URL alone.
+- **`sheets-create` prints the ID before it names the tabs**, so a failure there still
+  names the file that was created.
+- **The first tab is found by reading the new spreadsheet**, not assumed to be `Sheet1`,
+  since its title follows the account's language.
+- **No retry on the Drive `files.create`.** No other Drive call in the package retries.
+- **No automated live test.** The live suite runs as the service account, which the
+  test folder is not shared with, so the writes are checked by hand, as planned.
+
+Checked against the API, read-only, with `--dry-run`:
+
+- An upload into the test folder plans a `create`.
+- An upload under the name of a spreadsheet there is refused as Google-native.
+- `sheets-create` under the name of a file there notes the file and would create.
+- A `files.list` query of `name = '...'` finds a file whose name differs by case, so
+  the server compares without regard to case and the filter in `find_named` agrees
+  with it.
+
+The requests of a create, a replace, and a spreadsheet create were also built with the
+client library and not sent, to confirm their method, their URL, and their body.
+
+### 2026-09-27: review follow-up
+
+A review of the PR at the medium level: two finders, three verifiers, and a sweep.
+It is posted on the PR.
+
+Actioned, each with tests:
+
+- **The resumable upload never retried a chunk**, so the first dropped connection
+  ended the run, against Design 1. Each chunk is sent with `num_retries` of 5, in
+  chunks of 8 MiB where the client library's default is 100 MiB.
+- **A target in the trash, named by ID, was written to without a word.** `--file-id`,
+  `--dest-id`, and `sheets-create --folder-id` refuse one.
+- **The folder check existed twice.** Both commands call `get_folder`.
+- **`patch_drive_service` duplicated `tests/test_mv.py`'s `patch_service`.** That file
+  imports the shared one.
+
+Conscious no-ops:
+
+- **`verify` reads the file back with its own `files.get`**, though the write's
+  response carries the same fields. Design 1 asks for the read-back.
+- **`check_tabs` runs twice on one path.** `name_tabs` is public and checks its input.
+- **Two fakes of the Drive `files` resource.** They answer differently, and the tests
+  of `mv` depend on how theirs does.
+- **Two uploads at once of one name both create.** Drive has no precondition for a
+  create and permits duplicates. A later run refuses the pair and lists both.
+
+Found by CI, not by the review: a test called `resolve_folder` with no service, so
+path resolution built a real one. It passed where credentials are configured and
+failed in CI from the first commit of the branch. It now passes a stand-in.
+
+### 2026-09-27: live checks
+
+Run in the test folder of the owner's Drive, on the OAuth token of the `drive` scope,
+with the branch's code.
+
+- **Upload, create.** A 4-byte text file was created in the folder, and read back
+  with the local file's size and checksum.
+- **Upload, replace.** The same local file with new content, 12 bytes, replaced the
+  first in place. The file ID and the URL printed were the ones of the create.
+- **Spreadsheet.** `sheets-create --title ... --folder ... --tab A --tab B` created a
+  spreadsheet in the folder, and its tabs read back as `A` and `B`, in that order.
+
+The first attempt wrote nothing. The cached token of the `drive` scope belonged to
+another account than the read-only token, so every `--dry-run` passed and every write
+was refused at path resolution, as a folder not found. The two
+were told apart by `about.get` and the ID of `root`. After a `login --scope drive` as
+the account that holds the folder, the three checks passed.
+
+Left in the test folder, to trash by hand: one text file and one spreadsheet. The
+upload's file is the one a later run replaces.
+
+One more commit after the checks: `caab4fe` name upload and sheets-create in login
+help.
+
+### Open questions, as they stand
+
+- **Whether `drive.file` is enough for a caller that only replaces its own uploads.**
+  Not checked. Both commands request `drive`.
+- **Whether a replace keeps the old content as a revision.** Not checked live. The
+  command pins nothing and says nothing of revisions.
+- **Cleanup of live test files.** As planned: one fixed file name, replaced on every
+  run. A spreadsheet is added by every run of its check, so that one stays by hand.
+
+## Retrospective
+
+- **The plan held.** Both commands were built as designed. What changed was added at
+  the edges: `--name`, the refusal of a trashed target, and the retries.
+- **"Resumable" was a claim before it was a behavior.** A resumable request with no
+  retries fails at the first dropped connection like any other. The fakes could not
+  show it and neither finder raised it; it came from reading the design's sentence
+  against the code that was meant to make it true.
+- **A dry run on another scope proves nothing about the write.** The read-only and
+  the write token were two accounts, so the preview and the write saw two Drives.
+  Before a live write, compare the accounts behind the scopes.
+- **A test that passes where credentials are configured is not a passing test.** One
+  built a real service and failed in CI from the first push. CI was first looked at
+  when the review was done, several pushes late. Look at it after the first push.
+- **What the plan left open was settled against the API, not reasoned about.** Whether
+  `name =` compares case took one read-only query to answer, where a verifier without
+  the network could only call it plausible.
+- **Sharing beat copying twice.** `resolve_folder`, `find_named`, and `get_folder`
+  each began as code in one command that the other needed, and the guard added to one
+  (the trash) reached the other for nothing.

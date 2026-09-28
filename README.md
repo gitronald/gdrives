@@ -28,7 +28,7 @@ Typer CLI.
 
 ```
 gdrives/
-├── cli.py       # Typer CLI: ls, export, download, revisions, mv, show-drives, sheets-*, docs-*
+├── cli.py       # Typer CLI: ls, export, download, revisions, mv, upload, show-drives, sheets-*, docs-*
 ├── auth.py      # OAuth, service-account, and ADC authentication
 ├── drives.py    # Drive name→ID cache (fetch, save, resolve)
 ├── resolve.py   # Path→ID resolution (drive paths and "shared with me")
@@ -38,6 +38,7 @@ gdrives/
 ├── download.py  # Download a single file, or recurse a folder, to local disk
 ├── revisions.py # List a file's revisions, and download one (read-only)
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
+├── upload.py    # Upload a local file, replacing a file of its name in place
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
 ├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
 │   ├── values.py     # spreadsheets.values.* wrappers, render options, and tab lookups
@@ -52,6 +53,7 @@ gdrives/
 │   ├── apply.py      # Write a merge plan to a tab, guarded and read back
 │   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
 │   ├── structure.py  # Add and delete columns, create tabs, set column widths
+│   ├── create.py     # Create a native spreadsheet in a folder, and name its tabs
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
 │   ├── stores.py     # Stores for the local side and the base (FileStore, JsonEntryStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
@@ -100,8 +102,8 @@ own token so read-only access is never disturbed: `spreadsheets`
 (`gdrives_token_rw.json`) for `sheets-update`, `sheets-append`, `sheets-clear`,
 `sheets-set`, `sheets-add-rule`, and `sheets-delete-rule`; `documents` (`gdrives_token_documents.json`) for
 `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, and `docs-create`;
-and the full `drive` scope (`gdrives_token_drive.json`) for `mv`, the only
-command that changes Drive itself.
+and the full `drive` scope (`gdrives_token_drive.json`) for `mv`, `upload`, and
+`sheets-create`, the commands that change Drive itself.
 When more than one is configured, authentication is attempted in order: OAuth,
 then service account, then ADC.
 
@@ -168,7 +170,8 @@ Default Credentials.
 
 Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
-and the `sheets-*` and `docs-*` commands) resolves it against the cache.
+`upload`, and the `sheets-*` and `docs-*` commands) resolves it against the
+cache.
 `gdrives --version` prints the installed version.
 
 ### Log in
@@ -530,7 +533,7 @@ segment does not does both in a single `files.update` call. `--dry-run` resolves
 everything and prints the intended change without writing, so it stays on the
 read-only scope.
 
-This is the one command that changes Drive itself, and it needs the full `drive`
+It changes Drive itself, and it needs the full `drive`
 scope — `drive.readonly` cannot call `files.update` — so any `mv` without
 `--dry-run` authorizes that scope into its own `gdrives_token_drive.json`, even
 if the move turns out to be a no-op. Two moves are refused
@@ -545,6 +548,105 @@ Under a **service account**, the `drive` scope is not enough on its own: the
 file or folder must also be shared with the service account as **Contributor**
 or higher. Viewer is read-only and `files.update` fails with a 403 no matter
 which scope was granted.
+
+### Upload a file
+
+```bash
+gdrives upload report.pdf "My Drive/reports"             # Into a folder, under the local name
+gdrives upload out.pdf "My Drive/reports/report.pdf"     # Into a folder, under another name
+gdrives upload report.pdf "My Drive/reports" --dry-run   # Print the operation, make none
+gdrives upload report.pdf --dest-id <folder-id> --name q3.pdf  # Skip path resolution
+gdrives upload report.pdf --file-id <file-id>            # Replace that file's content
+gdrives upload notes.md "My Drive/notes" --mime-type text/markdown  # Set the type
+```
+
+One local file is uploaded per run. As for `mv`, the destination decides where
+it goes: a path that resolves to an existing folder takes the file under its
+local name, and a path whose parent folder exists but whose final segment does
+not takes it under that name. A path with no `/` is a drive, and means its root.
+
+What the folder already holds under that name decides the operation. Names
+compare without regard to case, as they do when a path is resolved.
+
+- **One file**: its content is replaced in place, so its ID and every link to
+  it stay the same. Its name and its folder are not touched.
+- **No file**: the file is created.
+- **Several files**: refused, with each one's ID listed. Name the one to
+  replace with `--file-id`.
+- **A Doc, Sheet, or Slides file**: refused, since an upload cannot replace the
+  content of a Google-native file.
+
+A file or a folder in the trash is refused when `--file-id` or `--dest-id`
+names it; a path never resolves to one.
+
+After the write, the file is read back and its size and MD5 checksum are
+compared with the local file's; a difference exits 1 and names the file. The
+file's URL is printed to stdout, and its ID and the operation to stderr. The
+MIME type is guessed from the local file's extension unless `--mime-type` sets
+it, and nothing is converted: an `.xlsx` stays an `.xlsx`. The upload is
+resumable, in chunks of 8 MiB, each sent again up to five times after a server
+error or a dropped connection. Nothing is deleted. Drive keeps the replaced content as a revision
+by default (see `gdrives revisions`), and the command pins none.
+
+`upload` needs the full `drive` scope, the one `mv` uses, cached in the same
+`gdrives_token_drive.json`. `--dry-run` resolves everything and prints the
+operation (`create` or `replace`, the file's name and ID, its size and type)
+on the read-only scope. Under a **service account**, the folder or the file
+must be shared with it as **Contributor** or higher. A service account has no
+storage of its own, so a file it creates in a folder of someone's My Drive may
+be refused for lack of quota; a shared drive, or replacing a file someone else
+owns, does not depend on it.
+
+From code, `upload_file` plans, writes, and reads back in one call, and returns
+the file's metadata:
+
+```python
+from gdrives.auth import DRIVE_WRITE_SCOPES, build_drive_service
+from gdrives.upload import upload_file
+
+drive = build_drive_service(DRIVE_WRITE_SCOPES)
+meta = upload_file(drive, "report.pdf", folder_id="<folder-id>")
+print(meta["id"], meta["md5Checksum"])
+```
+
+### Create a spreadsheet
+
+```bash
+gdrives sheets-create --title "Roster"                            # In the root of My Drive
+gdrives sheets-create --title "Roster" --folder "My Drive/clubs"  # In a folder, by path
+gdrives sheets-create --title "Roster" --folder-id <folder-id>    # In a folder, by ID
+gdrives sheets-create --title "Roster" --tab Members --tab Dues   # Name its tabs
+gdrives sheets-create --title "Roster" --folder "My Drive/clubs" --dry-run  # Create nothing
+```
+
+Creates a native Google Sheet and prints its URL to stdout, and its ID to
+stderr. The URL or the ID is what a target's `spreadsheet` in
+`gdrives-sheets.json` takes, so a first `sheets-push` has a spreadsheet to write
+to.
+
+A new spreadsheet has one tab. With `--tab`, that tab is renamed to the first
+title given and the others are added after it, in order, so nothing is deleted.
+Without `--tab` the tab is left as it is. Drive permits duplicate names, so a
+file of the same name in the folder is not an error: the command says so on
+stderr, with the ID of each, and creates the spreadsheet. `--dry-run` reports
+the same and creates nothing, on the read-only scope. A `--folder-id` that
+names a folder in the trash is refused.
+
+The file is created through the Drive API, since the Sheets API creates in the
+root of My Drive only, so `sheets-create` needs the full `drive` scope, cached
+in `gdrives_token_drive.json`; `spreadsheets` alone cannot place a file in a
+folder. From code:
+
+```python
+from gdrives.auth import DRIVE_WRITE_SCOPES, build_drive_service, build_sheets_service
+from gdrives.sheets import create_spreadsheet
+
+drive = build_drive_service(DRIVE_WRITE_SCOPES)
+sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
+spreadsheet_id = create_spreadsheet(
+    drive, sheets, "Roster", folder_id="<folder-id>", tabs=["Members", "Dues"]
+)
+```
 
 ### Show available drives
 
@@ -613,7 +715,7 @@ There are a few options out there, but most haven't been touched in years, and n
 
 ## Security & privacy
 
-- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`, and `sheets-sync` and `sheets-push` with `--apply`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name — it never deletes anything, and `mv --dry-run` stays on the read-only scope, as do `sheets-sync` and `sheets-push` without `--apply` and `sheets-pull` with or without it.
+- Read commands request **read-only** Drive access (`drive.readonly`) and never modify or delete anything in your Drive. Only the Sheets write commands (`sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`, and `sheets-sync` and `sheets-push` with `--apply`), the Docs write commands (`docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `mv`, `upload`, and `sheets-create` request write access, via the `spreadsheets`, `documents`, and `drive` scopes respectively; a read command never loads or requests them. `mv` renames and reparents only the one item you name, `upload` writes only the one file it names, and `sheets-create` only adds a file — none of them deletes anything, and each stays on the read-only scope with `--dry-run`, as do `sheets-sync` and `sheets-push` without `--apply` and `sheets-pull` with or without it.
 - The cached OAuth tokens (`$GOOGLE_CONFIG_DIR/gdrives_token.json` for read-only, `gdrives_token_rw.json` for the Sheets write scope, `gdrives_token_documents.json` for the Docs write scope, `gdrives_token_drive.json` for the Drive write scope used by `mv`) hold long-lived refresh tokens and are written with owner-only `0600` permissions. Each scope set has its own token file so requesting one kind of write access never clobbers or re-consents another. A cached token whose grant does not cover a request is re-authorized rather than reused, and one whose grant is broader (a `drive` token, for a Sheets write) is used as it is. The names `gdrives_token*.json` are reserved: a consent never overwrites a token file holding a grant the new one does not include, and writes its token under a name derived from its scopes instead (see [docs/setup-oauth.md](docs/setup-oauth.md)). Keep `gdrives_credentials.json` and `service_account.json` out of version control and shared locations.
 - `gdrives show-drives` writes `.gdrives/cache.json` with the names and IDs of every Drive you can access; it is gitignored by default — keep it out of shared locations.
 - Names of shared items are chosen by other people. `ls`, `download`, `mv`, and `show-drives` escape control characters in them before printing, so an embedded escape sequence can't rewrite the terminal, and `ls --save-as` CSVs prefix formula-like cells with `'` so a spreadsheet app won't run them.

@@ -18,6 +18,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
+- ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder,
+  and ``name_tabs``
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
 - ``hooks``: the hooks a config names, found when a run starts
   (``resolve_hooks``, ``tab_hooks``)
@@ -81,6 +83,7 @@ from gdrives.sheets.commands import (
     run_add_rule,
     run_append,
     run_clear,
+    run_create,
     run_delete_rule,
     run_get,
     run_pull,
@@ -106,6 +109,13 @@ from gdrives.sheets.config import (
     find_config,
     load_config,
     parse_config,
+)
+from gdrives.sheets.create import (
+    SPREADSHEET_MIME,
+    check_tabs,
+    create_spreadsheet,
+    name_tabs,
+    spreadsheet_url,
 )
 from gdrives.sheets.files import (
     NEWLINES,
@@ -272,6 +282,7 @@ __all__ = [
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
+    "SPREADSHEET_MIME",
     "STAGES",
     "STRICT_TYPES",
     "SheetChangedError",
@@ -301,12 +312,14 @@ __all__ = [
     "build_formula_rule",
     "cell_problem",
     "check_blank_keys",
+    "check_tabs",
     "clear_link_format",
     "clear_values",
     "color_to_hex",
     "column_index",
     "column_letter",
     "column_type",
+    "create_spreadsheet",
     "decode_rows",
     "decode_errors",
     "delete_columns",
@@ -332,6 +345,7 @@ __all__ = [
     "list_tabs",
     "load_config",
     "merge",
+    "name_tabs",
     "normalize_cell",
     "normalize_key",
     "parse_config",
@@ -358,6 +372,7 @@ __all__ = [
     "run_add_rule",
     "run_append",
     "run_clear",
+    "run_create",
     "run_delete_rule",
     "run_get",
     "run_pull",
@@ -374,6 +389,7 @@ __all__ = [
     "set_column_widths",
     "set_url_links",
     "split_a1",
+    "spreadsheet_url",
     "strip_links",
     "sync_tab",
     "tab_grid",
