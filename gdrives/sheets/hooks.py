@@ -110,13 +110,14 @@ def _guarded(where: str, hook: str, name: str, function: Hook) -> Hook:
                     f"{label} returned a {type(result).__name__}, not a list of rows"
                 )
             return list(result)
-        if not isinstance(result, (list, tuple)) or not all(
-            isinstance(message, str) for message in result
-        ):
-            raise ValueError(
-                f"{label} returned {_shown(result)}, not a list of messages"
-            )
-        return list(result)
+        # The return is named by its types alone: it may hold a tab's cells.
+        what = f"a {type(result).__name__}"
+        if isinstance(result, (list, tuple)):
+            other = [item for item in result if not isinstance(item, str)]
+            if not other:
+                return list(result)
+            what += f" holding a {type(other[0]).__name__}"
+        raise ValueError(f"{label} returned {what}, not a list of messages")
 
     return run
 

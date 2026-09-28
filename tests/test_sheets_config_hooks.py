@@ -299,16 +299,19 @@ class TestWrappedHooks:
 
     def test_a_string_is_not_a_list_of_messages(self, tmp_path, module):
         check = self.found(tmp_path, module, "check", "says")
-        with pytest.raises(ValueError, match="returned 'one message', not a list"):
+        with pytest.raises(ValueError, match="returned a str, not a list") as caught:
             check(None)
+        assert "one message" not in str(caught.value)
 
     def test_a_list_of_other_things_is_not_a_list_of_messages(self, tmp_path, module):
         warn = self.found(tmp_path, module, "warn", "upper")
         rows = [{"a": "x" * 80}]
         with pytest.raises(ValueError) as caught:
             warn(rows)
-        assert "returned [{'a': 'XXXX" in str(caught.value)
-        assert str(caught.value).endswith("..., not a list of messages")
+        assert str(caught.value).endswith(
+            "returned a list holding a dict, not a list of messages"
+        )
+        assert "XXXX" not in str(caught.value)
 
     @pytest.mark.parametrize("function", ["nothing", "says"])
     def test_a_transform_that_returns_no_rows_is_refused(
