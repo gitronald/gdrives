@@ -5,7 +5,7 @@ status: active
 branch: feature/drive-upload-and-sheet-create
 created: 2026-09-27T11:03:58-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/60
 ---
 
 # Add file upload and spreadsheet creation to Drive writes
