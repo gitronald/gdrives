@@ -45,12 +45,12 @@ PR of its own. Every step from 3 on lands on one branch,
 | 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
 | 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, on the branch |
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
-| 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | not started |
+| 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, on the branch |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | not started |
 | 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | not started |
-| 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | not started |
+| 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, on the branch |
 | 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | not started |
-| 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | not started |
+| 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, on the branch |
 | 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | not started |
 | 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | not started |
 
@@ -284,3 +284,42 @@ ASCII.
 **Tests.** 2632 unit tests pass at 100% line and branch coverage on the plan's branch
 after the merge, with ruff and pyrefly clean. The spec asks for no live test, and
 none was run.
+
+### 2026-09-27 — steps 5, 8, and 10
+
+Written at 2026-09-27T18:01:35-07:00. The three were merged into the plan's branch in
+the order they finished: 8 (`0c9736d`), 5, and 10 (`065164a`). After the last merge,
+2689 unit tests pass at 100% line and branch coverage, with ruff and pyrefly clean.
+None of the three has a live test, and no live request was made for them.
+
+**Merging.** Step 8 conflicted with step 3 in four files, and step 10 in the
+changelog. Every conflict was two additions at one place, and both were kept: an
+import line in `config.py`, a sentence of the README, a line of the guide test's
+promised names, and the end of the changelog's list.
+
+**Step 8, read a tab as displayed.** `render` is a tab field and `Table.render`
+carries it, so the guard and the read-back read as the preview did without a caller
+passing the setting twice. One private helper, `_pull_rendered`, turns the setting
+into a request. The requests of four default runs were recorded before any code
+changed (`tests/default_requests.py`) and are what the default is tested against.
+`pull_serials` does send its own render options, so a declared date column arrives
+as ISO 8601 under `formatted`, and nothing is refused in the config check.
+Beyond the spec: `add_columns`, `place_columns`, `delete_columns`, and
+`set_column_widths` take `render=`, since each reads the header during a run.
+
+**Step 5, optional `Target.base`.** As specified. The subagent left `collisions`
+unguarded, on the ground that a config always sets `base`. The spec asks for the
+guard anyway, and the review added it (a sync tab of a target with no base and no
+store for it is skipped there), with a test.
+
+**Step 10, more in `describe_credentials`.** The five fields and `PassedToken` are
+as specified. Two things the spec did not say:
+
+- **The new fields are left out of equality and hashing** (`compare=False`).
+  `describe_credentials` now fills them on every branch, so a comparison with a
+  `CredentialInfo` built from the old fields, which the suite and a caller both
+  make, would otherwise stop matching.
+- **`invalid` is decided in `describe_credentials`**, where the check of a loaded
+  token already was. The other three reasons come from `_load_token_reason`, which
+  `_load_token` now calls, so `authenticate_oauth` and `describe_credentials` pass
+  over a token for the same reason by the same code.
