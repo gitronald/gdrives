@@ -929,3 +929,104 @@ class TestCommandsAnnounceAWait:
         auth._credentials.cache_clear()
         auth.build_drive_service()
         assert capsys.readouterr().err == ""
+
+
+class TestRevisions:
+    def test_delegates_with_options(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.revisions.run",
+            lambda source, *, download, output, format, as_json: rec.update(
+                s=source, dl=download, o=output, f=format, j=as_json
+            ),
+        )
+        cli.revisions(
+            "My Drive/x", download="R1", output="out", format_="csv", as_json=True
+        )
+        assert rec == {"s": "My Drive/x", "dl": "R1", "o": "out", "f": "csv", "j": True}
+
+    def test_output_without_download_is_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.revisions("My Drive/x", output="out")
+        assert exc.value.code == 1
+        assert "require --download" in capsys.readouterr().err
+
+    def test_format_without_download_is_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.revisions("My Drive/x", format_="csv")
+        assert exc.value.code == 1
+        assert "require --download" in capsys.readouterr().err
+
+    def test_lists_via_cli_runner(self, monkeypatch):
+        from gdrives.revisions import Revision
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: object())
+        monkeypatch.setattr("gdrives.resolve.resolve_and_report", lambda *a, **k: "FID")
+        monkeypatch.setattr(
+            "gdrives.revisions.list_revisions",
+            lambda service, file_id: [
+                Revision(
+                    id="1",
+                    modified_time="2026-01-01T00:00:00.000Z",
+                    modified_by="me",
+                    mime_type="application/pdf",
+                    size=42,
+                    keep_forever=False,
+                    export_links=None,
+                )
+            ],
+        )
+        result = CliRunner().invoke(cli.app, ["revisions", "My Drive/x"])
+        assert result.exit_code == 0
+        assert "1" in result.stdout
+        assert "me" in result.stdout
+        assert "42" in result.stdout
+
+    def test_lists_as_json_via_cli_runner(self, monkeypatch):
+        from gdrives.revisions import Revision
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: object())
+        monkeypatch.setattr("gdrives.resolve.resolve_and_report", lambda *a, **k: "FID")
+        monkeypatch.setattr(
+            "gdrives.revisions.list_revisions",
+            lambda service, file_id: [
+                Revision(
+                    id="1",
+                    modified_time="2026-01-01T00:00:00.000Z",
+                    modified_by="me",
+                    mime_type="application/pdf",
+                    size=42,
+                    keep_forever=False,
+                    export_links=None,
+                )
+            ],
+        )
+        result = CliRunner().invoke(cli.app, ["revisions", "My Drive/x", "--json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        assert parsed == [
+            {
+                "id": "1",
+                "modified_time": "2026-01-01T00:00:00.000Z",
+                "modified_by": "me",
+                "mime_type": "application/pdf",
+                "size": 42,
+                "keep_forever": False,
+                "export_links": None,
+            }
+        ]
+
+    def test_downloads_via_cli_runner(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("gdrives.auth.build_drive_service", lambda: object())
+        monkeypatch.setattr("gdrives.resolve.resolve_and_report", lambda *a, **k: "FID")
+        target = tmp_path / "out.pdf"
+        monkeypatch.setattr(
+            "gdrives.revisions.download_revision",
+            lambda service, file_id, revision_id, output, **k: target,
+        )
+        result = CliRunner().invoke(
+            cli.app, ["revisions", "My Drive/x", "--download", "R1"]
+        )
+        assert result.exit_code == 0
+        assert "R1" in result.stdout
+        assert str(target) in result.stdout
