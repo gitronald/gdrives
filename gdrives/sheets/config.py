@@ -34,7 +34,7 @@ from gdrives.local import safe_filename
 from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
-from gdrives.sheets.values import RAW, USER_ENTERED
+from gdrives.sheets.values import RAW, RENDERS, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
 CONFIG_NAME = "gdrives-sheets.json"
@@ -78,6 +78,7 @@ _TAB_FIELDS = frozenset(
         "newline",
         "blank_keys",
         "on_invalid",
+        "render",
         "clear_links",
         "sheet_id",
         "entry",
@@ -130,6 +131,8 @@ class TabConfig:
     is ``"refuse"`` or ``"partial"``, as for
     :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
     or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
+    ``render`` is ``"unformatted"`` or ``"formatted"``: how every read of the
+    tab reads its cells (:func:`~gdrives.sheets.table.read_tab`).
     ``clear_links`` leaves the cells a sync or a push writes with no link,
     where the Sheets API links a URL when it is written. ``sheet_id`` names
     the tab by its ``sheetId``, which a rename leaves as it is: the tab is
@@ -156,6 +159,7 @@ class TabConfig:
     newline: str = "lf"
     blank_keys: str = "refuse"
     on_invalid: str = "refuse"
+    render: str = "unformatted"
     clear_links: bool = False
     sheet_id: int | None = None
     store: Store | None = None
@@ -592,6 +596,11 @@ class _Checker:
                 f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
                 f"not {on_invalid!r}"
             )
+        render = raw.get("render", "unformatted")
+        if not isinstance(render, str) or render not in RENDERS:
+            problems.append(
+                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
+            )
         schema = self._schema(where, raw.get("schema", {}), columns)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
@@ -627,6 +636,7 @@ class _Checker:
             newline=str(newline),
             blank_keys=str(blank_keys),
             on_invalid=str(on_invalid),
+            render=str(render),
             clear_links=bool(clear_links),
             sheet_id=sheet_id,
             entry=entry,

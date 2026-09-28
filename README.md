@@ -365,7 +365,9 @@ file or a report, even for a column added on the sheet later. A workbook kept
 in one JSON file, `{"Members": [...], "Dues": [...]}`, is synced by giving each
 tab an `entry` of its `.json` `local` file, and a target's `base_file` keeps
 every sync tab's base as an entry of one `.json` file instead of one CSV per
-tab.
+tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
+`render: "formatted"` reads every cell as the sheet displays it, for local
+files that hold the displayed text.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
