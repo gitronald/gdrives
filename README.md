@@ -361,7 +361,9 @@ is added to the other. Deleted rows are flagged, never deleted. A `pull` tab
 replaces the local file with the tab, and a `push` tab replaces the tab's
 values with the local file. A pull tab's `exclude` names columns to leave out
 (the other way round from `columns`), so their values never reach the local
-file or a report, even for a column added on the sheet later.
+file or a report, even for a column added on the sheet later. A tab's
+`strict_schema` makes it a problem for a column of either side to have no
+`schema` entry, so a column added later does not silently sync as text.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
