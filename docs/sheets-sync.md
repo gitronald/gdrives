@@ -117,6 +117,7 @@ to keep in step with local files:
 | `sheet_id` | all | The tab's `sheetId`, a whole number. The tab is then found by it, under whatever title it has on the sheet. See [a tab named by its sheetId](#a-tab-named-by-its-sheetid) |
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
+| `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
 | `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
@@ -471,6 +472,37 @@ is created. The preview compares the tab with the current local file: row
 counts, a drop in the row count, and, with a `key`, the rows added, removed,
 and changed. An unchanged file is not rewritten. A pull writes only local
 files; it never writes to the sheet.
+
+### Excluding columns from a pull
+
+A pull tab's `columns` is an allowlist: a column added on the sheet later is
+silently left out until `columns` names it too. `exclude` is the other way
+round, for a tab that holds a few sensitive columns (personal data, say) and
+grows new columns over time:
+
+```json
+"Members": {"mode": "pull", "local": "data/members.csv", "exclude": ["birthdate", "ssn"]}
+```
+
+Every column but the ones named is pulled, including one added on the sheet
+after `exclude` was written. `exclude` and `columns` contradict each other and
+cannot both be given on one tab.
+
+The header is checked before anything is read into a row: every name in
+`exclude` must be one of the header's named columns, or the pull is refused
+and the local file is left alone, naming every name it could not find. A
+denylist that quietly matched nothing after a column was renamed on the sheet
+would start writing that column's data to the local file, which is the
+failure this refusal exists to prevent — a renamed sensitive column is a
+likely cause. A tab whose named columns are all excluded is refused too, since
+there would be nothing left to pull.
+
+An excluded column's values are never read into a row: they cannot reach the
+local file, the preview report, or a `validate`, `check`, or `warn` hook. A
+report may still show the excluded column's *name* — `sheet_columns` lists
+every header column, since it describes the sheet's structure, and a local
+file written before `exclude` was added has that column counted, and dropped,
+like any other column the sheet no longer carries.
 
 **`push`** replaces the tab's values with the local file: the header row and
 every row, in the local file's column order (only the configured `columns`,

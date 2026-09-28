@@ -358,7 +358,9 @@ local file): a cell edited on one side is written to the other, a cell edited
 on both is reported as a conflict and left alone, and a new row on either side
 is added to the other. Deleted rows are flagged, never deleted. A `pull` tab
 replaces the local file with the tab, and a `push` tab replaces the tab's
-values with the local file.
+values with the local file. A pull tab's `exclude` names columns to leave out
+(the other way round from `columns`), so their values never reach the local
+file or a report, even for a column added on the sheet later.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
