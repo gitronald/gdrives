@@ -69,6 +69,7 @@ from gdrives.sheets.apply import (
 )
 from gdrives.sheets.cells import (
     ColumnSchema,
+    _header_row,
     index_rows,
     problems,
     row_key,
@@ -1070,6 +1071,17 @@ def pull_tab(
     local file is simply created. An unchanged file is not rewritten. A
     delimited file ends its lines as the tab's ``newline`` says.
 
+    With ``exclude``, the header is checked first: a name it lists that is
+    not one of the header's named columns refuses the pull, leaving the
+    local side alone, and lists every such name (a renamed sensitive column
+    is a likely cause). The columns read are then the header's named columns
+    less ``exclude``, in header order, passed to :func:`~gdrives.sheets.table.parse_tab`
+    as an explicit list, so an excluded column's values never enter the
+    ``Table`` and cannot reach a hook, a report, or the local file; a serial
+    read of the tab's declared date columns (:func:`~gdrives.sheets.table.pull_serials`)
+    is never made for an excluded column either. A tab whose named columns
+    are all excluded is refused, with its own message.
+
     ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
@@ -1083,14 +1095,35 @@ def pull_tab(
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; {left}")
     grid = _read_grid(service, spreadsheet_id, title)
-    serials = pull_serials(service, spreadsheet_id, title, grid, tab.types)
+    columns = tab.columns
+    types = tab.types
+    if tab.exclude:
+        header = _header_row(grid)
+        if not any(header):
+            report.tab_state = "empty"
+            raise ValueError(f"tab {tab.title!r} has no header row; {left}")
+        missing = [name for name in tab.exclude if name not in header]
+        if missing:
+            raise ValueError(
+                f"tab {tab.title!r}: 'exclude' names column(s) {missing} not in "
+                f"the header {header}; a renamed sensitive column is a likely "
+                f"cause. {left}"
+            )
+        columns = [name for name in header if name and name not in tab.exclude]
+        if not columns:
+            raise ValueError(
+                f"tab {tab.title!r}: 'exclude' names every column the header "
+                f"has, so there is nothing to pull; {left}"
+            )
+        types = {c: t for c, t in tab.types.items() if c not in tab.exclude}
+    serials = pull_serials(service, spreadsheet_id, title, grid, types)
     try:
         table = parse_tab(
             title,
             grid,
-            tab.columns,
+            columns,
             tab.key,
-            types=tab.types,
+            types=types,
             serials=serials,
             blank_keys=tab.blank_keys,
         )

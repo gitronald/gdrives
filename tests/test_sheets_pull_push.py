@@ -983,6 +983,93 @@ class TestPull:
         assert not local_file(tab).exists()
 
 
+class TestPullExclude:
+    def test_excluded_columns_are_absent_from_the_file(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert rows_of(tab.local) == [["a", "Ada"], ["b", "Bo"]]
+        assert report.problems == []
+
+    def test_a_later_column_is_still_pulled(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        grid = FakeSheetGrid({"T": [[*HEADER, "city"], ["a", "Ada", "1", "NY"]]})
+        pull_tab(grid, "S", tab, apply=True)
+        assert rows_of(tab.local) == [["a", "Ada", "NY"]]
+
+    def test_excluded_values_never_enter_the_report_or_the_file(self, tmp_path):
+        sentinel = "sentinel-9f3c2a1b"
+        tab = one_tab(tmp_path, "pull", exclude=["ssn"], key=["id"])
+        write_local(tab, ["a", "Ada", "1"], header=["id", "name", "amt"])
+        grid = FakeSheetGrid(
+            {"T": [["id", "name", "amt", "ssn"], ["a", "Ada", "9", sentinel]]}
+        )
+        report = pull_tab(grid, "S", tab, apply=True)
+        report_text = format_report(SyncReport(tabs=[report]))
+        assert sentinel not in report_text
+        assert sentinel.encode() not in local_file(tab).read_bytes()
+        assert rows_of(tab.local) == [["a", "Ada", "9"]]
+
+    def test_a_name_missing_from_the_header_refuses_the_pull(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["ssn"])
+        write_local(tab, *ROWS)
+        before = local_file(tab).read_bytes()
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'exclude' names column\(s\) \['ssn'\] not in the header.*"
+                r"renamed sensitive column.*local file is left alone"
+            ),
+        ):
+            pull_tab(grid, "S", tab, apply=True)
+        assert local_file(tab).read_bytes() == before
+
+    def test_an_empty_tab_with_exclude_is_refused(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["ssn"])
+        grid = FakeSheetGrid({"T": []})
+        with pytest.raises(ValueError, match="has no header row"):
+            pull_tab(grid, "S", tab, apply=True)
+
+    def test_a_tab_of_only_excluded_columns_is_refused(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        grid = FakeSheetGrid({"T": [["amt"], ["1"]]})
+        with pytest.raises(ValueError, match="nothing to pull"):
+            pull_tab(grid, "S", tab, apply=True)
+
+    def test_a_local_file_with_an_excluded_column_loses_it(self, tmp_path):
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        write_local(tab, ["a", "Ada", "1"], header=HEADER)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert replacement_of(report).dropped_columns == {"amt": 1}
+        assert rows_of(tab.local) == [["a", "Ada"], ["b", "Bo"]]
+
+    def test_sheet_columns_still_lists_the_excluded_name(self, tmp_path):
+        seen = []
+        tab = one_tab(tmp_path, "pull", exclude=["amt"])
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+
+        def check(context):
+            seen.append(context.sheet_columns)
+            return []
+
+        pull_tab(grid, "S", tab, check=check)
+        assert seen == [("id", "name", "amt")]
+
+    def test_no_serial_request_is_made_for_an_excluded_date_column(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            exclude=["at"],
+            schema={"on": {"type": "date"}},
+        )
+        grid = FakeSheetGrid({"T": [["id", "on", "at"], ["a", "2026-09-27", "x"]]})
+        pull_tab(grid, "S", tab, apply=True)
+        # One batchGet for the declared 'on' column; none for excluded 'at'.
+        assert grid.methods.count("values.batchGet") == 1
+
+
 # -- the one-off dump --
 
 
