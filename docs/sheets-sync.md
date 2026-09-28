@@ -110,6 +110,7 @@ to keep in step with local files:
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
 | `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab must use `RAW` |
+| `hooks` | no | The default `hooks` of the target's tabs, hook by hook: a tab's own name for a hook wins. A push tab is not given the target's `transform`. See [hooks in the config](#hooks-in-the-config) |
 
 ### Tab fields
 
@@ -136,6 +137,7 @@ to keep in step with local files:
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
+| `hooks` | all | Functions that run as the tab's `validate`, `check`, `warn`, and `transform`, each named as `"module:function"`. **Naming a function runs it**: see [hooks in the config](#hooks-in-the-config). No `transform` on a `push` tab |
 
 The loader checks the whole file before any request is made and reports every
 problem at once: unknown fields, a missing or empty key on a `sync` tab, key or
@@ -1383,9 +1385,9 @@ report = run_target(
 
 A message from `validate` or `check` is a problem: the tab is written
 nowhere, and the run exits 1. A message from `warn` is printed under
-`warnings` and changes neither what is written nor the exit code. The
-commands take no hooks, so a caller with checks in code runs the library from
-a command of its own.
+`warnings` and changes neither what is written nor the exit code. For the
+commands to run a caller's hooks, the config names them: see
+[hooks in the config](#hooks-in-the-config).
 
 ### Cleaning what is read
 
@@ -1437,3 +1439,72 @@ the next run reads the cleaned form as a sheet edit and folds it into the
 local file, once, and the two sides agree from then on. A run that adds or
 deletes columns merges again after doing so, and calls the transform again,
 so it must also return the same rows for the same input.
+
+### Hooks in the config
+
+**Running a command on a config runs the functions it names.** A `hooks`
+field is code: `sheets-sync`, `sheets-pull`, and `sheets-push`, a preview
+included, import each module it names and call its function with your
+credentials in reach. Read a config from somewhere else before you run it, as
+you would a script.
+
+A tab's `hooks` names the functions that run as its `validate`, `check`,
+`warn`, and `transform` (no `transform` on a `push` tab), so the commands run a
+caller's checks. A target's `hooks` is the default for its tabs, hook by hook,
+and a tab's own name for a hook wins:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "hooks": {"warn": "roster_checks:counted"},
+    "tabs": {
+      "Members": {
+        "local": "data/members.csv",
+        "key": ["member_id"],
+        "hooks": {"validate": "roster_checks:known_status"}
+      }
+    }
+  }
+}
+```
+
+Each name is `module:function`. The module is imported as `import` finds it,
+so it is installed where `gdrives` runs (a project's own package, under
+`uv run gdrives ...`) or on `PYTHONPATH`. The config's directory is not
+searched: a file beside the config is not found, and cannot shadow a module
+of the same name. Here `roster_checks` holds:
+
+```python
+KNOWN_STATUSES = {"active", "closed"}
+
+
+def known_status(rows):
+    """Refuse a status the roster does not know."""
+    return [
+        f"{row['member_id']}: unknown status {row['status']!r}"
+        for row in rows
+        if row["status"] not in KNOWN_STATUSES
+    ]
+
+
+def counted(context):
+    """Say how many rows a run saw."""
+    return [f"{len(context.rows)} rows"]
+```
+
+Reading a config imports nothing: `load_config` checks only that each name
+has the form `module:function`, and a config with no `hooks` imports nothing
+at any point. A run finds the names before its first request, and every
+module that does not import, name it lacks, and value that is not a function
+is listed at once, the command exiting 1. `resolve_hooks(target)` does the
+same from code, and returns the functions by tab and hook.
+
+A hook named in the config takes and returns what the same hook given in code
+does ([hooks](#hooks), [cleaning what is read](#cleaning-what-is-read)), with
+one difference: whatever it raises, or a return that is not a list of
+messages (for a `transform`, not a list of rows), is the tab's error, naming
+the hook and the function, and the run goes on to the next tab. `run_target`
+runs a tab's config hooks too, before the ones given in code: the messages
+are the config hook's, then the code hook's, and a config `transform` runs
+first, the code's cleaning what it returns.

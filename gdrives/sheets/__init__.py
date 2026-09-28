@@ -19,6 +19,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
+- ``hooks``: the hooks a config names, found when a run starts
+  (``resolve_hooks``, ``tab_hooks``)
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
   records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
@@ -91,6 +93,7 @@ from gdrives.sheets.commands import (
 from gdrives.sheets.config import (
     BOOTSTRAPS,
     CONFIG_NAME,
+    HOOKS,
     INPUT_OPTIONS,
     LOCAL_EXTENSIONS,
     MODES,
@@ -111,6 +114,7 @@ from gdrives.sheets.files import (
     write_records,
     write_values_csv,
 )
+from gdrives.sheets.hooks import resolve_hooks, tab_hooks
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
     OVERRIDE_REASONS,
@@ -239,6 +243,7 @@ __all__ = [
     "IDEMPOTENT_STATUSES",
     "JsonEntryStore",
     "HeldCell",
+    "HOOKS",
     "INPUT_OPTIONS",
     "LINK_FIELDS",
     "LOCAL_EXTENSIONS",
@@ -346,6 +351,7 @@ __all__ = [
     "read_tab",
     "read_values_csv",
     "reorder_rows",
+    "resolve_hooks",
     "row_key",
     "run_add_rule",
     "run_append",
@@ -369,6 +375,7 @@ __all__ = [
     "strip_links",
     "sync_tab",
     "tab_grid",
+    "tab_hooks",
     "tab_listing",
     "tab_sheet_ids",
     "to_cell",

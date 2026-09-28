@@ -965,6 +965,7 @@ SUBMODULES = (
     "commands",
     "config",
     "files",
+    "hooks",
     "match",
     "merge",
     "order",
