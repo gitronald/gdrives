@@ -72,7 +72,9 @@ from gdrives.sheets.apply import (
 from gdrives.sheets.cells import (
     ColumnSchema,
     _header_row,
+    cell_problem,
     index_rows,
+    normalize_cell,
     problems,
     row_key,
     to_cell,
@@ -472,6 +474,70 @@ def _strict_schema_problems(
     ]
 
 
+def _respelling_problems(
+    tab: str,
+    local_rows: Sequence[Mapping[str, str]],
+    remote: Sequence[Mapping[str, str]],
+    schema: Mapping[str, ColumnSchema],
+    key: Sequence[str],
+) -> list[str]:
+    """A strict column's sheet text that fails it though the row compares in sync.
+
+    The merge's own schema check runs only on a sheet value about to be
+    folded (:func:`~gdrives.sheets.merge.merge`'s ``schema``); a cell that
+    compares equal after typed normalization (``true`` against ``TRUE``) is
+    never folded or pushed, so it never reaches that check. This finds it
+    anyway: nothing would be written for such a cell either way, so it always
+    refuses the tab, under either ``on_invalid`` setting, since there is
+    nothing for ``hold`` to hold back.
+    """
+    strict = [column for column, spec in schema.items() if spec.strict]
+    if not strict:
+        return []
+    label = f"{tab} (sheet)"
+    by_key = {row_key(row, key): row for row in local_rows}
+    found: list[str] = []
+    for sheet_row in remote:
+        local_row = by_key.get(row_key(sheet_row, key))
+        if local_row is None:
+            continue
+        for column in strict:
+            local_text = local_row.get(column, "")
+            sheet_text = sheet_row.get(column, "")
+            if local_text == sheet_text:
+                continue
+            type_ = schema[column].type
+            if normalize_cell(local_text, type_) != normalize_cell(sheet_text, type_):
+                continue  # a real difference; the merge's own check covers it
+            # The local text already passed the local-stage schema check, so
+            # a sheet text that compares equal but is not identical always
+            # fails a strict column's one exact form (bool and date each
+            # have a single valid strict spelling per value). The fallback
+            # is defensive: cell_problem is never actually None here.
+            reason = cell_problem(sheet_text, schema[column]) or (
+                f"{sheet_text!r} does not match the strict form"
+            )
+            where = row_key(sheet_row, key)
+            found.append(f"{label}: key {where}, column {column!r}: {reason}")
+    return found
+
+
+def _presence_problems(
+    tab: str, stage: str, schema: Mapping[str, ColumnSchema], available: Collection[str]
+) -> list[str]:
+    """One problem per schema column declared ``present`` that ``available`` lacks.
+
+    Reported once per column, independent of the row count: a header check,
+    not a per-cell one, so it fires on a tab with no rows too.
+    """
+    label = f"{tab} ({stage})"
+    return [
+        f"{label}: column {column!r} is declared present and the header lacks it"
+        for column, spec in schema.items()
+        if spec.present and column not in available
+    ]
+
+
 def _problems(
     schema: Mapping[str, ColumnSchema],
     key: Sequence[str],
@@ -642,10 +708,21 @@ def plan_tab(
     of the projection); a sheet column outside the projection is the same,
     at the ``"sheet"`` stage, once the tab is read, less a column already
     reported at the local stage and one this run drops with ``drop_extra``.
-    The tab is read with the schema's types: a column declared ``date`` or
-    ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
-    Every read of the tab in the run, the re-read guard and the read-back of
+    A schema column declared ``present`` is checked the same two stages, the
+    other way round: it must be in the local file's columns at ``"local"``,
+    and in the sheet's header at ``"sheet"`` (less a column this run is
+    adding with ``add_missing``, not yet there but about to be). The tab is
+    read with the schema's types: a column declared ``date`` or ``datetime``
+    costs a second read, and its date cells arrive as ISO 8601. Every read of
+    the tab in the run, the re-read guard and the read-back of
     :func:`apply_tab` included, follows the tab's ``render``.
+
+    A row both sides hold, whose ``strict`` column compares equal only after
+    typed normalization (``true`` against ``TRUE``), is never folded or
+    pushed, so the merge's own schema check never sees the sheet's spelling.
+    It is still reported, at the ``"sheet"`` stage: nothing would be written
+    for that cell either way, so it refuses the tab under either
+    ``on_invalid`` setting.
 
     The schema's types also decide how cells compare: two spellings of one
     value in a typed column are one value
@@ -778,7 +855,10 @@ def _plan(
             columns=tuple(local.columns),
             projection=tuple(columns),
         )
-        report.problems = _check(tab, before, *hooks)
+        report.problems = [
+            *_check(tab, before, *hooks),
+            *_presence_problems(tab.title, "local", tab.schema, local.columns),
+        ]
         if report.problems:
             return planned(None, None, None)
 
@@ -911,6 +991,22 @@ def _plan(
                 *report.problems,
                 *_strict_schema_problems(tab.title, "sheet", tab.schema, sheet_extra),
             ]
+        if sheet_columns is not None:
+            # A column this run is adding with add_missing is not yet in the
+            # header, but will be: it is not reported as absent.
+            report.problems = [
+                *report.problems,
+                *_presence_problems(
+                    tab.title,
+                    "sheet",
+                    tab.schema,
+                    (*sheet_columns, *report.add_columns),
+                ),
+            ]
+        report.problems = [
+            *report.problems,
+            *_respelling_problems(tab.title, local.rows, remote, tab.schema, tab.key),
+        ]
         _warn(report, merged, options["warn"])
     return planned(table, plan, base)
 
@@ -1278,7 +1374,11 @@ def pull_tab(
     ``"sheet"``, and ``warn`` runs when they pass. With ``strict_schema``, a
     named header column with no ``schema`` entry is a problem too, checked at
     the same stage, whether or not it is read: every named column, less any
-    ``exclude`` names, not just ``columns``. The report's ``replacement``
+    ``exclude`` names, not just ``columns``. A schema column declared
+    ``present`` is checked there too, against the same named header columns,
+    the other way round: a problem when the header lacks it, before the "no
+    rows" refusal, so it is reported on a tab with no rows too. The report's
+    ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
     local file is simply created. An unchanged file is not rewritten. A
@@ -1355,6 +1455,16 @@ def pull_tab(
     except EmptyTabError:
         report.tab_state = "empty"
         raise ValueError(f"tab {tab.title!r} has no header row; {left}") from None
+    # strict_schema and 'present' check every named header column, not just
+    # the ones read (table.columns), less any 'exclude' names, which are not
+    # read at all. 'present' is checked here, before the "no rows" refusal
+    # below, so it is reported on a tab with no rows too.
+    checked = [name for name in table.header if name and name not in tab.exclude]
+    presence = _presence_problems(tab.title, "sheet", tab.schema, checked)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
     if not table.rows:
         raise ValueError(f"tab {tab.title!r} has no rows; {left}")
     if transform is not None:
@@ -1368,9 +1478,6 @@ def pull_tab(
         sheet_columns=tuple(name for name in table.header if name),
     )
     report.warnings = list[str]()
-    # strict_schema checks every named header column, not just the ones read
-    # (table.columns), less any 'exclude' names, which are not read at all.
-    checked = [name for name in table.header if name and name not in tab.exclude]
     report.problems = _check(tab, context, validate, check, strict_columns=checked)
     if report.problems:
         return report
@@ -1422,23 +1529,31 @@ def push_tab(
     order (the configured columns only, when there are some), and the tab's
     ``key``, ``blank_keys``, ``schema``, ``widths``, ``sheet_id``,
     ``render``, and ``strict_schema`` are passed on, with ``listing``. A local
-    side that does not exist, holds no rows, or lacks a configured column is
-    refused.
+    side that does not exist, or lacks a configured column, is refused. A
+    schema column declared ``present`` is checked against the columns being
+    written (the configured columns, or every local column), before the "no
+    rows" refusal, so a local side with no rows is still checked for it.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
     _refuse_exclude(tab)
     report.apply = apply
     local = _read_local(tab)
-    if not local.rows:
-        raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
     _projection(tab, local)  # refuses a configured column the file lacks
     wanted = tab.columns if tab.columns is not None else local.columns
+    out = [column for column in local.columns if column in wanted]
+    presence = _presence_problems(tab.title, "local", tab.schema, out)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
+    if not local.rows:
+        raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
     return push_rows(
         service,
         spreadsheet_id,
         tab.title,
-        [column for column in local.columns if column in wanted],
+        out,
         local.rows,
         key=tab.key,
         blank_keys=tab.blank_keys,
@@ -1505,7 +1620,12 @@ def push_rows(
     indexed by it, which refuses a blank or repeated key (``blank_keys`` as
     for :func:`~gdrives.sheets.cells.index_rows`). With ``strict_schema``, a
     column any row holds that ``schema`` does not declare is a problem too,
-    checked at the same stage.
+    checked at the same stage. A schema column declared ``present`` is
+    checked there too, against ``columns``: a problem when it is not one of
+    them, before the "no rows" refusal, so it is reported on an empty push
+    too. A push replaces the tab whole, so only ``columns``, what is written,
+    is the "local side" a push checks presence against; the sheet's own
+    header, about to be overwritten, means nothing here.
 
     The report's ``replacement`` says what the sheet holds that the rows do
     not: rows by key when there is a key, and always row and cell counts and
@@ -1559,6 +1679,13 @@ def push_rows(
         raise ValueError(
             f"tab {title!r}: columns must be one or more names, each once: {out}"
         )
+    # 'present' checks the columns being written, before the "no rows"
+    # refusal below, so it is reported on an empty push too.
+    presence = _presence_problems(title, "local", schema or {}, out)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
     if not rows:
         named = "no rows to push" if label == "rows" else f"{label} has no rows"
         raise ValueError(f"tab {title!r}: {named}")
