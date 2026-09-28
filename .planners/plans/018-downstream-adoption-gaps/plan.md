@@ -5,7 +5,7 @@ status: active
 branch: feature/downstream-adoption-gaps
 created: 2026-09-27T17:04:20-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/59
 ---
 
 # Close the remaining gaps that keep a downstream sync off gdrives.sheets
