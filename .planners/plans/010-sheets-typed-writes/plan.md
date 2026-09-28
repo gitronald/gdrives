@@ -5,7 +5,7 @@ status: active
 branch: feature/sheets-typed-writes
 created: 2026-09-27T11:29:26-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/61
 ---
 
 # Write typed columns to the sheet as dates and numbers, not text
