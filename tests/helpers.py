@@ -3,6 +3,7 @@
 Drive API response shapes based on docs/drive-api.md.
 """
 
+import hashlib
 import re
 import tempfile
 from datetime import date, datetime, timedelta
@@ -1410,3 +1411,140 @@ class FakeSheetGrid:
     def _req_deleteSheet(self, body: dict[str, Any]) -> dict[str, Any]:
         self.tabs.remove(self._find_id(body["sheetId"]))
         return {}
+
+
+# -- Drive files fake --
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+_QUOTED = r"'((?:[^'\\]|\\.)*)'"
+
+
+def _unescaped(value: str) -> str:
+    """Undo ``escape_query_value``."""
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+class _DriveRequest:
+    """A Drive request: ``execute()`` runs it, as does a resumable upload's last chunk.
+
+    ``next_chunk()`` answers once with progress and no response, then with the
+    response, as a resumable upload of two chunks does.
+    """
+
+    def __init__(self, run: Any) -> None:
+        self._run = run
+        self._chunks = 0
+
+    def execute(self) -> dict[str, Any]:
+        return self._run()
+
+    def next_chunk(self) -> tuple[Any, dict[str, Any] | None]:
+        self._chunks += 1
+        if self._chunks == 1:
+            return object(), None
+        return None, self._run()
+
+
+class FakeDriveFiles:
+    """A fake of the Drive v3 ``files`` resource that holds files and their content.
+
+    ``files`` are dicts with ``id``, ``name``, ``mimeType``, and optionally
+    ``parents`` and ``content`` (bytes). A response carries ``size`` and
+    ``md5Checksum`` computed from the content, for a file that has any, and
+    never for a Google-native one. ``files.list`` answers the query
+    ``'<id>' in parents [and name = '<name>'] and trashed = false``, names
+    compared without regard to case, in ``pages`` of that many files.
+    ``files.create`` and ``files.update`` take a ``media_body`` and store its
+    bytes; with ``corrupt`` set, the stored content loses its last byte, so a
+    read-back finds a file that is not the one sent. Every call is recorded
+    in ``calls``, and a request does nothing until it is executed.
+    """
+
+    def __init__(self, files: list[dict[str, Any]], *, pages: int = 1000) -> None:
+        self.items = {f["id"]: dict(f) for f in files}
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.corrupt = False
+        self.pages = pages
+
+    def files(self) -> "FakeDriveFiles":
+        return self
+
+    def named(self, method: str) -> list[dict[str, Any]]:
+        """The kwargs of each call of ``method``, in order."""
+        return [kwargs for name, kwargs in self.calls if name == method]
+
+    def _shown(self, item: dict[str, Any]) -> dict[str, Any]:
+        shown = {k: v for k, v in item.items() if k != "content"}
+        content = item.get("content")
+        if content is not None:
+            shown["size"] = str(len(content))
+            shown["md5Checksum"] = hashlib.md5(content).hexdigest()
+        return shown
+
+    def _content(self, media: Any) -> bytes:
+        content = media.getbytes(0, media.size())
+        return content[:-1] if self.corrupt else content
+
+    def get(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("get", kwargs))
+        return _DriveRequest(lambda: self._shown(self.items[kwargs["fileId"]]))
+
+    def list(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("list", kwargs))
+        return _DriveRequest(lambda: self._list(kwargs))
+
+    def _list(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = kwargs["q"]
+        parent = re.search(_QUOTED + " in parents", query)
+        assert parent is not None, query
+        parent_id = _unescaped(parent.group(1))
+        name = re.search("name = " + _QUOTED, query)
+        found = [
+            self._shown(item)
+            for item in self.items.values()
+            if parent_id in item.get("parents", [])
+            and (name is None or item["name"].lower() == _unescaped(name[1]).lower())
+        ]
+        start = int(kwargs.get("pageToken") or 0)
+        page: dict[str, Any] = {"files": found[start : start + self.pages]}
+        if start + self.pages < len(found):
+            page["nextPageToken"] = str(start + self.pages)
+        return page
+
+    def create(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("create", kwargs))
+        return _DriveRequest(lambda: self._create(kwargs))
+
+    def _create(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        item = dict(kwargs["body"])
+        item["id"] = f"new{len(self.named('create'))}"
+        media = kwargs.get("media_body")
+        if media is not None:
+            item["mimeType"] = media.mimetype()
+            item["content"] = self._content(media)
+        self.items[item["id"]] = item
+        return self._shown(item)
+
+    def update(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("update", kwargs))
+        return _DriveRequest(lambda: self._update(kwargs))
+
+    def _update(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        item = self.items[kwargs["fileId"]]
+        item.update(kwargs.get("body") or {})
+        media = kwargs["media_body"]
+        item["mimeType"] = media.mimetype()
+        item["content"] = self._content(media)
+        return self._shown(item)
+
+
+def patch_drive_service(monkeypatch: pytest.MonkeyPatch, svc: Any) -> dict[str, Any]:
+    """Make ``build_drive_service`` return ``svc``; the dict records its ``scopes``."""
+    rec: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "gdrives.auth.build_drive_service",
+        lambda scopes=None: rec.update(scopes=scopes) or svc,
+    )
+    return rec

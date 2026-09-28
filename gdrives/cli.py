@@ -74,6 +74,7 @@ def _cli_errors() -> Generator[None, None, None]:
     from gdrives.download import DownloadError
     from gdrives.files import IncompleteSearchError
     from gdrives.resolve import DrivePathError
+    from gdrives.upload import UploadError
 
     try:
         with announcing_credentials():
@@ -82,6 +83,7 @@ def _cli_errors() -> Generator[None, None, None]:
         ConsentError,
         DrivePathError,
         DownloadError,
+        UploadError,
         IncompleteSearchError,
         ValueError,
         OSError,
@@ -985,5 +987,60 @@ def mv(
             source_id=source_id,
             dest_id=dest_id,
             name=name,
+            dry_run=dry_run,
+        )
+
+
+@app.command()
+def upload(
+    local: Annotated[str, typer.Argument(help="Local file to upload")],
+    dest: Annotated[
+        str | None,
+        typer.Argument(
+            help="An existing folder path, or a folder path + the file's name"
+        ),
+    ] = None,
+    dest_id: Annotated[
+        str | None,
+        typer.Option("--dest-id", help="Destination folder ID (skip resolution)"),
+    ] = None,
+    file_id: Annotated[
+        str | None,
+        typer.Option("--file-id", help="ID of the file whose content is replaced"),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="The file's name in Drive, used with --dest-id"),
+    ] = None,
+    mime_type: Annotated[
+        str | None,
+        typer.Option(
+            "--mime-type", help="MIME type (default: guessed from the extension)"
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the intended upload without making it"),
+    ] = False,
+):
+    """Upload a local file to Drive (write access, except --dry-run).
+
+    A file of that name in the folder has its content replaced in place, so
+    its ID and links stay the same; with none, the file is created. Several
+    files of that name are refused: name one with --file-id. Prints the
+    file's URL. Examples:
+    gdrives upload report.pdf "My Drive/reports";
+    gdrives upload out.pdf "My Drive/reports/report.pdf" --dry-run
+    """
+    from gdrives.upload import run
+
+    with _cli_errors():
+        run(
+            local,
+            dest,
+            dest_id=dest_id,
+            file_id=file_id,
+            name=name,
+            mime_type=mime_type,
             dry_run=dry_run,
         )

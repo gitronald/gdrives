@@ -1030,3 +1030,48 @@ class TestRevisions:
         assert result.exit_code == 0
         assert "R1" in result.stdout
         assert str(target) in result.stdout
+
+
+class TestUpload:
+    def test_delegates_with_options(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.upload.run",
+            lambda local, dest, **options: rec.update(l=local, d=dest, **options),
+        )
+        cli.upload("report.pdf", "My Drive/reports", dry_run=True)
+        assert rec == {
+            "l": "report.pdf",
+            "d": "My Drive/reports",
+            "dest_id": None,
+            "file_id": None,
+            "name": None,
+            "mime_type": None,
+            "dry_run": True,
+        }
+
+    def test_a_file_that_reads_back_different_exits_1(self, monkeypatch, capsys):
+        from gdrives.upload import UploadError
+
+        def boom(*a, **k):
+            raise UploadError("'report.pdf' (F) does not read back as the local file")
+
+        monkeypatch.setattr("gdrives.upload.run", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.upload("report.pdf", "My Drive/reports")
+        assert exc.value.code == 1
+        assert "Error: 'report.pdf' (F) does not read back" in capsys.readouterr().err
+
+    def test_parses_its_options(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.upload.run",
+            lambda local, dest, **options: rec.update(l=local, d=dest, **options),
+        )
+        result = CliRunner().invoke(
+            cli.app,
+            ["upload", "out.pdf", "--file-id", "F", "--mime-type", "application/pdf"],
+        )
+        assert result.exit_code == 0
+        assert (rec["l"], rec["d"], rec["file_id"]) == ("out.pdf", None, "F")
+        assert rec["mime_type"] == "application/pdf"
