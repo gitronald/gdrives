@@ -967,6 +967,7 @@ SUBMODULES = (
     "files",
     "match",
     "merge",
+    "order",
     "retry",
     "rules",
     "stores",

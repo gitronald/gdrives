@@ -37,7 +37,7 @@ spec for each step is in `subplans/`.
 | # | Step | Scope | Status |
 |---|---|---|---|
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
-| 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | not started |
+| 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
 | 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | not started |
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a projection column with no schema entry is a problem | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | not started |
@@ -150,3 +150,42 @@ Decisions the subplans make, which the list left open:
   the merge, the sheet keeps its text, and a transform must be idempotent.
 - **Step 10:** fields of `CredentialInfo` make the three private helpers
   unnecessary, and no public name is added for them.
+
+### 2026-09-27 — step 2: reorder a keyed tab's rows
+
+Written at 2026-09-27T17:37:35-07:00. Branch `feature/reorder-rows`, PR
+[#58](https://github.com/gitronald/gdrives/pull/58).
+
+**What landed.** `reorder_rows` and `ReorderResult` in the new `gdrives/sheets/order.py`.
+The move planner is a pure function over the rows' identities. The apply reads the
+tab, reads its `sheetId`, reads the tab again for the guard, sends every move in one
+`batchUpdate`, and reads back. `FakeSheetGrid` models `moveDimension` by the rule the
+live API showed, refusals included.
+
+**The live probe**, run before the step, is in
+[implementation-notes/001-move-dimension.md](implementation-notes/001-move-dimension.md).
+It confirmed the reference on `destinationIndex`, and found one thing the spec did
+not have: a destination equal to the row's own index is refused with a 400, so the
+planner never sends a move that leaves its row in place.
+
+**Where the work differs from the spec.**
+
+- **The fewest moves, with blank rows, is not the rows less the longest increasing
+  subsequence.** The spec's rule holds for a tab with no blank row. A blank row keeps
+  its position, so a keyed row that has to cross one always moves: `x, blank, y` to
+  `y, blank, x` takes two moves, where the rule gives one. The rows that may stay
+  are those with as many blank rows above them in the target as now, and the longest
+  increasing subsequence is taken over them.
+- **The suite does not use hypothesis**, which the spec said it did. No dependency
+  was added. The property is tested by every arrangement of up to six rows, with
+  and without blank rows, and by 200 seeded random cases of up to 60 rows. Each case
+  replays the moves on a list by the API's rule and compares the count with a
+  separate search for the fewest.
+- `moved` lists the keys of the rows moved, one for each request, not every row
+  whose row number changes. `applied` is True only when moves were written.
+
+**Tests.** 2554 unit tests pass at 100% line and branch coverage, with ruff and
+pyrefly clean. The live test, `test_reorder_moves_whole_rows`, was run once by the
+orchestrating session and passed: two moves, one up and one down across a blank row,
+with a fill and an unnamed column moving with their rows. It makes 3 writes and 5
+reads. The rest of the live suite was not run for this step.
