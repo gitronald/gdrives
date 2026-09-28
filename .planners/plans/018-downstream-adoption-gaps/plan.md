@@ -193,7 +193,7 @@ reads. The rest of the live suite was not run for this step.
 
 ### 2026-09-27 — step 4 widened, and step 12 narrowed
 
-Written at 2026-09-27T17:41:30-07:00. The entry above left a choice with the owner:
+Written at 2026-09-27T17:40:11-07:00. The entry above left a choice with the owner:
 two settings for undeclared columns (step 4's, and `strict_schema: "all"` in step
 12), or one. The owner chose one. Step 4's subplan has an amendment, under which
 `strict_schema` checks every column of either side, less the columns a run drops,
