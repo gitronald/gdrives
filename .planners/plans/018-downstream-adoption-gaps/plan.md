@@ -23,8 +23,9 @@ plans were retired.
 
 Steps 7 to 12 were added on 2026-09-27, while step 2 was in progress. They come from
 a second list of gaps by the same downstream caller, in `gdrives.sheets` and in
-`gdrives.auth`. One item of that list overlaps a step already here: step 4 refuses an
-undeclared column of the projection, and step 12 adds the wider check beside it.
+`gdrives.auth`. One item of that list overlaps a step already here: step 4 refused an
+undeclared column of the projection, and the list asks for every column of either
+side. Step 4 was widened to that before it was started.
 
 ### Steps
 
@@ -39,7 +40,7 @@ spec for each step is in `subplans/`.
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
 | 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
 | 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | not started |
-| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a projection column with no schema entry is a problem | not started |
+| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | not started |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | not started |
 | 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | not started |
@@ -47,7 +48,7 @@ spec for each step is in `subplans/`.
 | 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | not started |
 | 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | not started |
 | 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | not started |
-| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | `strict_schema: "all"`, and the schema fields `present` and `strict`. May stop at a write-up | not started |
+| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | not started |
 
 ### Execution order
 
@@ -57,7 +58,7 @@ and `sync.py` never conflict. Step 5 comes after step 3 because a config's `base
 feeds `base_stores`, which is what makes a target with no `base` useful.
 
 Steps 7 to 12 follow step 6, in the order of their value to the caller. Step 11 comes
-after step 9, whose hook it names, and step 12 after step 4, whose setting it widens.
+after step 9, whose hook it names, and step 12 after step 4, whose checks it sits beside.
 
 ### Rules for steps 7 to 12
 
@@ -189,3 +190,17 @@ pyrefly clean. The live test, `test_reorder_moves_whole_rows`, was run once by t
 orchestrating session and passed: two moves, one up and one down across a blank row,
 with a fill and an unnamed column moving with their rows. It makes 3 writes and 5
 reads. The rest of the live suite was not run for this step.
+
+### 2026-09-27 — step 4 widened, and step 12 narrowed
+
+Written at 2026-09-27T17:41:30-07:00. The entry above left a choice with the owner:
+two settings for undeclared columns (step 4's, and `strict_schema: "all"` in step
+12), or one. The owner chose one. Step 4's subplan has an amendment, under which
+`strict_schema` checks every column of either side, less the columns a run drops,
+and stays a boolean. Step 12 lost its first part and keeps column presence and
+strict forms. The entry above is left as it was written, and its last sentence on
+step 12 no longer holds.
+
+The amendment lifts one refusal of the config checker under `strict_schema`: a
+`schema` entry for a column outside `columns`, which a carried column needs in order
+to be declared at all.
