@@ -204,6 +204,29 @@ class TestDownloadBinary:
         assert target == tmp_path / "report-R7.pdf"
         assert target.read_bytes() == b"bytes"
 
+    def test_a_revision_id_with_separators_stays_in_the_directory(
+        self, mock_service, tmp_path, monkeypatch
+    ):
+        mock_service.files().get().execute.return_value = make_file(
+            "report.pdf", id="FID", mime=PDF_MIME
+        )
+
+        class FakeDownloader:
+            def __init__(self, fd, request):
+                self.fd = fd
+
+            def next_chunk(self):
+                self.fd.write(b"bytes")
+                return (None, True)
+
+        monkeypatch.setattr("gdrives.revisions.MediaIoBaseDownload", FakeDownloader)
+        out = tmp_path / "out"
+        out.mkdir()
+        target = download_revision(mock_service, "FID", "../../R7", str(out))
+        assert target == out / "report-.._.._R7.pdf"
+        assert target.read_bytes() == b"bytes"
+        assert [path.name for path in tmp_path.iterdir()] == ["out"]
+
 
 # -- download_revision: native export --
 

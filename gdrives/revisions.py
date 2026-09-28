@@ -201,11 +201,13 @@ def _target_path(output: str, stem: str, revision_id: str, ext: str) -> Path:
 
     `output` is used as given when it names an existing directory; otherwise
     it is taken as the file path itself (its parent is created if missing, as
-    `export_file` does for `-o`).
+    `export_file` does for `-o`). In a directory, the revision ID is made a
+    safe part of a file name, as the file's own name is, so an ID holding a
+    path separator names no other directory.
     """
     out = Path(output)
     if out.is_dir():
-        return out / f"{stem}-{revision_id}{ext}"
+        return out / f"{stem}-{safe_filename(revision_id)}{ext}"
     out.parent.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -310,7 +312,7 @@ def run(
 
     if download is not None:
         target = download_revision(service, file_id, download, output, mime_type=format)
-        print(f"Downloaded revision {download} to {printable(str(target))}")
+        print(f"Downloaded revision {printable(download)} to {printable(str(target))}")
         return
 
     revisions = list_revisions(service, file_id)
