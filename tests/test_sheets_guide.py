@@ -186,7 +186,7 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 10
+        assert len(blocks(GUIDE, "json")) == 12
         assert len(blocks(GUIDE, "python")) == 10
 
     def test_a_refused_example_fails(self, tmp_path):

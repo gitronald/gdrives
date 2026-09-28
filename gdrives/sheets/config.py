@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from gdrives.local import safe_filename
-from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, STRICT_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
 from gdrives.sheets.structure import _rgb
@@ -94,7 +94,7 @@ _TAB_FIELDS = frozenset(
         "hooks",
     }
 )
-_SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
+_SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
     "local_owned",
@@ -899,6 +899,8 @@ class _Checker:
             type_ = spec.get("type", "str")
             required = spec.get("required", False)
             allowed = spec.get("allowed")
+            present = spec.get("present", False)
+            strict = spec.get("strict", False)
             ok = not unknown
             if type_ not in COLUMN_TYPES:
                 problems.append(
@@ -915,11 +917,25 @@ class _Checker:
             ):
                 problems.append(f"{at}: 'allowed' must be a list of one or more values")
                 ok = False
+            if not isinstance(present, bool):
+                problems.append(f"{at}: 'present' must be true or false")
+                ok = False
+            if not isinstance(strict, bool):
+                problems.append(f"{at}: 'strict' must be true or false")
+                ok = False
+            elif strict and type_ in COLUMN_TYPES and type_ not in STRICT_TYPES:
+                problems.append(
+                    f"{at}: 'strict' is only for a column of "
+                    f"{sorted(STRICT_TYPES)}, not {type_!r}"
+                )
+                ok = False
             if ok:
                 schema[column] = ColumnSchema(
                     type=str(type_),
                     required=bool(required),
                     allowed=tuple(allowed) if allowed is not None else None,
+                    present=bool(present),
+                    strict=bool(strict),
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)

@@ -49,6 +49,12 @@ SERIAL_TYPES = frozenset({"date", "datetime"})
 # An integer as to_cell writes one: digits with an optional minus sign.
 _INTEGER = re.compile(r"-?\d+")
 
+# The strict form of a date: four digits, two, two, and nothing else.
+_STRICT_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+#: The column types a schema may declare ``strict`` for.
+STRICT_TYPES = frozenset({"bool", "date"})
+
 # Day 0 of a sheet's serial numbers, and the milliseconds in one day.
 _SERIAL_EPOCH = datetime(1899, 12, 30)
 _DAY_MILLISECONDS = 86_400_000
@@ -373,14 +379,32 @@ class ColumnSchema:
     ``allowed`` lists the permitted values, compared as canonical strings; a
     blank cell is checked by ``required``, never by ``allowed``. ``type`` is
     the type's name; :meth:`of` takes a class as well.
+
+    ``present`` and ``strict`` are checked outside :func:`cell_problem`'s
+    per-cell rules, by a caller that has the column's header to check against
+    (:mod:`~gdrives.sheets.sync`); ``present`` says nothing about a cell's
+    value, only that the column must be declared in the header. ``strict`` is
+    for ``bool`` and ``date`` columns, and is refused for any other type, here
+    and in the config check: ``TRUE``/``FALSE`` only for ``bool``, and
+    ``YYYY-MM-DD`` only for ``date``. A value that fails it is a schema
+    problem like any other, from :func:`cell_problem`, so ``on_invalid:
+    "hold"`` holds it; comparison is unchanged, so a respelling
+    (``true``/``TRUE``) is a problem, not an edit.
     """
 
     type: str = "str"
     required: bool = False
     allowed: Collection[Any] | None = None
+    present: bool = False
+    strict: bool = False
 
     def __post_init__(self) -> None:
         _check_type(self.type)
+        if self.strict and self.type not in STRICT_TYPES:
+            raise ValueError(
+                f"strict is only for a column of {sorted(STRICT_TYPES)}, "
+                f"not {self.type!r}"
+            )
 
     @classmethod
     def of(
@@ -389,13 +413,21 @@ class ColumnSchema:
         *,
         required: bool = False,
         allowed: Collection[Any] | None = None,
+        present: bool = False,
+        strict: bool = False,
     ) -> "ColumnSchema":
         """A schema whose type is given by name or by class (``int``, ``date``).
 
         The name is what is stored, so the result equals the schema built
         from the name.
         """
-        return cls(type=column_type(type_), required=required, allowed=allowed)
+        return cls(
+            type=column_type(type_),
+            required=required,
+            allowed=allowed,
+            present=present,
+            strict=strict,
+        )
 
 
 @dataclass(frozen=True)
@@ -417,7 +449,12 @@ class Problem:
 def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     """Why ``text`` does not fit ``schema``, or None when it does.
 
-    The reason is the text :func:`problems` reports for the cell.
+    The reason is the text :func:`problems` reports for the cell. With
+    ``schema.strict``, a ``bool`` cell must be ``TRUE`` or ``FALSE`` and a
+    ``date`` cell must be ``YYYY-MM-DD``, both exactly; a cell that parses as
+    the type but not in that exact form is a problem under ``strict`` and
+    passes without it. A ``date`` cell read from its serial number
+    (:func:`serial_to_cell`) already arrives in that form.
     """
     if text == "":
         return "is required" if schema.required else None
@@ -425,6 +462,11 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
         from_cell(text, schema.type)
     except ValueError as e:
         return str(e)
+    if schema.strict:
+        if schema.type == "bool" and text not in ("TRUE", "FALSE"):
+            return f"{text!r} is not TRUE or FALSE, and the column is strict"
+        if schema.type == "date" and not _STRICT_DATE.fullmatch(text):
+            return f"{text!r} is not YYYY-MM-DD, and the column is strict"
     if schema.allowed is not None:
         allowed = [to_cell(value) for value in schema.allowed]
         if text not in allowed:

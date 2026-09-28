@@ -389,7 +389,9 @@ tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
 `render: "formatted"` reads every cell as the sheet displays it, for local
 files that hold the displayed text. A tab's `strict_schema` makes it a problem
 for a column of either side to have no `schema` entry, so a column added later
-does not silently sync as text.
+does not silently sync as text. A `schema` column's `present: true` makes it a
+problem for the header to lack it, and its `strict: true` narrows a `bool` or
+`date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`).
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
