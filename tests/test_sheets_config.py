@@ -1090,3 +1090,19 @@ class TestJsonEntries:
         checker = _Checker(ROOT)
         checker.collisions([target])
         assert checker.problems == []
+
+    def test_a_target_with_no_base_is_not_asked_for_one(self):
+        stored = TabConfig(title="A", store=MemoryStore(), key=("id",))
+        bare = TabConfig(title="B", local=ROOT / "b.csv", key=("id",))
+        target = Target(
+            name="t",
+            spreadsheet="S",
+            tabs=(stored, bare),
+            base_stores={"A": MemoryStore()},
+        )
+        checker = _Checker(ROOT)
+        checker.collisions([target, target])
+        assert checker.problems == [
+            f"{ROOT / 'b.csv'} would be written by more than one tab: "
+            "target 't', tab 'B' (local file); target 't', tab 'B' (local file)"
+        ]

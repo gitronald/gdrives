@@ -489,7 +489,10 @@ class _Checker:
                 stores: list[tuple[Store, str]] = []
                 if tab.mode != "push":
                     stores.append((tab.local_store, f"{where} (local file)"))
-                if tab.mode == "sync":
+                # A target built in code may have no base for the tab: that is
+                # the run's to refuse, and there is no file to collide here.
+                based = target.base is not None or tab.title in target.base_stores
+                if tab.mode == "sync" and based:
                     stores.append((target.base_store(tab), f"{where} (base)"))
                 for store, role in stores:
                     if isinstance(store, FileStore):
