@@ -429,6 +429,18 @@ one value. Check the preview for pushes of such cells. A push means the local
 file holds the displayed text and the base does not, and applying it writes
 the text `50%` over the number.
 
+**Files that hold what the sheet displays.** Where the local file and the
+base are meant to hold the displayed text, set `render: "formatted"` on the
+tab instead. Every read of the tab then returns what the sheet displays, so
+the first preview reports no edit for such cells, and the sheet's numbers are
+never folded into the file. The setting applies to a pull and a push too: a
+pull writes the displayed text, and a push compares the file with it. A value
+a run writes is still a literal string, so a cell the run changes holds the
+text `75%` from then on, where it held the number 0.75. Declared date columns
+still arrive as ISO 8601. A column declared `int` or `float` does not go with
+`formatted` on a tab with number formats: see
+[how cells are read and written](#how-cells-are-read-and-written).
+
 **Starting over.** Deleting the base makes the next run a
 [first sync](#the-first-sync). A bootstrap takes the local file as the base,
 so the same cells fold in. `--adopt` makes the local file win, which writes
@@ -737,6 +749,31 @@ cell showing `50%` reads as `0.5`, and one showing `3.00` reads as `3`. A
 checkbox reads as `TRUE` or `FALSE`, a blank cell as an empty string, and a
 formula cell as its result. Columns are found by header name, never by
 position, and a header that repeats a name stops the run.
+
+**Displayed values.** A tab with `render: "formatted"` is read as the sheet
+displays it instead: a cell showing `50%` reads as `50%`, one showing
+`$1,234.50` as `$1,234.50`, a date as its display text, and a checkbox as
+`TRUE` or `FALSE`, as before. Every read a run makes of the tab follows the
+setting: the read of the preview, the read before the writes, the read-back
+after them, and the read of the header row a run makes to add, place, or
+delete columns or to set widths. So the checks of a run compare one kind of
+read with the same kind. Writes do not change: a value is written as a
+literal string, which the sheet displays as written whatever the cell's
+number format, so a cell a run wrote reads back as the text it wrote.
+
+- A column declared `date` or `datetime` is still read a second time, as
+  serial numbers, which does not depend on the setting, and arrives as ISO
+  8601. Declaring a date column is the way to keep it out of the display's
+  hands.
+- A column declared `int` or `float` is read as displayed too, and a number
+  displayed with a format, such as `1,234.50` or `50%`, does not parse as its
+  type. It is a schema problem like any other, and a sync with
+  `on_invalid: "hold"` holds it. A column of plain numbers displays its
+  values and reads as before, so nothing refuses the combination, but a typed
+  numeric column and `formatted` do not go together on a tab with number
+  formats.
+- A `bool` column reads `TRUE` or `FALSE` under either setting.
+- `sheets-pull --all-tabs` takes no config and always reads unformatted.
 
 **Dates.** A date cell reads as the text its number format shows, which
 depends on the format and the spreadsheet's locale: `9/27/2026` on one sheet
