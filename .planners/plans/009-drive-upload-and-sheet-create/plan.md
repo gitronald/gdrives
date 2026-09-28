@@ -1,10 +1,10 @@
 ---
 id: 9
 slug: drive-upload-and-sheet-create
-status: active
+status: done
 branch: feature/drive-upload-and-sheet-create
 created: 2026-09-27T11:03:58-07:00
-concluded:
+concluded: 2026-09-27T21:03:52-07:00
 pr: https://github.com/gitronald/gdrives/pull/60
 ---
 
@@ -220,3 +220,57 @@ Conscious no-ops:
 Found by CI, not by the review: a test called `resolve_folder` with no service, so
 path resolution built a real one. It passed where credentials are configured and
 failed in CI from the first commit of the branch. It now passes a stand-in.
+
+### 2026-09-27: live checks
+
+Run in the test folder of the owner's Drive, on the OAuth token of the `drive` scope,
+with the branch's code.
+
+- **Upload, create.** A 4-byte text file was created in the folder, and read back
+  with the local file's size and checksum.
+- **Upload, replace.** The same local file with new content, 12 bytes, replaced the
+  first in place. The file ID and the URL printed were the ones of the create.
+- **Spreadsheet.** `sheets-create --title ... --folder ... --tab A --tab B` created a
+  spreadsheet in the folder, and its tabs read back as `A` and `B`, in that order.
+
+The first attempt wrote nothing. The cached token of the `drive` scope belonged to
+another account than the read-only token, so every `--dry-run` passed and every write
+was refused at path resolution, as a folder not found. The two
+were told apart by `about.get` and the ID of `root`. After a `login --scope drive` as
+the account that holds the folder, the three checks passed.
+
+Left in the test folder, to trash by hand: one text file and one spreadsheet. The
+upload's file is the one a later run replaces.
+
+One more commit after the checks: `caab4fe` name upload and sheets-create in login
+help.
+
+### Open questions, as they stand
+
+- **Whether `drive.file` is enough for a caller that only replaces its own uploads.**
+  Not checked. Both commands request `drive`.
+- **Whether a replace keeps the old content as a revision.** Not checked live. The
+  command pins nothing and says nothing of revisions.
+- **Cleanup of live test files.** As planned: one fixed file name, replaced on every
+  run. A spreadsheet is added by every run of its check, so that one stays by hand.
+
+## Retrospective
+
+- **The plan held.** Both commands were built as designed. What changed was added at
+  the edges: `--name`, the refusal of a trashed target, and the retries.
+- **"Resumable" was a claim before it was a behavior.** A resumable request with no
+  retries fails at the first dropped connection like any other. The fakes could not
+  show it and neither finder raised it; it came from reading the design's sentence
+  against the code that was meant to make it true.
+- **A dry run on another scope proves nothing about the write.** The read-only and
+  the write token were two accounts, so the preview and the write saw two Drives.
+  Before a live write, compare the accounts behind the scopes.
+- **A test that passes where credentials are configured is not a passing test.** One
+  built a real service and failed in CI from the first push. CI was first looked at
+  when the review was done, several pushes late. Look at it after the first push.
+- **What the plan left open was settled against the API, not reasoned about.** Whether
+  `name =` compares case took one read-only query to answer, where a verifier without
+  the network could only call it plausible.
+- **Sharing beat copying twice.** `resolve_folder`, `find_named`, and `get_folder`
+  each began as code in one command that the other needed, and the guard added to one
+  (the trash) reached the other for nothing.
