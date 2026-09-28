@@ -1091,6 +1091,13 @@ and three methods:
 file. `MemoryStore` holds records in memory, for tests and for a caller that
 saves them itself after the run.
 
+`Target.base` is optional: when every sync tab has an entry in
+`base_stores`, a target built in code needs no base directory at all (a
+pull-only or push-only target needs neither, since those modes never read a
+base). A sync tab with no `base` and no entry in `base_stores` is reported
+with a `ValueError` naming the target and the tab, and the run goes on to the
+next tab.
+
 This store is one tab of a JSON file that holds several, as
 `{"Members": [...], "Summary": [...]}`. `JsonEntryStore` does this, typed and
 atomically; the example shows the shape of a store of your own:
