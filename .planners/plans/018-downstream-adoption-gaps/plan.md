@@ -52,7 +52,7 @@ PR of its own. Every step from 3 on lands on one branch,
 | 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | done, on the branch |
 | 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, on the branch |
 | 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | done, on the branch |
-| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | not started |
+| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | done, on the branch |
 
 ### Execution order
 
@@ -498,3 +498,49 @@ not a list of messages`.
 **Left open.** A tab cannot switch off a hook its target names, except by naming
 one of its own. A hook's traceback is not printed: the error carries the exception's
 type and message.
+
+### 2026-09-27 — step 12, and the state of the branch
+
+Written at 2026-09-27T18:56:53-07:00. Step 12 is merged into the plan's branch
+(`085771b`), and with it every step of the plan is implemented. Both of its checks
+landed, and neither stopped at a write-up.
+
+**What landed.** `ColumnSchema.present` and `ColumnSchema.strict`, the two schema
+fields of the config, and `STRICT_TYPES`. `strict` on a column that is not `bool` or
+`date` is refused by the config check and by `ColumnSchema` itself. The strict forms
+are in `cell_problem`, so a sheet value about to be folded that fails one is a
+schema problem, and is held under `on_invalid: hold`.
+
+**A respelling that compares equal needed a check of its own.** The subplan has
+`true` on the sheet beside `TRUE` locally reporting a problem and no edit. The merge
+checks only a sheet value it is about to fold, and two cells that compare equal are
+never folded, so that case never reached `cell_problem`. `_respelling_problems` finds
+it after the merge, and the merge is unchanged. Such a cell refuses the tab under
+either `on_invalid` setting, since nothing would be written for `hold` to hold back.
+
+**From the review.** The subagent's version gave that check a fallback message for a
+case it called unreachable, to keep branch coverage at 100%. The fallback is gone:
+the check reports what `cell_problem` says and nothing when it says nothing, and a
+test calls it directly for each outcome.
+
+**Where the work differs from the subplan.**
+
+- `2026-9-27` is refused with or without `strict`, since `date.fromisoformat` does not
+  read it on any Python the package supports. The tests of the strict form use
+  `20260927` and `2026-W39-7`.
+- A push checks `present` against the columns it writes. The header of the tab it
+  replaces is not looked at.
+- A `present` column that `exclude` names is refused by the check step 1 already
+  made of any schema column.
+
+**The branch.** 2949 unit tests pass at 100% line and branch coverage, with ruff and
+pyrefly clean, and CI passed on Python 3.11 to 3.14. The whole live suite was run
+once on the finished branch by the orchestrating session: 36 passed and 1 skipped
+in 153 seconds. The one skipped is the download of a revision of a file stored
+as-is, which needs `GDRIVES_TEST_FILE_ID`. The test spreadsheet holds the tabs it
+held before the plan, and no tab of a probe or a test was left behind.
+
+**Not yet done.** The review of the whole diff against `dev`, which plan 007's
+retrospective asked for, and the close. Interactions between steps that were built
+side by side (`transform` with `link_urls` and `render`, `strict_schema` with
+`entry`) are covered only as far as each step's own tests reach.
