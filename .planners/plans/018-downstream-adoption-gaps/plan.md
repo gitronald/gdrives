@@ -51,7 +51,7 @@ PR of its own. Every step from 3 on lands on one branch,
 | 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | done, on the branch |
 | 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | done, on the branch |
 | 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | done, on the branch |
-| 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | not started |
+| 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | done, on the branch |
 | 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | The schema fields `present` and `strict`. May stop at a write-up | not started |
 
 ### Execution order
@@ -461,3 +461,40 @@ change.** The subagent traced each user of the schema and the types: the merge,
 columns they are about to read or write. So a declared carried column is written by
 its type, which is the point, and no sheet column outside the projection is read or
 written for it.
+
+### 2026-09-27 — step 11: hooks named in the config
+
+Written at 2026-09-27T18:22:41-07:00. Merged into the plan's branch (`5becb78`). 2894
+unit tests pass at 100% line and branch coverage, with ruff and pyrefly clean. No
+live test was asked for or run.
+
+**The design note came first**, and is in
+[implementation-notes/004-config-hooks.md](implementation-notes/004-config-hooks.md).
+Its verdict was that the design as the subplan proposed it was doubtful, and that
+two changes made it sound. The step was implemented with both:
+
+- **Reading a config imports nothing.** `load_config` and `parse_config` check a
+  name's form, `module:function`, and no more. The subplan had a name that does not
+  import as a config problem listed by `load_config`, which would have run the
+  import-time code of every named module for every reader of a config, a preview
+  and a library caller included. `resolve_hooks` does the importing. The commands
+  call it before the credentials are built and before any request, and
+  `run_target` calls it before its first request.
+- **A module is looked for on `sys.path` alone.** The config's directory is not
+  added, so a file beside a config shadows nothing and is not run.
+
+**What landed.** `gdrives/sheets/hooks.py` (`resolve_hooks`, `tab_hooks`), `HOOKS`,
+the `hooks` field of a tab and of a target, and `TabConfig.hooks`, which holds the
+names only. A target's hooks are the default for its tabs, hook by hook. A hook
+found this way is wrapped: what it raises, and a return of the wrong kind, become the
+tab's error and name the hook, and the run goes on to the next tab. A tab's config
+hooks run before the hooks given in code.
+
+**From the review.** The wrapper's message for a return of the wrong kind quoted the
+start of the value returned, which for a hook given the rows can be a tab's cells,
+printed in a report. It now names the types alone: `returned a list holding a dict,
+not a list of messages`.
+
+**Left open.** A tab cannot switch off a hook its target names, except by naming
+one of its own. A hook's traceback is not printed: the error carries the exception's
+type and message.
