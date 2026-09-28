@@ -35,6 +35,10 @@ and branch coverage at 100% with ruff and pyrefly clean. Each also updates the R
 step is an addition or an opt-in, and existing behavior stays the default. The full
 spec for each step is in `subplans/`.
 
+**Changed on 2026-09-27, after step 2:** steps 1 and 2 each landed as a branch and a
+PR of its own. Every step from 3 on lands on one branch,
+`feature/downstream-adoption-gaps`, which has one PR into `dev`.
+
 | # | Step | Scope | Status |
 |---|---|---|---|
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
@@ -56,6 +60,10 @@ In the order above, which ranks the steps by how much downstream code each one
 unblocks. One step at a time: each merges before the next branches, so the changelog
 and `sync.py` never conflict. Step 5 comes after step 3 because a config's `base_file`
 feeds `base_stores`, which is what makes a target with no `base` useful.
+
+From step 3 on, the steps are still done one at a time and in order, as commits on the
+one branch. Nothing merges into `dev` between them. The branch's PR is merged when the
+plan is closed.
 
 Steps 7 to 12 follow step 6, in the order of their value to the caller. Step 11 comes
 after step 9, whose hook it names, and step 12 after step 4, whose checks it sits beside.
@@ -204,3 +212,22 @@ step 12 no longer holds.
 The amendment lifts one refusal of the config checker under `strict_schema`: a
 `schema` entry for a column outside `columns`, which a carried column needs in order
 to be declared at all.
+
+### 2026-09-27 — one branch for the remaining steps
+
+Written at 2026-09-27T17:45:47-07:00, at the owner's word, while step 3 was being
+implemented. Steps 1 and 2 are merged, as PRs #57 and #58. No step after them has a
+PR of its own: steps 3 to 12 land on `feature/downstream-adoption-gaps`, the branch
+the plan was activated with, and that branch has one PR into `dev`.
+
+Step 3 had been started on `feature/json-entry-store`, which had no PR. Its commits
+become the first commits of the one branch, and the step branch is deleted.
+
+What follows from it:
+
+- The steps stay in order, one at a time, each by a subagent in the branch's
+  worktree, and each is reviewed and corrected before the next starts.
+- Each step's Log entry is a commit on the branch, as before.
+- CI runs on the branch's PR after each step is pushed.
+- Nothing is merged into `dev` until the plan is closed, so the review of the whole
+  diff that plan 007's retrospective asked for comes before the merge.
