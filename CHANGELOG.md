@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- An `exclude` tab field for `pull` tabs, and `TabConfig.exclude`: columns to leave out of a pull, by header name, where `columns` names the ones to keep. Their values never reach the local file, a hook, or a report, and a column added on the sheet later is still pulled. It is refused together with `columns`, on a `sync` or `push` tab, and when it names a `key`, `schema`, or `widths` column. A name in `exclude` that is not one of the tab's header columns refuses the pull and leaves the local file alone, listing every such name, since a sensitive column renamed on the sheet would otherwise be written to disk.
+
 ### Changed
 
 - A cell of a column declared `datetime` that is read from its serial number now always arrives as `YYYY-MM-DD HH:MM:SS.mmm`, with three digits of milliseconds even for a whole second: `2026-02-03 12:00:00.000`, where it was `2026-02-03 12:00:00` beside `2026-02-03 13:11:57.926000` in the same column. Serials are rounded to the millisecond already, so nothing is lost. **This changes output people have committed.** A sync compares typed columns by value, so a base or local file in the old form is in sync with the new read and is not rewritten. A pull compares text, so the first pull of a tab with a `datetime` column after upgrading rewrites each cell whose fraction was zero, once. Text cells in the column (a value pushed as a literal string) read as their text, as before, and `to_cell` is unchanged, so a `datetime` built in code keeps its microseconds.

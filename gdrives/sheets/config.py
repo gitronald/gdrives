@@ -66,6 +66,7 @@ _TAB_FIELDS = frozenset(
         "local",
         "key",
         "columns",
+        "exclude",
         "local_owned",
         "sheet_owned",
         "owns_rows",
@@ -119,7 +120,10 @@ class TabConfig:
     given too; :attr:`local_store` is what a run reads and writes. A tab
     with neither is refused.
     ``columns`` is the projection, or None for every column of the local
-    side. ``insert_above`` maps its one column to the values it matches.
+    side. ``exclude`` names columns a pull tab leaves out, so their values
+    never reach the local file or a report; it applies only to a pull tab,
+    and contradicts ``columns``. ``insert_above`` maps its one column to the
+    values it matches.
     ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
     local file is written with, and with it the tab's base. ``blank_keys``
     is ``"refuse"`` or ``"partial"``, as for
@@ -137,6 +141,7 @@ class TabConfig:
     mode: str = "sync"
     key: tuple[str, ...] = ()
     columns: tuple[str, ...] | None = None
+    exclude: tuple[str, ...] = ()
     local_owned: tuple[str, ...] = ()
     sheet_owned: tuple[str, ...] = ()
     owns_rows: bool = False
@@ -156,6 +161,10 @@ class TabConfig:
         if self.local is None and self.store is None:
             raise ValueError(
                 f"tab {self.title!r}: give 'local', a file path, or 'store'"
+            )
+        if self.exclude and self.columns is not None:
+            raise ValueError(
+                f"tab {self.title!r}: 'exclude' and 'columns' contradict each other"
             )
 
     @property
@@ -451,6 +460,8 @@ class _Checker:
                 problems.append(f"{where}: 'widths' do not apply to a pull tab")
             if mode == "pull" and "clear_links" in raw:
                 problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
+        if mode != "pull" and "exclude" in raw:
+            problems.append(f"{where}: 'exclude' applies only to a pull tab")
 
         local = self._local(where, raw)
         bom = raw.get("bom", False)
@@ -476,6 +487,9 @@ class _Checker:
                 f"not {blank_keys!r}"
             )
         columns = self._columns(where, raw)
+        exclude = self._names(where, raw, "exclude")
+        if exclude and columns is not None:
+            problems.append(f"{where}: 'exclude' and 'columns' contradict each other")
         local_owned = self._names(where, raw, "local_owned")
         sheet_owned = self._names(where, raw, "sheet_owned")
         self._ownership(where, key, columns, local_owned, sheet_owned)
@@ -510,6 +524,17 @@ class _Checker:
         schema = self._schema(where, raw.get("schema", {}), columns)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
+        for what, names in (
+            ("key", key),
+            ("schema", list(schema)),
+            ("widths", list(widths)),
+        ):
+            excluded = sorted(set(names) & set(exclude))
+            if excluded:
+                problems.append(
+                    f"{where}: 'exclude' names {what} column(s) {excluded}, which "
+                    "would be read anyway"
+                )
 
         if len(problems) > start or local is None:
             return None
@@ -519,6 +544,7 @@ class _Checker:
             mode=str(mode),
             key=tuple(key),
             columns=tuple(columns) if columns is not None else None,
+            exclude=tuple(exclude),
             local_owned=tuple(local_owned),
             sheet_owned=tuple(sheet_owned),
             owns_rows=bool(owns_rows),

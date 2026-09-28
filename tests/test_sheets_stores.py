@@ -168,6 +168,12 @@ class TestConfig:
         with pytest.raises(ValueError, match="tab 'T': give 'local', a file path, or"):
             TabConfig(title="T")
 
+    def test_exclude_with_columns_is_refused(self):
+        with pytest.raises(
+            ValueError, match="tab 'T': 'exclude' and 'columns' contradict"
+        ):
+            TabConfig(title="T", store=MemoryStore(), columns=("a",), exclude=("b",))
+
     def test_a_tab_with_a_store_has_no_local_file(self):
         store = MemoryStore()
         tab = TabConfig(title="T", store=store)

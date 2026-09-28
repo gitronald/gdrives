@@ -69,6 +69,7 @@ from gdrives.sheets.apply import (
 )
 from gdrives.sheets.cells import (
     ColumnSchema,
+    _header_row,
     index_rows,
     problems,
     row_key,
@@ -363,6 +364,30 @@ def _started(report: TabReport, tab: TabConfig) -> Store:
     return store
 
 
+def _refuse_exclude(tab: TabConfig) -> None:
+    """Refuse ``exclude`` on a tab that is not pulled.
+
+    A sync or a push would carry the named columns all the same, and a tab
+    built in code has not been through the config's check.
+    """
+    if tab.exclude:
+        raise ValueError(
+            f"tab {tab.title!r}: 'exclude' applies only to a pull, and names "
+            f"{list(tab.exclude)}"
+        )
+
+
+def _excluded(tab: TabConfig) -> None:
+    """Refuse an ``exclude`` that names a column the pull would read anyway."""
+    for what, names in (("key", tab.key), ("schema", tab.schema)):
+        both = [name for name in names if name in tab.exclude]
+        if both:
+            raise ValueError(
+                f"tab {tab.title!r}: 'exclude' names {what} column(s) {both}, "
+                "which would be read anyway"
+            )
+
+
 def _read_local(tab: TabConfig) -> Records:
     """The tab's local side, refusing one that does not exist."""
     store = tab.local_store
@@ -527,6 +552,7 @@ def plan_tab(
         )
     report = report if report is not None else TabReport(tab=tab.title, mode="sync")
     _started(report, tab)
+    _refuse_exclude(tab)
     report.adopted = adopt
     options: dict[str, Any] = {
         "adopt": adopt,
@@ -1070,11 +1096,24 @@ def pull_tab(
     local file is simply created. An unchanged file is not rewritten. A
     delimited file ends its lines as the tab's ``newline`` says.
 
+    With ``exclude``, the header is checked first: a name it lists that is
+    not one of the header's named columns refuses the pull, leaving the
+    local side alone, and lists every such name (a renamed sensitive column
+    is a likely cause). The columns read are then the header's named columns
+    less ``exclude``, in header order, passed to :func:`~gdrives.sheets.table.parse_tab`
+    as an explicit list, so an excluded column's values never enter the
+    ``Table`` and cannot reach a hook, a report, or the local file. An
+    ``exclude`` that names a ``key`` or ``schema`` column is refused before
+    any request, since that column would be read after all, and so is a tab
+    whose named columns are all excluded, with its own message.
+    :func:`plan_tab` and :func:`push_tab` refuse a tab with ``exclude``.
+
     ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
+    _excluded(tab)
     left = f"the {_side(store)} is left alone"
     if listing is None:
         listing = tab_listing(service, spreadsheet_id)
@@ -1083,12 +1122,31 @@ def pull_tab(
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; {left}")
     grid = _read_grid(service, spreadsheet_id, title)
+    columns: Sequence[str] | None = tab.columns
+    if tab.exclude:
+        header = _header_row(grid)
+        if not any(header):
+            report.tab_state = "empty"
+            raise ValueError(f"tab {tab.title!r} has no header row; {left}")
+        missing = [name for name in tab.exclude if name not in header]
+        if missing:
+            raise ValueError(
+                f"tab {tab.title!r}: 'exclude' names column(s) {missing} not in "
+                f"the header {header}; a renamed sensitive column is a likely "
+                f"cause. {left}"
+            )
+        columns = [name for name in header if name and name not in tab.exclude]
+        if not columns:
+            raise ValueError(
+                f"tab {tab.title!r}: 'exclude' names every column the header "
+                f"has, so there is nothing to pull; {left}"
+            )
     serials = pull_serials(service, spreadsheet_id, title, grid, tab.types)
     try:
         table = parse_tab(
             title,
             grid,
-            tab.columns,
+            columns,
             tab.key,
             types=tab.types,
             serials=serials,
@@ -1163,6 +1221,7 @@ def push_tab(
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
+    _refuse_exclude(tab)
     report.apply = apply
     local = _read_local(tab)
     if not local.rows:
