@@ -112,7 +112,7 @@ class TestPreview:
         assert report.apply is False
         assert writes(grid) == []
         assert grid.values("T") == [HEADER, *ROWS]
-        assert not target.base.exists()
+        assert target.base is not None and not target.base.exists()
         assert sorted(p.name for p in tmp_path.rglob("*")) == ["data", "local.csv"]
 
     def test_a_preview_of_a_missing_tab_writes_nothing(self, tmp_path):

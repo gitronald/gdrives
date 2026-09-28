@@ -208,17 +208,21 @@ class Target:
 
     ``spreadsheet`` is the URL, file ID, or Drive path as written in the
     config. ``base`` is the absolute directory holding the base snapshots,
-    one CSV per tab. ``base_stores`` maps a tab's title to the store that
-    holds its base instead, for a base kept somewhere else; ``base`` is
-    unused for a tab it names. A config's ``base_file`` becomes one
+    one CSV per tab, or None for a target built in code whose every sync tab
+    has an entry in ``base_stores``: pull and push tabs never read a base, so
+    a target of only those needs neither ``base`` nor ``base_stores``.
+    ``base_stores`` maps a tab's title to the store that holds its base
+    instead, for a base kept somewhere else; ``base`` is unused for a tab it
+    names. A config's ``base_file`` becomes one
     :class:`~gdrives.sheets.stores.JsonEntryStore` here for each sync tab,
-    the entry named by the tab's title and typed by its schema.
+    the entry named by the tab's title and typed by its schema. A config
+    always sets ``base``, to a default directory when none is given.
     """
 
     name: str
     spreadsheet: str
-    base: Path
-    tabs: tuple[TabConfig, ...]
+    base: Path | None = None
+    tabs: tuple[TabConfig, ...] = ()
     input_option: str = RAW
     base_stores: Mapping[str, Store] = field(default_factory=dict)
 
@@ -233,14 +237,24 @@ class Target:
         )
 
     def base_path(self, tab: TabConfig) -> Path:
-        """The base snapshot file of ``tab``: one CSV per tab, named by title."""
+        """The base snapshot file of ``tab``: one CSV per tab, named by title.
+
+        Raises ValueError when ``base`` is None: a target built in code with
+        no ``base`` directory and no entry for ``tab`` in ``base_stores``.
+        """
+        if self.base is None:
+            raise ValueError(
+                f"target {self.name!r} has no base directory, and tab "
+                f"{tab.title!r} has no entry in base_stores"
+            )
         return self.base / f"{safe_filename(tab.title)}.csv"
 
     def base_store(self, tab: TabConfig) -> Store:
         """The store of ``tab``'s base: its entry in ``base_stores``, or the file.
 
         The file is the one at :meth:`base_path`, written with the tab's
-        ``newline``.
+        ``newline``; :meth:`base_path` is reached, and can raise, only for a
+        tab with no entry in ``base_stores``.
         """
         if tab.title in self.base_stores:
             return self.base_stores[tab.title]
