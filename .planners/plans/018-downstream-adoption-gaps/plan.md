@@ -44,7 +44,7 @@ PR of its own. Every step from 3 on lands on one branch,
 | 1 | [Exclude named columns from a pull](subplans/1-pull-exclude-columns.md) | `exclude` tab field for pull tabs. It is refused with `columns`, and a name missing from the header refuses the pull | done, [#57](https://github.com/gitronald/gdrives/pull/57) |
 | 2 | [Reorder a keyed tab's rows](subplans/2-reorder-rows.md) | `reorder_rows`: whole-row `moveDimension` moves in one batch, with a preview, the re-read guard, and a read-back. Rows the order does not name are refused | done, [#58](https://github.com/gitronald/gdrives/pull/58) |
 | 3 | [A store for one entry of a multi-tab JSON file](subplans/3-json-entry-store.md) | `JsonEntryStore`, `entry` and `base_file` in the config, and collisions keyed by path and entry | done, on the branch |
-| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | not started |
+| 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a column of either side with no schema entry is a problem, less the columns a run drops (widened on 2026-09-27) | done, on the branch |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | done, on the branch |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | done, on the branch |
 | 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | done, on the branch |
@@ -432,3 +432,32 @@ Where the spec was silent, or the work differs:
   changes key cells. It is left as it is.
 
 No live test was asked for or run for step 9.
+
+### 2026-09-27 — step 4: refuse undeclared columns
+
+Written at 2026-09-27T18:12:47-07:00. Merged into the plan's branch (`002f638`), by
+the amendment and not by the design above it. 2843 unit tests pass at 100% line and
+branch coverage, with ruff and pyrefly clean. No live test was asked for or run.
+
+**Merging.** The step had branched from `dev` before any other step landed, and
+conflicted in eight files. Every conflict was two additions at one place. Two were
+resolved by hand and not by keeping both: the config check of the tab, where the
+call that builds the schema had to take `strict_schema` and follow the check of
+`render`, and the guide test's counts, now 9 JSON examples and 9 Python.
+
+**What landed.** `TabConfig.strict_schema`, the tab field, and `strict_schema=` on
+`push_rows`. A sync checks the local side's columns at the `local` stage, before any
+request, and the sheet's columns outside the projection at the `sheet` stage, less
+the columns `drop_extra` deletes. A pull checks the header's named columns, less the
+ones `exclude` names. A push checks every column of the local side.
+
+**A column on both sides is reported once with no code to do it.** The check of the
+local side runs first and stops the plan before the sheet is read, so a column that
+both sides have and the schema lacks is only ever reported at the `local` stage.
+
+**Lifting the refusal of a schema column outside `columns` needed no other
+change.** The subagent traced each user of the schema and the types: the merge,
+`parse_tab`, `pull_serials`, and the JSON writer each keep only the entries of the
+columns they are about to read or write. So a declared carried column is written by
+its type, which is the point, and no sheet column outside the projection is read or
+written for it.
