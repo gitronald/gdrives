@@ -186,6 +186,24 @@ way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
 starting `Credential:`.
 
+A caller that wants to say more can build on `gdrives.auth.describe_credentials()`,
+whose `CredentialInfo` names why a credential was chosen without a network call:
+`oauth_client` (the client secrets file, or `None` if OAuth is not configured),
+`terminal` (whether a terminal is on stdin), `consent_skipped` (True when OAuth
+is configured but no consent could run for lack of one), `service_account` (the
+service account key file, if any), and `passed_over` (each cached OAuth token
+file that was looked at and not used, as a `PassedToken(path, reason)` with
+`reason` one of `PASSED_REASONS`: `missing`, `scopes`, `unreadable`, or
+`invalid`). For example, to announce a fall back to the service account:
+
+```python
+from gdrives.auth import describe_credentials
+
+info = describe_credentials()
+if info.kind == "service_account" and info.consent_skipped:
+    print(f"No terminal for OAuth consent ({info.oauth_client}); using {info}")
+```
+
 ### List Drive contents
 
 ```bash
