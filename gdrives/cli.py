@@ -310,7 +310,7 @@ def login(
             "--scope",
             help="Access to grant: read (every read command), sheets (the "
             "sheets-* write commands), docs (the docs-* write commands), or "
-            "drive (mv)",
+            "drive (mv, upload, sheets-create)",
         ),
     ] = "read",
     timeout: Annotated[
