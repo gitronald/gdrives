@@ -8,7 +8,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager, redirect_stdout
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -269,6 +269,47 @@ def _write_consent_token(scopes: list[str], creds: Any) -> None:
     _write_token(target, creds)
 
 
+def _load_token_reason(token_path: Path, scopes: list[str], *, warn: bool = True):
+    """``(credentials, reason)`` for the cached OAuth token at ``token_path``.
+
+    ``credentials`` is None, and ``reason`` one of PASSED_REASONS, when the
+    token is not usable to try: ``"missing"`` (no file there), ``"scopes"``
+    (its recorded grant does not cover ``scopes``, so it would 403 on the
+    first call), or ``"unreadable"`` (it does not load — unparseable, or no
+    usable ``scopes`` entry left it to the loader, which then failed).
+    Otherwise ``reason`` is None: the token loaded, and it is the caller's to
+    check for validity (see ``_needs_refresh`` and ``PASSED_REASONS``'s
+    ``"invalid"``). Loading reads the file only; nothing is refreshed. ``warn``
+    logs why a token present on disk was passed over.
+
+    A grant that covers ``scopes`` only by implication (see _IMPLIES) is loaded
+    with the scopes it records: a refresh that asks for a scope outside the
+    grant can be refused.
+    """
+    from google.oauth2.credentials import Credentials
+
+    if not token_path.exists():
+        return None, "missing"
+    granted = _recorded_scopes(token_path)
+    if granted is not None:
+        if not _covers(granted, scopes):
+            if warn:
+                logger.warning(
+                    "cached OAuth token %s does not cover the requested scopes; "
+                    "passing over it",
+                    token_path,
+                )
+            return None, "scopes"
+        if not set(scopes) <= set(granted):
+            scopes = granted
+    try:
+        return Credentials.from_authorized_user_file(str(token_path), scopes), None
+    except (OSError, ValueError, AttributeError, TypeError):
+        if warn:
+            logger.warning("could not load cached OAuth token %s", token_path)
+        return None, "unreadable"
+
+
 def _load_token(token_path: Path, scopes: list[str], *, warn: bool = True):
     """The cached OAuth credentials at ``token_path``, or None when none can be used.
 
@@ -282,28 +323,8 @@ def _load_token(token_path: Path, scopes: list[str], *, warn: bool = True):
     with the scopes it records: a refresh that asks for a scope outside the
     grant can be refused.
     """
-    from google.oauth2.credentials import Credentials
-
-    if not token_path.exists():
-        return None
-    granted = _recorded_scopes(token_path)
-    if granted is not None:
-        if not _covers(granted, scopes):
-            if warn:
-                logger.warning(
-                    "cached OAuth token %s does not cover the requested scopes; "
-                    "passing over it",
-                    token_path,
-                )
-            return None
-        if not set(scopes) <= set(granted):
-            scopes = granted
-    try:
-        return Credentials.from_authorized_user_file(str(token_path), scopes)
-    except (OSError, ValueError, AttributeError, TypeError):
-        if warn:
-            logger.warning("could not load cached OAuth token %s", token_path)
-        return None
+    creds, _reason = _load_token_reason(token_path, scopes, warn=warn)
+    return creds
 
 
 def _needs_refresh(creds: Any) -> bool:
@@ -321,6 +342,21 @@ def _cached_tokens(scopes: list[str], *, warn: bool = True):
         creds = _load_token(token_path, scopes, warn=warn)
         if creds is not None:
             yield token_path, creds
+
+
+def _cached_tokens_detailed(scopes: list[str], *, warn: bool = True):
+    """Yield ``(path, credentials, reason)`` for every place a token can be.
+
+    In lookup order (see _token_paths), unlike ``_cached_tokens``, which
+    yields only the ones that loaded. ``reason`` is one of PASSED_REASONS
+    when ``credentials`` is None, and None when the token loaded (its
+    validity is still the caller's to check). Used by describe_credentials to
+    report each cached token file it looked at and why, without a second
+    derivation of the same decision.
+    """
+    for token_path in _token_paths(scopes):
+        creds, reason = _load_token_reason(token_path, scopes, warn=warn)
+        yield token_path, creds, reason
 
 
 class _FlushedStdout:
@@ -478,6 +514,23 @@ def authenticate(scopes: list[str] | None = None, *, force: bool = False):
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
 
 
+PASSED_REASONS = ("missing", "scopes", "unreadable", "invalid")
+
+
+@dataclass(frozen=True)
+class PassedToken:
+    """A cached token file describe_credentials looked at and did not use.
+
+    ``reason`` is one of PASSED_REASONS: ``"missing"`` (no file there),
+    ``"scopes"`` (its recorded grant does not cover the scopes asked for),
+    ``"unreadable"`` (the file does not load), or ``"invalid"`` (it loads and
+    is neither valid nor refreshable).
+    """
+
+    path: Path
+    reason: str
+
+
 @dataclass(frozen=True)
 class CredentialInfo:
     """Which credential a call will authenticate with, as far as is known locally.
@@ -489,6 +542,18 @@ class CredentialInfo:
     is the account, when the credential names it without a network call (a
     service account's ``client_email``). ``source`` is the file the
     credential comes from. No token, key, or secret is ever held here.
+
+    The remaining fields say more, for a caller that wants to announce why:
+    ``oauth_client`` is the OAuth client secrets file, when one is present
+    (None means OAuth is not configured); ``terminal`` is whether a terminal
+    is on stdin; ``consent_skipped`` is True when OAuth is configured, no
+    cached token served, and no consent could run for lack of a terminal;
+    ``service_account`` is the service account key file, when one exists,
+    whichever credential was chosen; and ``passed_over`` lists each cached
+    token file that was looked at and not used (see PassedToken), in the
+    order ``_token_paths`` gives. Each has a default, so a CredentialInfo
+    built as before this addition is unchanged, and these fields are left out
+    of equality and hashing so a comparison built the old way still matches.
     """
 
     kind: str
@@ -496,6 +561,11 @@ class CredentialInfo:
     refresh: bool = False
     identity: str | None = None
     source: Path | None = None
+    oauth_client: Path | None = field(default=None, compare=False)
+    terminal: bool = field(default=False, compare=False)
+    consent_skipped: bool = field(default=False, compare=False)
+    service_account: Path | None = field(default=None, compare=False)
+    passed_over: tuple[PassedToken, ...] = field(default=(), compare=False)
 
     def __str__(self) -> str:
         if self.kind == "oauth":
@@ -535,27 +605,59 @@ def describe_credentials(
     started. Whether ADC is configured is left to google-auth at the first
     call, since finding out can take a network probe. With ``force`` nothing
     falls through either: ConsentError is raised where authenticate() raises it.
+
+    Beyond ``kind``, ``consent``, ``refresh``, ``identity``, and ``source``,
+    the returned info always carries the discovery fields described on
+    CredentialInfo (``oauth_client``, ``terminal``, ``consent_skipped``,
+    ``service_account``, ``passed_over``), whichever branch is taken.
     """
     scopes = scopes or SCOPES
     credentials_path = _credentials_path()
+    oauth_client = (
+        credentials_path
+        if credentials_path is not None and credentials_path.exists()
+        else None
+    )
+    terminal = _is_interactive()
+    sa_path = _service_account_path()
+    service_account = sa_path if sa_path is not None and sa_path.exists() else None
+    passed_over: list[PassedToken] = []
+
+    def found(kind: str, **chosen: Any) -> CredentialInfo:
+        """The credential chosen, with what was found on the way to it."""
+        return CredentialInfo(
+            kind=kind,
+            oauth_client=oauth_client,
+            terminal=terminal,
+            service_account=service_account,
+            passed_over=tuple(passed_over),
+            **chosen,
+        )
+
     if credentials_path is not None:
-        for token_path, creds in _cached_tokens(scopes, warn=False):
+        for token_path, creds, reason in _cached_tokens_detailed(scopes, warn=False):
+            if creds is None:
+                assert reason is not None
+                passed_over.append(PassedToken(path=token_path, reason=reason))
+                continue
             if _needs_refresh(creds):
-                return CredentialInfo(kind="oauth", refresh=True, source=token_path)
+                return found("oauth", refresh=True, source=token_path)
             if creds.valid:
-                return CredentialInfo(kind="oauth", source=token_path)
+                return found("oauth", source=token_path)
+            passed_over.append(PassedToken(path=token_path, reason="invalid"))
         if _can_consent(credentials_path, force=force):
-            return CredentialInfo(kind="oauth", consent=True, source=credentials_path)
+            return found("oauth", consent=True, source=credentials_path)
     if force:
         raise _no_consent(credentials_path)
-    sa_path = _service_account_path()
-    if sa_path is not None and sa_path.exists():
-        return CredentialInfo(
-            kind="service_account",
-            identity=_service_account_email(sa_path),
-            source=sa_path,
+    consent_skipped = oauth_client is not None and not terminal
+    if service_account is not None:
+        return found(
+            "service_account",
+            identity=_service_account_email(service_account),
+            source=service_account,
+            consent_skipped=consent_skipped,
         )
-    return CredentialInfo(kind="adc")
+    return found("adc", consent_skipped=consent_skipped)
 
 
 # The scope sets whose credential line this run has printed, or None when

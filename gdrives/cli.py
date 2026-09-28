@@ -74,6 +74,7 @@ def _cli_errors() -> Generator[None, None, None]:
     from gdrives.download import DownloadError
     from gdrives.files import IncompleteSearchError
     from gdrives.resolve import DrivePathError
+    from gdrives.upload import UploadError
 
     try:
         with announcing_credentials():
@@ -82,6 +83,7 @@ def _cli_errors() -> Generator[None, None, None]:
         ConsentError,
         DrivePathError,
         DownloadError,
+        UploadError,
         IncompleteSearchError,
         ValueError,
         OSError,
@@ -163,6 +165,57 @@ def download(
 
     with _cli_errors():
         run(source, output_dir, depth=depth, yes=yes, skip_existing=skip_existing)
+
+
+@app.command()
+def revisions(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="Drive file URL, ID, or path (e.g. 'My Drive/refs/paper.pdf')"
+        ),
+    ],
+    download: Annotated[
+        str | None,
+        typer.Option("--download", help="Revision ID to download (see the listing)"),
+    ] = None,
+    output: Annotated[
+        str,
+        typer.Option(
+            "-o",
+            "--output",
+            help="With --download: file path or directory (default: cwd)",
+        ),
+    ] = ".",
+    format_: Annotated[
+        str | None,
+        typer.Option(
+            "--format",
+            help="With --download: export extension for a native file, "
+            "e.g. xlsx, csv, pdf (default: the type's usual export)",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw revision list as JSON"),
+    ] = False,
+):
+    """List a file's revisions, or download one with --download.
+
+    Lists id, modified time, modified by, and size (binary files only) as
+    aligned columns; --json prints the raw list instead. --download fetches
+    one revision by ID: a native Google file (Doc, Sheet, Slides) is fetched
+    in the format named by --format, and any other file is fetched as stored
+    (--format does not apply to it). Read-only: this never restores, pins, or
+    deletes a revision.
+    """
+    if download is None and (format_ is not None or output != "."):
+        _fail("--output and --format require --download")
+
+    from gdrives.revisions import run
+
+    with _cli_errors():
+        run(source, download=download, output=output, format=format_, as_json=as_json)
 
 
 @app.command()
@@ -257,7 +310,7 @@ def login(
             "--scope",
             help="Access to grant: read (every read command), sheets (the "
             "sheets-* write commands), docs (the docs-* write commands), or "
-            "drive (mv)",
+            "drive (mv, upload, sheets-create)",
         ),
     ] = "read",
     timeout: Annotated[
@@ -489,6 +542,43 @@ def sheets_widths(
 
     with _cli_errors():
         run_widths(source, tab=tab)
+
+
+@app.command(name="sheets-create")
+def sheets_create(
+    title: Annotated[str, typer.Option("--title", help="Title of the new spreadsheet")],
+    folder: Annotated[
+        str | None,
+        typer.Option(
+            "--folder", help="Folder path, e.g. 'My Drive/reports' (default: root)"
+        ),
+    ] = None,
+    folder_id: Annotated[
+        str | None,
+        typer.Option("--folder-id", help="Folder ID (skip resolution)"),
+    ] = None,
+    tab: Annotated[
+        list[str] | None,
+        typer.Option("--tab", help="A tab to name, in order (repeatable)"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print what would be created, create nothing"),
+    ] = False,
+):
+    """Create a native spreadsheet in a folder (write access, except --dry-run).
+
+    Prints the new spreadsheet's URL. With --tab, its one tab is renamed to
+    the first title and the others are added after it; with none, the tab
+    is left as it is. A file of the same name in the folder is noted, not
+    refused.
+    """
+    from gdrives.sheets import run_create
+
+    with _cli_errors():
+        run_create(
+            title, folder=folder, folder_id=folder_id, tabs=tab or (), dry_run=dry_run
+        )
 
 
 def _flag(name: str, what: str) -> typer.models.OptionInfo:
@@ -934,5 +1024,60 @@ def mv(
             source_id=source_id,
             dest_id=dest_id,
             name=name,
+            dry_run=dry_run,
+        )
+
+
+@app.command()
+def upload(
+    local: Annotated[str, typer.Argument(help="Local file to upload")],
+    dest: Annotated[
+        str | None,
+        typer.Argument(
+            help="An existing folder path, or a folder path + the file's name"
+        ),
+    ] = None,
+    dest_id: Annotated[
+        str | None,
+        typer.Option("--dest-id", help="Destination folder ID (skip resolution)"),
+    ] = None,
+    file_id: Annotated[
+        str | None,
+        typer.Option("--file-id", help="ID of the file whose content is replaced"),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="The file's name in Drive, used with --dest-id"),
+    ] = None,
+    mime_type: Annotated[
+        str | None,
+        typer.Option(
+            "--mime-type", help="MIME type (default: guessed from the extension)"
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the intended upload without making it"),
+    ] = False,
+):
+    """Upload a local file to Drive (write access, except --dry-run).
+
+    A file of that name in the folder has its content replaced in place, so
+    its ID and links stay the same; with none, the file is created. Several
+    files of that name are refused: name one with --file-id. Prints the
+    file's URL. Examples:
+    gdrives upload report.pdf "My Drive/reports";
+    gdrives upload out.pdf "My Drive/reports/report.pdf" --dry-run
+    """
+    from gdrives.upload import run
+
+    with _cli_errors():
+        run(
+            local,
+            dest,
+            dest_id=dest_id,
+            file_id=file_id,
+            name=name,
+            mime_type=mime_type,
             dry_run=dry_run,
         )

@@ -146,6 +146,18 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
     A path is first tried whole as an existing folder; only if that fails is the
     final segment treated as a new name under an existing parent.
     """
+    if "/" not in dest:
+        return None, dest
+    return resolve_folder(service, dest)
+
+
+def resolve_folder(service: Service, dest: str) -> tuple[str, str | None]:
+    """Resolve a destination path to ``(folder_id, new_name)``.
+
+    The part of :func:`resolve_destination` that ``upload`` shares: the path
+    names a folder, and ``new_name`` is None when the whole of it is one that
+    exists. A path with no separator is a drive.
+    """
     from gdrives.drives import find_drive, load
     from gdrives.resolve import (
         AmbiguousPathError,
@@ -154,8 +166,6 @@ def resolve_destination(service: Service, dest: str) -> tuple[str | None, str | 
         walk_segments,
     )
 
-    if "/" not in dest:
-        return None, dest
     stripped = dest.rstrip("/")
     if "/" not in stripped:
         # A drive root written with a trailing slash, e.g. "My Drive/".

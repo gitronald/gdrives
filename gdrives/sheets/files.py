@@ -136,33 +136,41 @@ def _read_delimited(path: str | Path, delimiter: str) -> Records:
     return Records(columns, rows)
 
 
+def _records_from_array(data: Any, where: str | Path) -> Records:
+    """Parsed JSON ``data``, an array of flat objects, as records.
+
+    ``where`` begins every error: a file's path, or the entry of one.
+    """
+    if not isinstance(data, list):
+        raise ValueError(f"{where}: expected a JSON array of objects")
+    columns: dict[str, None] = {}  # insertion-ordered set
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"{where}: item {index} is not an object")
+        named: dict[str, Any] = {}
+        for column, value in item.items():
+            if isinstance(value, (list, dict)):
+                raise ValueError(
+                    f"{where}: item {index}, {column!r}: nested values are not cells"
+                )
+            name = column.strip()
+            if name in named:
+                raise ValueError(f"{where}: item {index} repeats column name {name!r}")
+            named[name] = value
+            columns.setdefault(name, None)
+        items.append(named)
+    _check_columns(where, list(columns))
+    rows = encode_rows(items, list(columns))
+    return Records(list(columns), [row for row in rows if not _is_blank(row)])
+
+
 def _read_json(path: str | Path) -> Records:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         raise ValueError(f"{path}: not valid JSON: {e}") from None
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON array of objects")
-    columns: dict[str, None] = {}  # insertion-ordered set
-    items: list[dict[str, Any]] = []
-    for index, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise ValueError(f"{path}: item {index} is not an object")
-        named: dict[str, Any] = {}
-        for column, value in item.items():
-            if isinstance(value, (list, dict)):
-                raise ValueError(
-                    f"{path}: item {index}, {column!r}: nested values are not cells"
-                )
-            name = column.strip()
-            if name in named:
-                raise ValueError(f"{path}: item {index} repeats column name {name!r}")
-            named[name] = value
-            columns.setdefault(name, None)
-        items.append(named)
-    _check_columns(path, list(columns))
-    rows = encode_rows(items, list(columns))
-    return Records(list(columns), [row for row in rows if not _is_blank(row)])
+    return _records_from_array(data, path)
 
 
 def read_records(path: str | Path) -> Records:
@@ -239,18 +247,56 @@ def write_records(
         raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
     if newline != "lf":
         raise ValueError(f"{path}: newline applies only to .csv and .tsv")
+    write_text(Path(path), _json_text(path, _json_objects(path, columns, grid, types)))
+
+
+def _json_array(
+    where: str | Path,
+    columns: Sequence[str],
+    rows: Sequence[Mapping[str, str]],
+    types: Mapping[str, ColumnType] | None,
+) -> list[dict[str, Any]]:
+    """``rows`` as the objects of a JSON array, each value typed by ``types``.
+
+    Keys are in ``columns`` order, a blank cell is None, and a date or
+    datetime keeps its canonical string. ``where`` begins every error: a
+    file's path, or the entry of one. The result is dumped with
+    :func:`_json_text`, which refuses the ``NaN`` a ``float`` column can parse.
+    """
+    _check_columns(where, columns)
+    return _json_objects(where, columns, _row_cells(where, columns, rows), types)
+
+
+def _json_objects(
+    where: str | Path,
+    columns: Sequence[str],
+    grid: Sequence[Sequence[str]],
+    types: Mapping[str, ColumnType] | None,
+) -> list[dict[str, Any]]:
+    """``grid``, the checked cells of :func:`_json_array`'s rows, as its objects."""
     cells = [dict(zip(columns, row, strict=True)) for row in grid]
     try:
-        # Dates have no JSON type, so a parsed one keeps its canonical string.
-        records = [
-            {
-                column: row[column] if isinstance(value, date) else value
-                for column, value in typed.items()
-            }
-            for row, typed in zip(cells, decode_rows(cells, types or {}), strict=True)
-        ]
-        # allow_nan=False: NaN and Infinity are not JSON, so refuse to write them.
-        text = json.dumps(records, indent=2, ensure_ascii=False, allow_nan=False)
+        typed_rows = decode_rows(cells, types or {})
     except ValueError as e:
-        raise ValueError(f"{path}: {e}") from None
-    write_text(Path(path), text + "\n")
+        raise ValueError(f"{where}: {e}") from None
+    # Dates have no JSON type, so a parsed one keeps its canonical string.
+    return [
+        {
+            column: row[column] if isinstance(value, date) else value
+            for column, value in typed.items()
+        }
+        for row, typed in zip(cells, typed_rows, strict=True)
+    ]
+
+
+def _json_text(where: str | Path, data: Any) -> str:
+    """``data`` as the library writes a JSON file: two-space indent, final newline.
+
+    Byte-stable: the same values dump to the same text. Non-ASCII text is
+    kept as it is, and NaN or Infinity is refused, since neither is JSON.
+    """
+    try:
+        text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
+    return text + "\n"

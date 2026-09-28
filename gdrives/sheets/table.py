@@ -28,11 +28,11 @@ from gdrives.sheets.cells import (
     to_cell,
 )
 from gdrives.sheets.values import (
-    FORMATTED_STRING,
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
+    _check_render,
+    _pull_rendered,
     pull_many,
-    pull_values,
 )
 
 #: One grid per column, as a serial read of that column returned it.
@@ -60,7 +60,8 @@ class Table:
     holds only its header): new rows go after it. ``types`` holds the declared
     type of each column read that has one, by name, and ``blank_keys`` the
     setting the rows were indexed with, so that a later read of the same tab
-    reads it the same way.
+    reads it the same way. ``render`` is the setting the tab was read with
+    (``unformatted`` or ``formatted``), which a later read uses too.
     """
 
     tab: str
@@ -74,6 +75,7 @@ class Table:
     last_row: int
     types: dict[str, str] = field(default_factory=dict)
     blank_keys: str = "refuse"
+    render: str = "unformatted"
 
 
 def _check_request(tab: str, columns: Sequence[str] | None, key: Sequence[str]) -> None:
@@ -133,6 +135,7 @@ def read_tab(
     *,
     types: Mapping[str, ColumnType] | None = None,
     blank_keys: str = "refuse",
+    render: str = "unformatted",
 ) -> Table:
     """Read ``tab`` and return its ``columns`` as keyed records.
 
@@ -151,21 +154,22 @@ def read_tab(
     tab again before it writes.
 
     ``blank_keys`` is as for :func:`~gdrives.sheets.cells.index_rows`.
+
+    ``render="formatted"`` reads every cell as the sheet displays it
+    (``FORMATTED_VALUE``): a cell showing ``50%`` reads as ``"50%"``, not
+    ``"0.5"``. A declared date column is still read as serial numbers by the
+    second read, which does not depend on the first, and arrives as ISO 8601.
+    The table records the setting (``Table.render``).
     """
     _check_request(tab, columns, key)
     check_blank_keys(blank_keys)
+    _check_render(render)
     declared = {
         column: name
         for column, name in _declared(types).items()
         if columns is None or column in columns
     }
-    grid = pull_values(
-        service,
-        spreadsheet_id,
-        a1_quote(tab),
-        render=UNFORMATTED_VALUE,
-        date_time_render=FORMATTED_STRING,
-    )
+    grid = _pull_rendered(service, spreadsheet_id, a1_quote(tab), render)
     serials = pull_serials(service, spreadsheet_id, tab, grid, declared)
     return parse_tab(
         tab,
@@ -175,6 +179,7 @@ def read_tab(
         types=declared,
         serials=serials,
         blank_keys=blank_keys,
+        render=render,
     )
 
 
@@ -203,12 +208,15 @@ def parse_tab(
     types: Mapping[str, ColumnType] | None = None,
     serials: Serials | None = None,
     blank_keys: str = "refuse",
+    render: str = "unformatted",
 ) -> Table:
     """Parse ``grid``, a whole tab's rows as read, into ``columns`` as keyed records.
 
     The parsing half of :func:`read_tab`, for a grid already read (one
     :func:`~gdrives.sheets.values.pull_many` request can fetch several tabs).
-    ``grid`` holds the values an unformatted read returns.
+    ``grid`` holds the values a read returns, and ``render`` names the
+    read it came from (``unformatted``, or ``formatted`` for the displayed
+    text), which the table records.
 
     ``types`` declares column types, and ``serials`` holds the serial read of
     each column declared ``date`` or ``datetime``, as :func:`pull_serials`
@@ -231,6 +239,7 @@ def parse_tab(
     """
     _check_request(tab, columns, key)
     check_blank_keys(blank_keys)
+    _check_render(render)
     declared = _declared(types)
     header = _header_row(grid)
     if not any(header):
@@ -290,4 +299,5 @@ def parse_tab(
         last_row=numbers[-1] if numbers else 1,
         types=read_types,
         blank_keys=blank_keys,
+        render=render,
     )

@@ -44,6 +44,11 @@ FORMULA = "FORMULA"
 SERIAL_NUMBER = "SERIAL_NUMBER"
 FORMATTED_STRING = "FORMATTED_STRING"
 
+#: How a tab is read, in a config's words: ``unformatted`` (the default)
+#: reads numbers and booleans as values and dates as the sheet displays them,
+#: and ``formatted`` reads every cell as the sheet displays it.
+RENDERS = frozenset({"unformatted", "formatted"})
+
 
 # -- core value operations --
 
@@ -88,6 +93,33 @@ def pull_values(
     )
     # Sheets omits "values" entirely for an empty range.
     return result.get("values", [])
+
+
+def _check_render(render: str) -> None:
+    """Refuse a ``render`` setting that is not one of :data:`RENDERS`."""
+    if render not in RENDERS:
+        raise ValueError(f"render must be one of {sorted(RENDERS)}, not {render!r}")
+
+
+def _pull_rendered(
+    service: Service, spreadsheet_id: str, range_: str, render: str
+) -> list[list[Any]]:
+    """Read an A1 range of a tab as a tab's ``render`` setting says.
+
+    ``unformatted`` sends ``UNFORMATTED_VALUE`` with ``FORMATTED_STRING``
+    dates, and ``formatted`` sends ``FORMATTED_VALUE`` alone, under which
+    the API reads no date render option.
+    """
+    _check_render(render)
+    if render == "formatted":
+        return pull_values(service, spreadsheet_id, range_, render=FORMATTED_VALUE)
+    return pull_values(
+        service,
+        spreadsheet_id,
+        range_,
+        render=UNFORMATTED_VALUE,
+        date_time_render=FORMATTED_STRING,
+    )
 
 
 def pull_many(

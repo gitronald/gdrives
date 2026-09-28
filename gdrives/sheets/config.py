@@ -26,15 +26,16 @@ each naming its target and tab, so a single run shows everything to fix. The
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from gdrives.local import safe_filename
-from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, ColumnSchema
+from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, STRICT_TYPES, ColumnSchema
 from gdrives.sheets.files import NEWLINES
-from gdrives.sheets.stores import FileStore, Store
-from gdrives.sheets.values import RAW, USER_ENTERED
+from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
+from gdrives.sheets.structure import _rgb
+from gdrives.sheets.values import RAW, RENDERS, USER_ENTERED
 
 #: The config file's name, looked for in the working directory and its parents.
 CONFIG_NAME = "gdrives-sheets.json"
@@ -55,17 +56,24 @@ INPUT_OPTIONS = frozenset({RAW, USER_ENTERED})
 #: The local file formats, by lower-cased extension.
 LOCAL_EXTENSIONS = frozenset({".csv", ".tsv", ".json"})
 
+#: The hooks a config may name, each as ``module:function``
+#: (:mod:`gdrives.sheets.hooks`).
+HOOKS = frozenset({"validate", "check", "warn", "transform"})
+
 # The cache directory gdrives already uses, commonly ignored by version
 # control; a base belongs where it is committed.
 _CACHE_DIR = ".gdrives"
 
-_TARGET_FIELDS = frozenset({"spreadsheet", "base", "input_option", "tabs"})
+_TARGET_FIELDS = frozenset(
+    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks"}
+)
 _TAB_FIELDS = frozenset(
     {
         "mode",
         "local",
         "key",
         "columns",
+        "exclude",
         "local_owned",
         "sheet_owned",
         "owns_rows",
@@ -77,11 +85,17 @@ _TAB_FIELDS = frozenset(
         "newline",
         "blank_keys",
         "on_invalid",
+        "render",
         "clear_links",
         "sheet_id",
+        "entry",
+        "link_urls",
+        "strict_schema",
+        "hooks",
+        "typed_writes",
     }
 )
-_SCHEMA_FIELDS = frozenset({"type", "required", "allowed"})
+_SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
     "local_owned",
@@ -119,17 +133,41 @@ class TabConfig:
     given too; :attr:`local_store` is what a run reads and writes. A tab
     with neither is refused.
     ``columns`` is the projection, or None for every column of the local
-    side. ``insert_above`` maps its one column to the values it matches.
+    side. ``exclude`` names columns a pull tab leaves out, so their values
+    never reach the local file or a report; it applies only to a pull tab,
+    and contradicts ``columns``. ``insert_above`` maps its one column to the
+    values it matches.
     ``newline`` names the line ending (``"lf"`` or ``"crlf"``) a delimited
     local file is written with, and with it the tab's base. ``blank_keys``
     is ``"refuse"`` or ``"partial"``, as for
     :func:`~gdrives.sheets.cells.index_rows`. ``on_invalid`` is ``"refuse"``
     or ``"hold"``: what a sync does with a sheet value that fails ``schema``.
+    ``render`` is ``"unformatted"`` or ``"formatted"``: how every read of the
+    tab reads its cells (:func:`~gdrives.sheets.table.read_tab`).
     ``clear_links`` leaves the cells a sync or a push writes with no link,
     where the Sheets API links a URL when it is written. ``sheet_id`` names
     the tab by its ``sheetId``, which a rename leaves as it is: the tab is
     then found by it, and ``title`` is what reports and the base file call
-    the tab.
+    the tab. ``entry`` names an entry of ``local``, a ``.json`` file
+    holding several: the tab's local side is then that entry
+    (:class:`~gdrives.sheets.stores.JsonEntryStore`). ``link_urls`` is a
+    ``#rrggbb`` colour: after a write, each URL cell the run wrote is given a
+    link to its own text in that colour, not underlined
+    (:func:`~gdrives.sheets.structure.set_url_links`). It contradicts
+    ``clear_links``.
+    ``strict_schema`` makes it a problem for a column of either side, less one
+    a run is dropping, to have no ``schema`` entry: a carried local column and
+    a sheet column outside the projection are checked too, not just the
+    projection. With it, ``schema`` may also name a column outside
+    ``columns``, which is refused otherwise.
+    ``hooks`` maps a hook (:data:`HOOKS`) to the ``module:function`` that
+    runs as it, only named here: nothing is imported until a run starts
+    (:func:`~gdrives.sheets.hooks.resolve_hooks`). A push tab takes no
+    ``transform``.
+    ``typed_writes`` writes each column ``schema`` declares ``int``,
+    ``float``, ``bool``, ``date``, or ``datetime``, less the key, as a value
+    of that type rather than as text, on a sync or a push
+    (:mod:`~gdrives.sheets.typed`). It needs ``render`` ``unformatted``.
     """
 
     title: str
@@ -137,6 +175,7 @@ class TabConfig:
     mode: str = "sync"
     key: tuple[str, ...] = ()
     columns: tuple[str, ...] | None = None
+    exclude: tuple[str, ...] = ()
     local_owned: tuple[str, ...] = ()
     sheet_owned: tuple[str, ...] = ()
     owns_rows: bool = False
@@ -148,15 +187,43 @@ class TabConfig:
     newline: str = "lf"
     blank_keys: str = "refuse"
     on_invalid: str = "refuse"
+    render: str = "unformatted"
     clear_links: bool = False
     sheet_id: int | None = None
+    strict_schema: bool = False
     store: Store | None = None
+    entry: str | None = None
+    link_urls: str | None = None
+    hooks: Mapping[str, str] = field(default_factory=dict)
+    typed_writes: bool = False
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
             raise ValueError(
                 f"tab {self.title!r}: give 'local', a file path, or 'store'"
             )
+        if self.exclude and self.columns is not None:
+            raise ValueError(
+                f"tab {self.title!r}: 'exclude' and 'columns' contradict each other"
+            )
+        if self.entry is not None and (
+            self.local is None or self.local.suffix.lower() != ".json"
+        ):
+            raise ValueError(f"tab {self.title!r}: 'entry' needs a .json 'local'")
+        if self.link_urls is not None:
+            if self.clear_links:
+                raise ValueError(
+                    f"tab {self.title!r}: 'link_urls' and 'clear_links' "
+                    "contradict each other"
+                )
+            _rgb(self.link_urls)
+        if self.typed_writes and self.render != "unformatted":
+            raise ValueError(
+                f"tab {self.title!r}: 'typed_writes' needs 'render' unformatted"
+            )
+        hook_problems = _hook_problems(self.hooks, self.mode)
+        if hook_problems:
+            raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
 
     @property
     def types(self) -> dict[str, str]:
@@ -168,11 +235,14 @@ class TabConfig:
         """The store of the local side: ``store``, or the file at ``local``.
 
         The file is read and written with the tab's ``types``, ``bom``, and
-        ``newline``.
+        ``newline``; with an ``entry``, it is that entry of the file, typed by
+        ``types``.
         """
         if self.store is not None:
             return self.store
         assert self.local is not None  # __post_init__ refused a tab with neither
+        if self.entry is not None:
+            return JsonEntryStore(self.local, self.entry, types=self.types)
         return FileStore(
             self.local, types=self.types, bom=self.bom, newline=self.newline
         )
@@ -184,15 +254,21 @@ class Target:
 
     ``spreadsheet`` is the URL, file ID, or Drive path as written in the
     config. ``base`` is the absolute directory holding the base snapshots,
-    one CSV per tab. ``base_stores`` maps a tab's title to the store that
-    holds its base instead, for a base kept somewhere else; ``base`` is
-    unused for a tab it names.
+    one CSV per tab, or None for a target built in code whose every sync tab
+    has an entry in ``base_stores``: pull and push tabs never read a base, so
+    a target of only those needs neither ``base`` nor ``base_stores``.
+    ``base_stores`` maps a tab's title to the store that holds its base
+    instead, for a base kept somewhere else; ``base`` is unused for a tab it
+    names. A config's ``base_file`` becomes one
+    :class:`~gdrives.sheets.stores.JsonEntryStore` here for each sync tab,
+    the entry named by the tab's title and typed by its schema. A config
+    always sets ``base``, to a default directory when none is given.
     """
 
     name: str
     spreadsheet: str
-    base: Path
-    tabs: tuple[TabConfig, ...]
+    base: Path | None = None
+    tabs: tuple[TabConfig, ...] = ()
     input_option: str = RAW
     base_stores: Mapping[str, Store] = field(default_factory=dict)
 
@@ -207,14 +283,24 @@ class Target:
         )
 
     def base_path(self, tab: TabConfig) -> Path:
-        """The base snapshot file of ``tab``: one CSV per tab, named by title."""
+        """The base snapshot file of ``tab``: one CSV per tab, named by title.
+
+        Raises ValueError when ``base`` is None: a target built in code with
+        no ``base`` directory and no entry for ``tab`` in ``base_stores``.
+        """
+        if self.base is None:
+            raise ValueError(
+                f"target {self.name!r} has no base directory, and tab "
+                f"{tab.title!r} has no entry in base_stores"
+            )
         return self.base / f"{safe_filename(tab.title)}.csv"
 
     def base_store(self, tab: TabConfig) -> Store:
         """The store of ``tab``'s base: its entry in ``base_stores``, or the file.
 
         The file is the one at :meth:`base_path`, written with the tab's
-        ``newline``.
+        ``newline``; :meth:`base_path` is reached, and can raise, only for a
+        tab with no entry in ``base_stores``.
         """
         if tab.title in self.base_stores:
             return self.base_stores[tab.title]
@@ -293,6 +379,19 @@ def parse_config(data: Any, path: Path) -> Config:
 # -- checking --
 
 
+def _with_defaults(tab: TabConfig, defaults: Mapping[str, str]) -> TabConfig:
+    """``tab`` with its target's ``hooks`` under its own, hook by hook.
+
+    A push tab is not given the target's ``transform``.
+    """
+    given = {
+        hook: name
+        for hook, name in defaults.items()
+        if not (hook == "transform" and tab.mode == "push")
+    }
+    return replace(tab, hooks={**given, **tab.hooks})
+
+
 def _is_names(value: Any) -> bool:
     """True for a list of non-blank strings."""
     return isinstance(value, list) and all(
@@ -303,6 +402,30 @@ def _is_names(value: Any) -> bool:
 def _is_scalar(value: Any) -> bool:
     """True for a value that can be one cell: a string, number, or boolean."""
     return isinstance(value, (str, int, float, bool))
+
+
+def _is_hook_name(value: Any) -> bool:
+    """True for a string of the form ``module:function``, dotted module allowed."""
+    if not isinstance(value, str) or value.count(":") != 1:
+        return False
+    module, function = value.split(":")
+    return function.isidentifier() and all(
+        part.isidentifier() for part in module.split(".")
+    )
+
+
+def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
+    """What is wrong with a tab's ``hooks`` of the given ``mode``, by form alone."""
+    found: list[str] = []
+    unknown = sorted(set(hooks) - set(HOOKS))
+    if unknown:
+        found.append(f"'hooks' names unknown hook(s) {unknown}; hooks: {sorted(HOOKS)}")
+    for hook, name in hooks.items():
+        if hook in HOOKS and not _is_hook_name(name):
+            found.append(f"hook {hook!r} must be 'module:function', not {name!r}")
+    if mode == "push" and "transform" in hooks:
+        found.append("hook 'transform' applies only to pull and sync tabs")
+    return found
 
 
 def _repeated(names: Sequence[str]) -> list[str]:
@@ -353,6 +476,8 @@ class _Checker:
                     "directory, which is a cache; keep the base where it is "
                     "committed"
                 )
+        base_file = self._base_file(where, raw)
+        defaults = self._hooks(where, raw, "sync")
 
         input_option = raw.get("input_option", RAW)
         if input_option not in INPUT_OPTIONS:
@@ -372,6 +497,8 @@ class _Checker:
                 tab = self.tab(where, title, raw_tab)
                 if tab is None:
                     continue
+                if defaults:
+                    tab = _with_defaults(tab, defaults)
                 named = [t.title for t in tabs if t.sheet_id == tab.sheet_id]
                 if tab.sheet_id is not None and named:
                     problems.append(
@@ -385,45 +512,109 @@ class _Checker:
                         f"USER_ENTERED rewrites values, so they would never "
                         f"read back as written"
                     )
+                elif tab.typed_writes and input_option == USER_ENTERED:
+                    problems.append(
+                        f"{where}, tab {title!r}: 'typed_writes' sends values "
+                        "itself; the target's USER_ENTERED contradicts it"
+                    )
         if len(problems) > start:
             return None
+        base_stores: dict[str, Store] = {}
+        if base_file is not None:
+            base_stores = {
+                tab.title: JsonEntryStore(base_file, tab.title, types=tab.types)
+                for tab in tabs
+                if tab.mode == "sync"
+            }
         return Target(
             name=name,
             spreadsheet=str(spreadsheet),
             base=base,
             tabs=tuple(tabs),
             input_option=str(input_option),
+            base_stores=base_stores,
         )
 
-    def collisions(self, targets: Iterable[Target]) -> None:
-        """Refuse a file that two tabs would write, across the whole config.
+    def _base_file(self, where: str, raw: Mapping[str, Any]) -> Path | None:
+        """The target's ``base_file``, or None when it has none or it is refused."""
+        if "base_file" not in raw:
+            return None
+        text = raw["base_file"]
+        if "base" in raw:
+            self.problems.append(
+                f"{where}: 'base' and 'base_file' contradict each other"
+            )
+        if not isinstance(text, str) or not text.strip():
+            self.problems.append(f"{where}: 'base_file' must be a .json file path")
+            return None
+        path = self._path(text)
+        if path.suffix.lower() != ".json":
+            self.problems.append(f"{where}: 'base_file' {text!r} must end in .json")
+            return None
+        if _CACHE_DIR in path.parts:
+            self.problems.append(
+                f"{where}: 'base_file' {text!r} is inside a {_CACHE_DIR} "
+                "directory, which is a cache; keep the base where it is "
+                "committed"
+            )
+        return path
 
-        A sync or pull tab writes its local file, and a sync tab its base file;
-        a push tab only reads its local file, so push tabs may share one. Paths
-        are compared case-folded, since on a case-insensitive filesystem
-        ``Notes.csv`` and ``notes.csv`` are one file. Only files are checked:
-        a caller that gives a tab a store of its own owns this check.
+    def collisions(self, targets: Iterable[Target]) -> None:
+        """Refuse a file, or an entry of one, that two tabs would write.
+
+        Checked across the whole config. A sync or pull tab writes its local
+        side, and a sync tab its base; a push tab only reads its local side,
+        so push tabs may share one. A writer is keyed by its path and its
+        entry (None for a whole file): two entries of one file may be written
+        by two tabs, and the same entry, or a whole file and an entry of it,
+        may not. Paths are compared case-folded, since on a case-insensitive
+        filesystem ``Notes.csv`` and ``notes.csv`` are one file. Only a
+        :class:`FileStore` or a :class:`JsonEntryStore` is checked: a caller
+        that gives a tab a store of its own owns this check.
         """
-        writers: dict[str, list[str]] = {}
+        writers: dict[str, dict[str | None, list[str]]] = {}
         paths: dict[str, Path] = {}
         for target in targets:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
-                files: list[tuple[Path, str]] = []
-                if tab.mode != "push" and tab.local is not None:
-                    files.append((tab.local, f"{where} (local file)"))
-                if tab.mode == "sync":
-                    files.append((target.base_path(tab), f"{where} (base)"))
-                for path, role in files:
+                stores: list[tuple[Store, str]] = []
+                if tab.mode != "push":
+                    stores.append((tab.local_store, f"{where} (local file)"))
+                # A target built in code may have no base for the tab: that is
+                # the run's to refuse, and there is no file to collide here.
+                based = target.base is not None or tab.title in target.base_stores
+                if tab.mode == "sync" and based:
+                    stores.append((target.base_store(tab), f"{where} (base)"))
+                for store, role in stores:
+                    if isinstance(store, FileStore):
+                        path, entry = store.path, None
+                    elif isinstance(store, JsonEntryStore):
+                        path, entry = store.path, store.entry
+                    else:
+                        continue
                     folded = str(path).casefold()
-                    writers.setdefault(folded, []).append(role)
+                    writers.setdefault(folded, {}).setdefault(entry, []).append(role)
                     paths.setdefault(folded, path)
-        for folded, roles in writers.items():
-            if len(roles) > 1:
+        for folded, entries in writers.items():
+            whole = entries.pop(None, [])
+            if whole and entries:
+                roles = whole + [role for named in entries.values() for role in named]
                 self.problems.append(
-                    f"{paths[folded]} would be written by more than one tab: "
+                    f"{paths[folded]} would be written whole and by entry: "
                     + "; ".join(roles)
                 )
+                continue
+            if len(whole) > 1:
+                self.problems.append(
+                    f"{paths[folded]} would be written by more than one tab: "
+                    + "; ".join(whole)
+                )
+            for entry, roles in entries.items():
+                if len(roles) > 1:
+                    self.problems.append(
+                        f"{paths[folded]} [{entry}] would be written by more than "
+                        "one tab: " + "; ".join(roles)
+                    )
 
     def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:
         where = f"{target}, tab {title!r}"
@@ -451,8 +642,15 @@ class _Checker:
                 problems.append(f"{where}: 'widths' do not apply to a pull tab")
             if mode == "pull" and "clear_links" in raw:
                 problems.append(f"{where}: 'clear_links' does not apply to a pull tab")
+            if mode == "pull" and "link_urls" in raw:
+                problems.append(f"{where}: 'link_urls' does not apply to a pull tab")
+            if mode == "pull" and "typed_writes" in raw:
+                problems.append(f"{where}: 'typed_writes' does not apply to a pull tab")
+        if mode != "pull" and "exclude" in raw:
+            problems.append(f"{where}: 'exclude' applies only to a pull tab")
 
         local = self._local(where, raw)
+        entry = self._entry(where, raw, local)
         bom = raw.get("bom", False)
         if not isinstance(bom, bool):
             problems.append(f"{where}: 'bom' must be true or false")
@@ -476,6 +674,9 @@ class _Checker:
                 f"not {blank_keys!r}"
             )
         columns = self._columns(where, raw)
+        exclude = self._names(where, raw, "exclude")
+        if exclude and columns is not None:
+            problems.append(f"{where}: 'exclude' and 'columns' contradict each other")
         local_owned = self._names(where, raw, "local_owned")
         sheet_owned = self._names(where, raw, "sheet_owned")
         self._ownership(where, key, columns, local_owned, sheet_owned)
@@ -501,15 +702,49 @@ class _Checker:
         clear_links = raw.get("clear_links", False)
         if not isinstance(clear_links, bool):
             problems.append(f"{where}: 'clear_links' must be true or false")
+        link_urls = self._link_urls(where, raw)
+        hooks = self._hooks(where, raw, str(mode))
+        if link_urls is not None and clear_links is True:
+            problems.append(
+                f"{where}: 'link_urls' and 'clear_links' contradict each other"
+            )
         on_invalid = raw.get("on_invalid", "refuse")
         if not isinstance(on_invalid, str) or on_invalid not in ON_INVALID:
             problems.append(
                 f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
                 f"not {on_invalid!r}"
             )
-        schema = self._schema(where, raw.get("schema", {}), columns)
+        render = raw.get("render", "unformatted")
+        if not isinstance(render, str) or render not in RENDERS:
+            problems.append(
+                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
+            )
+        strict_schema = raw.get("strict_schema", False)
+        if not isinstance(strict_schema, bool):
+            problems.append(f"{where}: 'strict_schema' must be true or false")
+            strict_schema = False
+        typed_writes = raw.get("typed_writes", False)
+        if not isinstance(typed_writes, bool):
+            problems.append(f"{where}: 'typed_writes' must be true or false")
+        elif typed_writes and render == "formatted":
+            problems.append(
+                f"{where}: 'typed_writes' needs 'render' unformatted: a formatted "
+                "read returns what a number format shows, not the value written"
+            )
+        schema = self._schema(where, raw.get("schema", {}), columns, strict_schema)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
+        for what, names in (
+            ("key", key),
+            ("schema", list(schema)),
+            ("widths", list(widths)),
+        ):
+            excluded = sorted(set(names) & set(exclude))
+            if excluded:
+                problems.append(
+                    f"{where}: 'exclude' names {what} column(s) {excluded}, which "
+                    "would be read anyway"
+                )
 
         if len(problems) > start or local is None:
             return None
@@ -519,6 +754,7 @@ class _Checker:
             mode=str(mode),
             key=tuple(key),
             columns=tuple(columns) if columns is not None else None,
+            exclude=tuple(exclude),
             local_owned=tuple(local_owned),
             sheet_owned=tuple(sheet_owned),
             owns_rows=bool(owns_rows),
@@ -530,9 +766,69 @@ class _Checker:
             newline=str(newline),
             blank_keys=str(blank_keys),
             on_invalid=str(on_invalid),
+            render=str(render),
             clear_links=bool(clear_links),
             sheet_id=sheet_id,
+            entry=entry,
+            link_urls=link_urls,
+            strict_schema=bool(strict_schema),
+            hooks=hooks,
+            typed_writes=bool(typed_writes),
         )
+
+    def _hooks(self, where: str, raw: Mapping[str, Any], mode: str) -> dict[str, str]:
+        """The ``hooks`` of a tab or a target, checked by form; empty when refused.
+
+        A target's hooks are checked as a sync tab's, since a sync tab takes
+        every hook.
+        """
+        if "hooks" not in raw:
+            return {}
+        given = raw["hooks"]
+        if not isinstance(given, dict) or not given:
+            self.problems.append(
+                f"{where}: 'hooks' must be an object naming one or more of "
+                f"{sorted(HOOKS)}"
+            )
+            return {}
+        found = _hook_problems(given, mode)
+        self.problems.extend(f"{where}: {problem}" for problem in found)
+        return {} if found else {str(hook): str(name) for hook, name in given.items()}
+
+    def _link_urls(self, where: str, raw: Mapping[str, Any]) -> str | None:
+        """The colour of the tab's ``link_urls``; None when absent or refused."""
+        if "link_urls" not in raw:
+            return None
+        given = raw["link_urls"]
+        if not isinstance(given, dict) or set(given) != {"color"}:
+            self.problems.append(
+                f"{where}: 'link_urls' must be an object with one field, 'color'"
+            )
+            return None
+        color = given["color"]
+        try:
+            _rgb(color)
+        except ValueError:
+            self.problems.append(
+                f"{where}: 'link_urls' color must be '#rrggbb', not {color!r}"
+            )
+            return None
+        return str(color)
+
+    def _entry(
+        self, where: str, raw: Mapping[str, Any], local: Path | None
+    ) -> str | None:
+        """The tab's ``entry``, or None when it has none or it is refused."""
+        if "entry" not in raw:
+            return None
+        entry = raw["entry"]
+        if not isinstance(entry, str) or not entry.strip():
+            self.problems.append(f"{where}: 'entry' must be a non-blank string")
+            return None
+        if local is not None and local.suffix.lower() != ".json":
+            self.problems.append(f"{where}: 'entry' needs a .json 'local'")
+            return None
+        return entry
 
     def _local(self, where: str, raw: Mapping[str, Any]) -> Path | None:
         text = raw.get("local")
@@ -604,7 +900,11 @@ class _Checker:
             )
 
     def _schema(
-        self, where: str, raw: Any, columns: Sequence[str] | None
+        self,
+        where: str,
+        raw: Any,
+        columns: Sequence[str] | None,
+        strict_schema: bool = False,
     ) -> dict[str, ColumnSchema]:
         problems = self.problems
         if not isinstance(raw, dict):
@@ -625,6 +925,8 @@ class _Checker:
             type_ = spec.get("type", "str")
             required = spec.get("required", False)
             allowed = spec.get("allowed")
+            present = spec.get("present", False)
+            strict = spec.get("strict", False)
             ok = not unknown
             if type_ not in COLUMN_TYPES:
                 problems.append(
@@ -641,13 +943,28 @@ class _Checker:
             ):
                 problems.append(f"{at}: 'allowed' must be a list of one or more values")
                 ok = False
+            if not isinstance(present, bool):
+                problems.append(f"{at}: 'present' must be true or false")
+                ok = False
+            if not isinstance(strict, bool):
+                problems.append(f"{at}: 'strict' must be true or false")
+                ok = False
+            elif strict and type_ in COLUMN_TYPES and type_ not in STRICT_TYPES:
+                problems.append(
+                    f"{at}: 'strict' is only for a column of "
+                    f"{sorted(STRICT_TYPES)}, not {type_!r}"
+                )
+                ok = False
             if ok:
                 schema[column] = ColumnSchema(
                     type=str(type_),
                     required=bool(required),
                     allowed=tuple(allowed) if allowed is not None else None,
+                    present=bool(present),
+                    strict=bool(strict),
                 )
-        self._outside(where, "schema", list(raw), columns)
+        if not strict_schema:
+            self._outside(where, "schema", list(raw), columns)
         return schema
 
     def _insert_above(

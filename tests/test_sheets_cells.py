@@ -263,6 +263,40 @@ class TestCellProblem:
         assert cell_problem("", ColumnSchema(type="int")) is None
         assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
 
+    @pytest.mark.parametrize("text", ["true", "True"])
+    def test_a_respelled_bool_is_a_problem_only_under_strict(self, text):
+        assert cell_problem(text, ColumnSchema(type="bool")) is None
+        assert cell_problem(text, ColumnSchema(type="bool", strict=True)) == (
+            f"{text!r} is not TRUE or FALSE, and the column is strict"
+        )
+
+    @pytest.mark.parametrize("text", ["TRUE", "FALSE"])
+    def test_the_strict_bool_forms_pass(self, text):
+        assert cell_problem(text, ColumnSchema(type="bool", strict=True)) is None
+
+    @pytest.mark.parametrize("text", ["20260927", "2026-W39-7"])
+    def test_another_iso_date_form_is_a_problem_only_under_strict(self, text):
+        assert cell_problem(text, ColumnSchema(type="date")) is None
+        assert cell_problem(text, ColumnSchema(type="date", strict=True)) == (
+            f"{text!r} is not YYYY-MM-DD, and the column is strict"
+        )
+
+    def test_the_strict_date_form_passes(self):
+        schema = ColumnSchema(type="date", strict=True)
+        assert cell_problem("2026-09-27", schema) is None
+
+    def test_an_invalid_date_is_a_problem_either_way(self):
+        problem = "'2026-02-30' is not a valid date"
+        assert cell_problem("2026-02-30", ColumnSchema(type="date")) == problem
+        assert cell_problem("2026-02-30", ColumnSchema(type="date", strict=True)) == (
+            problem
+        )
+
+    def test_a_blank_strict_cell_is_checked_by_required_only(self):
+        assert cell_problem("", ColumnSchema(type="bool", strict=True)) is None
+        schema = ColumnSchema(type="bool", strict=True, required=True)
+        assert cell_problem("", schema) == "is required"
+
 
 class TestSerialToCell:
     """Serial numbers count days from 1899-12-30, as a live read confirmed."""
@@ -292,30 +326,48 @@ class TestSerialToCell:
     @pytest.mark.parametrize(
         ("seconds", "text"),
         [
-            (0, "2026-09-27 00:00:00"),
-            (10 * 3600 + 30 * 60 + 15, "2026-09-27 10:30:15"),
-            (10 * 3600 + 30 * 60 + 15.123, "2026-09-27 10:30:15.123000"),
-            (86399.999, "2026-09-27 23:59:59.999000"),
-            (43200, "2026-09-27 12:00:00"),
+            (0, "2026-09-27 00:00:00.000"),
+            (10 * 3600 + 30 * 60 + 15, "2026-09-27 10:30:15.000"),
+            (10 * 3600 + 30 * 60 + 15.123, "2026-09-27 10:30:15.123"),
+            (86399.999, "2026-09-27 23:59:59.999"),
+            (43200, "2026-09-27 12:00:00.000"),
+            (0.1, "2026-09-27 00:00:00.100"),
         ],
     )
     def test_a_datetime_keeps_the_millisecond(self, seconds, text):
         assert serial_to_cell(self.DAY + seconds / 86400, "datetime") == text
         assert serial_to_cell(self.DAY + seconds / 86400, datetime) == text
 
-    def test_a_datetime_is_written_as_to_cell_writes_one(self):
-        moment = datetime(2026, 9, 27, 10, 30, 15, 123000)
-        assert serial_to_cell(46292 + 37815.123 / 86400, "datetime") == to_cell(moment)
-        assert serial_to_cell(46292.43767361111, "datetime") == "2026-09-27 10:30:15"
+    def test_every_datetime_has_one_width(self):
+        # str() of a datetime drops a zero fraction; the serial form never does.
+        texts = [
+            serial_to_cell(self.DAY + seconds / 86400, "datetime")
+            for seconds in (0, 37815, 37815.12, 37815.123, 86399.999)
+        ]
+        assert {len(text) for text in texts} == {len("2026-09-27 10:30:15.123")}
+
+    @pytest.mark.parametrize("seconds", [0, 37815, 37815.1, 37815.123, 86399.999])
+    def test_a_datetime_reads_back_and_compares_as_to_cell_writes_it(self, seconds):
+        text = serial_to_cell(self.DAY + seconds / 86400, "datetime")
+        moment = from_cell(text, "datetime")
+        assert isinstance(moment, datetime)
+        assert moment.isoformat(sep=" ", timespec="milliseconds") == text
+        # The form to_cell writes, as old base files hold it, is the same value.
+        assert normalize_cell(text, "datetime") == normalize_cell(
+            to_cell(moment), "datetime"
+        )
+        assert serial_to_cell(46292.43767361111, "datetime") == (
+            "2026-09-27 10:30:15.000"
+        )
 
     def test_below_a_millisecond_is_rounded_away(self):
         assert serial_to_cell(46292 + 0.0004 / 86400, "datetime") == (
-            "2026-09-27 00:00:00"
+            "2026-09-27 00:00:00.000"
         )
         assert serial_to_cell(46292 + 0.0004 / 86400, "date") == "2026-09-27"
 
     def test_a_serial_before_the_epoch(self):
-        assert serial_to_cell(-1.5, "datetime") == "1899-12-28 12:00:00"
+        assert serial_to_cell(-1.5, "datetime") == "1899-12-28 12:00:00.000"
         assert serial_to_cell(-693593, "date") == "0001-01-01"
 
     @pytest.mark.parametrize(
@@ -620,9 +672,26 @@ class TestColumnSchema:
         schema = ColumnSchema()
         assert (schema.type, schema.required, schema.allowed) == ("str", False, None)
 
+    def test_present_and_strict_default_to_false(self):
+        schema = ColumnSchema()
+        assert (schema.present, schema.strict) == (False, False)
+
     def test_unknown_type_is_refused(self):
         with pytest.raises(ValueError, match="unknown column type 'money'"):
             ColumnSchema(type="money")
+
+    @pytest.mark.parametrize("type_", ["bool", "date"])
+    def test_strict_is_accepted_for_bool_and_date(self, type_):
+        schema = ColumnSchema(type=type_, strict=True)
+        assert schema.strict is True
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "datetime"])
+    def test_strict_is_refused_for_any_other_type(self, type_):
+        with pytest.raises(
+            ValueError,
+            match=r"strict is only for a column of \['bool', 'date'\]",
+        ):
+            ColumnSchema(type=type_, strict=True)
 
 
 class TestColumnSchemaOf:
@@ -643,6 +712,10 @@ class TestColumnSchemaOf:
     def test_the_constructor_still_refuses_a_class(self):
         with pytest.raises(ValueError, match="unknown column type"):
             ColumnSchema(type=int)  # pyrefly: ignore[bad-argument-type]
+
+    def test_present_and_strict_pass_through(self):
+        schema = ColumnSchema.of("bool", present=True, strict=True)
+        assert schema == ColumnSchema(type="bool", present=True, strict=True)
 
 
 class TestProblems:

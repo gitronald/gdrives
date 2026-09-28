@@ -79,37 +79,73 @@ answer, not an assumed one.
    `_TOKEN_NAMES` (the current `gdrives_token_drive.json` name is derived, so a
    scope change silently renames the token file to
    `gdrives_token_drive-metadata.json` — decide whether to pin the old name for
-   continuity or let the derived name change).
+   continuity or let the derived name change). The choice decides more than the
+   file name: a token is looked for at the historical name first and then at
+   the derived one (`_token_paths`), so a pinned name is also what puts the old
+   full-scope token back in the lookup (step 4).
+
+   `gdrives login --scope drive` grants `LOGIN_SCOPES["drive"]`, which is
+   `DRIVE_WRITE_SCOPES`, so it follows the constant and grants `drive.metadata`
+   with no further change. Decide whether the name `drive` still says what it
+   grants, and reword its `--scope` help either way.
 
 3. **If some path fails**, document which call needs the broader scope and why,
    and record the decision to keep `drive` — an answered question closed as
    `retired` is a valid outcome here.
 
-4. **Migration.** A user re-consents once on the next `mv` whichever filename
-   step 2 settles on. `_token_covers` compares scope strings literally
-   (`set(scopes) <= set(granted)`), so a cached full-`drive` grant does not
-   cover a `drive.metadata` request even though it is broader: under a pinned
-   name the old token is discarded and re-authorized, and under the derived
-   name it is never opened at all. Confirm that path actually fires rather than
-   assuming it.
+4. **Migration.** What an existing user meets on the next `mv` depends on the
+   filename step 2 settles on, because a cached grant now serves the scopes it
+   implies: `_covers` tests a request against the grant and everything
+   `_IMPLIES` lists for it, and `drive` implies `drive.metadata`
+   ([plan 008](../008-oauth-token-and-consent-safety/plan.md)).
 
-   The derived name leaves the old full-scope `gdrives_token_drive.json` on
-   disk, orphaned but still holding a live refresh token — the exact exposure
-   this plan exists to remove. Decide how it is retired: delete it when the new
-   token is written, warn that it exists, or document the manual removal and
-   revocation. Deleting the file does not revoke the grant, so the docs should
-   say how to revoke it from the Google account as well.
+   - Under a **pinned** name the old full-`drive` token is found first, covers
+     the request by implication, and is loaded with the scopes it records. No
+     consent runs, and `mv` goes on using the full-scope token: the narrowing
+     reaches new users only. A consent that does run later (the old token's
+     refresh was refused) does not replace the file either, since it holds a
+     grant the new one does not include: the new token goes to the derived
+     name, with a warning, and the old file stays first in the lookup.
+   - Under the **derived** name the old file is never opened, and the user
+     consents once where a consent can run (client secrets, and a terminal or
+     `gdrives login`). Where none can, the run falls through to a service
+     account or ADC as it does today.
+
+   Confirm whichever path is chosen actually fires rather than assuming it.
+
+   Either way the old full-scope `gdrives_token_drive.json` stays on disk
+   holding a live refresh token — the exact exposure this plan exists to
+   remove — and under a pinned name it stays in use as well. Decide how it is
+   retired: warn that it exists, or document the manual removal and
+   revocation. Deleting it from code is at odds with plan 008, under which no
+   consent replaces a file holding a grant the new one does not include, since
+   the file may be a token its owner still needs; if this plan deletes it
+   anyway, say why that rule does not apply here. Deleting the file does not
+   revoke the grant, so the docs should say how to revoke it from the Google
+   account as well.
 
 5. **Update the docs** that name the scope: `README.md` (auth section and the
    `mv` section), `docs/setup-oauth.md`, `docs/setup-service-account.md` (the
    Contributor sharing note), `docs/setup-adc.md` (the ADC login scope), and the
-   `mv` module docstring in `gdrives/mv.py`.
+   `mv` module docstring in `gdrives/mv.py`. Since plan 008 there is more that
+   names it: the two token tables and the `gdrives login --scope drive` line in
+   `docs/setup-oauth.md`, the `--scope` help of `login` in `gdrives/cli.py`,
+   the comment above `DRIVE_WRITE_SCOPES` in `gdrives/auth.py`, the token list
+   under "Security & privacy" in `README.md`, and the `mv` and token
+   paragraphs of `.claude/CLAUDE.md`.
 
 6. **Tests.** The unit tests mock the Drive service, so they assert the scope
    constant rather than the API's behavior. The `mv` scope test compares against
    `DRIVE_WRITE_SCOPES` itself, not the literal URL, so it passes unchanged; add
    tests for whatever step 2 and step 4 introduce (a pinned token name, handling
    of the old token file), and keep coverage at the `fail_under` floor.
+
+   `tests/test_auth.py` does not pass unchanged. Plan 008's tests use
+   `DRIVE_WRITE_SCOPES` as their full-`drive` grant: one that covers a
+   `spreadsheets` and `documents` request, and a caller's own token that
+   serves a Sheets request. `drive.metadata` implies neither, so those tests
+   fail once the constant narrows. Give them the full `drive` scope by its URL,
+   or by a name of its own, before the constant changes.
 
 ### Out of scope
 
@@ -122,6 +158,13 @@ answer, not an assumed one.
 Both `drive` and `drive.metadata` are *restricted* scopes under Google's
 verification policy, so narrowing does not change the app-verification posture —
 only the blast radius of a leaked token.
+
+Plan [009](../009-drive-upload-and-sheet-create/plan.md) proposes commands that
+request the full `drive` scope and cache it in `gdrives_token_drive.json`. If it
+lands, that file is a token in use and not a leftover, which bears on how step 4
+retires it. Plan 009 expects the broader token to serve `mv` too; that holds
+only under a pinned name, since under the derived name `mv` never opens that
+file.
 
 ## Log
 
@@ -140,3 +183,37 @@ Corrections made to the spec:
 - Step 6 no longer asks for an assert update that is not needed.
 - Step 1 notes the service-account shortcut and the absence of live `mv` tests,
   and adds the folder-move path.
+
+### 2026-09-27 — Revised for plan 008's token handling
+
+Plan [008](../008-oauth-token-and-consent-safety/plan.md) shipped in v0.12.0,
+after the review above, and changed what this plan's migration rests on. Checked
+against `gdrives/auth.py` at v0.13.0. The premises of the plan itself still
+hold: `DRIVE_WRITE_SCOPES` is the full `drive` scope and `mv` is its only
+consumer outside `LOGIN_SCOPES`.
+
+What changed:
+
+- A grant serves the scopes it implies (`_covers`, `_IMPLIES`), and `drive`
+  implies `drive.metadata`. The entry above says an old full-`drive` token
+  cannot be reused for a narrower request; that was true of the literal
+  comparison, which is gone, and `_token_covers` with it.
+- A token is looked for in two places, the historical name and then the derived
+  one (`_token_paths`).
+- A consent never replaces a file holding a grant the new one does not include
+  (`_consent_path`, `_write_consent_token`).
+- `gdrives login --scope drive` exists, and grants `DRIVE_WRITE_SCOPES`.
+
+Corrections made to the spec:
+
+- Step 2 says that the filename also decides whether the old token is in the
+  lookup, and asks what `--scope drive` should be called.
+- Step 4 is rewritten by filename: a pinned name keeps the full-scope token in
+  use with no consent, and the derived name leaves it unopened. Retiring the old
+  file is weighed against plan 008's rule on replacing tokens.
+- Step 5 lists the docs and help text plan 008 added.
+- Step 6 names the `tests/test_auth.py` tests that use `DRIVE_WRITE_SCOPES` as
+  a full-`drive` grant and fail once it narrows.
+- The Notes record the order with plan 009.
+
+Nothing was implemented, and step 1's live check has not been run.

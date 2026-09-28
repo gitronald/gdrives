@@ -11,7 +11,7 @@ from datetime import date, datetime
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
+from helpers import LINK_BLUE, FakeSheetGrid, http_error
 
 
 def batch(grid, *requests):
@@ -323,6 +323,94 @@ class TestDimensions:
             batch(grid, {"updateDimensionProperties": request})
 
 
+def move(start, to, end=None, sheet_id=0):
+    """A ``moveDimension`` of rows ``start`` to ``end`` (one row by default)."""
+    source = rows_dim(start, start + 1 if end is None else end, sheet_id)
+    return {"moveDimension": {"source": source, "destinationIndex": to}}
+
+
+class TestMoves:
+    """The rule the live API was seen to follow, on rows id, A to E of 8."""
+
+    ROWS = [["id"], ["A"], ["B"], ["C"], ["D"], ["E"]]
+
+    def grid(self):
+        return FakeSheetGrid({"T": self.ROWS}, rows=8)
+
+    def ids(self, grid):
+        return [row[0] for row in grid.values("T")[1:]]
+
+    @pytest.mark.parametrize(
+        ("start", "to", "after"),
+        [
+            # The destination is counted before the row is taken out: a row
+            # moved down lands directly before the row that was at `to`.
+            (1, 4, "BCADE"),
+            (5, 1, "EABCD"),
+            (1, 6, "BCDEA"),
+            # The index just past the row moves nothing.
+            (1, 2, "ABCDE"),
+        ],
+    )
+    def test_the_destination_is_counted_before_the_row_moves(self, start, to, after):
+        grid = self.grid()
+        batch(grid, move(start, to))
+        assert self.ids(grid) == list(after)
+        assert grid.tab("T").row_count == 8
+
+    def test_requests_in_a_batch_apply_in_order(self):
+        grid = self.grid()
+        batch(grid, move(1, 4), move(1, 6))
+        assert self.ids(grid) == list("CADEB")
+
+    def test_a_block_of_rows_moves_together(self):
+        grid = self.grid()
+        batch(grid, move(1, 5, end=3))
+        assert self.ids(grid) == list("CDABE")
+
+    def test_the_grid_s_last_row_is_a_destination(self):
+        grid = self.grid()
+        batch(grid, move(1, 8))
+        assert grid.values("T")[1:] == [["B"], ["C"], ["D"], ["E"], [], [], ["A"]]
+
+    def test_formats_move_with_their_rows(self):
+        grid = FakeSheetGrid({"T": [["id", "site"], ["A", "a.io"], ["B", ""]]})
+        grid.format("T", 3, 1)["bold"] = True
+        batch(grid, move(2, 1))
+        assert grid.values("T") == [["id", "site"], ["B"], ["A", "a.io"]]
+        assert grid.links("T") == {(3, 2): "http://a.io"}
+        assert grid.format("T", 2, 1) == {"bold": True}
+        assert grid.format("T", 3, 1) == {}
+
+    @pytest.mark.parametrize(
+        ("request_", "message"),
+        [
+            (move(1, 1), r"destinationIndex\[1\] must be outside"),
+            (move(1, 2, end=3), r"destinationIndex\[2\] must be outside"),
+            (move(1, 9), r"destinationIndex\[9\] is after last row\[8\]"),
+            (move(1, -1), "bad destinationIndex -1"),
+            (move(2, 0, end=2), "bad range 2:2"),
+            (move(7, 0, end=9), "bad range 7:9"),
+            (
+                {"moveDimension": {"source": cols_dim(0, 1), "destinationIndex": 2}},
+                "rows only",
+            ),
+        ],
+    )
+    def test_bad_moves_are_a_400(self, request_, message):
+        grid = self.grid()
+        with pytest.raises(HttpError, match=message) as raised:
+            batch(grid, request_)
+        assert status(raised) == 400
+        assert self.ids(grid) == list("ABCDE")
+
+    def test_a_failing_move_rolls_back_the_whole_batch(self):
+        grid = self.grid()
+        with pytest.raises(HttpError):
+            batch(grid, move(1, 4), move(1, 1))
+        assert self.ids(grid) == list("ABCDE")
+
+
 class TestUpdateCells:
     def cells(self, row, col, *rows, fields="userEnteredValue", sheet_id=0):
         return {
@@ -399,6 +487,7 @@ class TestUpdateCells:
 
 LINK = "userEnteredFormat.textFormat.link"
 BOLD = "userEnteredFormat.textFormat.bold"
+RUNS = "textFormatRuns"
 LINK_MASK = (
     "sheets(data(rowData(values(hyperlink,textFormatRuns(startIndex,format(link))))))"
 )
@@ -734,3 +823,98 @@ class TestHarness:
         assert [tab.title for tab in grid.tabs] == ["Sheet1"]
         with pytest.raises(KeyError):
             grid.tab("Nope")
+
+
+UNDERLINE = "userEnteredFormat.textFormat.underline"
+COLOR = "userEnteredFormat.textFormat.foregroundColorStyle"
+FORMAT_MASK = (
+    "sheets(data(rowData(values(hyperlink,textFormatRuns,"
+    "userEnteredFormat(textFormat),effectiveFormat(textFormat)))))"
+)
+GREEN = {"red": 0.2, "green": 0.6}
+A1 = {"startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 1}
+
+
+def one_cell(grid, range_="'T'!A1"):
+    """The one cell of a grid read of ``range_`` under ``FORMAT_MASK``."""
+    ((cell,),) = [
+        row["values"] for row in grid_read(grid, range_, FORMAT_MASK)["rowData"]
+    ]
+    return cell
+
+
+def set_link(uri, **text_format):
+    return {"userEnteredFormat": {"textFormat": {"link": {"uri": uri}, **text_format}}}
+
+
+class TestLinkFormats:
+    """How the API shows a link and takes one set as a format, as a probe found."""
+
+    URL = "https://example.com/a"
+
+    def test_a_written_url_is_underlined_and_blue_with_no_property_saying_so(self):
+        cell = one_cell(FakeSheetGrid({"T": [[self.URL]]}))
+        assert cell["hyperlink"] == self.URL
+        assert cell["userEnteredFormat"] == {"textFormat": {"link": {"uri": self.URL}}}
+        shown = cell["effectiveFormat"]["textFormat"]
+        assert shown["underline"] is True
+        assert shown["foregroundColorStyle"] == {"rgbColor": LINK_BLUE}
+        assert shown["foregroundColor"] == LINK_BLUE
+        assert "textFormatRuns" not in cell
+
+    def test_a_cleared_link_leaves_plain_text(self):
+        grid = FakeSheetGrid({"T": [[self.URL]]})
+        batch(grid, repeat(LINK, **A1))
+        cell = one_cell(grid)
+        assert "hyperlink" not in cell and "userEnteredFormat" not in cell
+        shown = cell["effectiveFormat"]["textFormat"]
+        assert shown["underline"] is False
+        assert shown["foregroundColorStyle"] == {"rgbColor": {}}
+
+    def test_a_link_set_as_the_cell_s_format_takes_and_repoints(self):
+        grid = FakeSheetGrid({"T": [["plain"]]})
+        batch(grid, repeat(LINK, set_link(self.URL), **A1))
+        assert one_cell(grid)["hyperlink"] == self.URL
+        batch(grid, repeat(LINK, set_link("https://elsewhere.io"), **A1))
+        assert grid.links("T") == {(1, 1): "https://elsewhere.io"}
+
+    def test_the_runs_and_the_link_in_one_request_drop_the_link(self):
+        grid = FakeSheetGrid({"T": [["see the docs"]]})
+        runs = {"textFormatRuns": [run_link("https://docs.example", 4)]}
+        batch(grid, repeat(RUNS, runs, **A1))
+        batch(grid, repeat(f"{LINK},{RUNS}", set_link(self.URL), **A1))
+        assert grid.format("T", 1, 1) == {}
+        batch(grid, repeat(RUNS, runs, **A1))
+        batch(grid, repeat(RUNS, **A1), repeat(LINK, set_link(self.URL), **A1))
+        assert grid.format("T", 1, 1) == {"link": self.URL}
+
+    def test_link_underline_and_colour_in_one_request_keep_the_bold(self):
+        grid = FakeSheetGrid({"T": [[self.URL]]})
+        batch(
+            grid,
+            repeat(BOLD, {"userEnteredFormat": {"textFormat": {"bold": True}}}, **A1),
+        )
+        style = {"foregroundColorStyle": {"rgbColor": GREEN}}
+        cell = set_link(self.URL, underline=False, **style)
+        batch(grid, repeat(f"{LINK},{UNDERLINE},{COLOR}", cell, **A1))
+        assert grid.format("T", 1, 1) == {
+            "link": self.URL,
+            "bold": True,
+            "underline": False,
+            "color": GREEN,
+        }
+        read = one_cell(grid)
+        assert read["userEnteredFormat"]["textFormat"] == {
+            "link": {"uri": self.URL},
+            "bold": True,
+            "underline": False,
+            "foregroundColorStyle": {"rgbColor": GREEN},
+        }
+        shown = read["effectiveFormat"]["textFormat"]
+        assert (shown["bold"], shown["underline"]) == (True, False)
+        assert shown["foregroundColorStyle"] == {"rgbColor": GREEN}
+
+    def test_an_empty_cell_has_no_effective_format(self):
+        grid = FakeSheetGrid({"T": [["a", None, "b"]]})
+        read = grid_read(grid, "'T'!A1:C1", FORMAT_MASK)
+        assert read["rowData"][0]["values"][1] == {}

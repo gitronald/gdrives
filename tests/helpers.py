@@ -3,6 +3,7 @@
 Drive API response shapes based on docs/drive-api.md.
 """
 
+import hashlib
 import re
 import tempfile
 from datetime import date, datetime, timedelta
@@ -627,7 +628,14 @@ _DOMAIN_RE = re.compile(r"([a-z0-9-]+\.)+[a-z]{2,}(/\S*)?", re.IGNORECASE)
 _LINK = "userEnteredFormat.textFormat.link"
 _BOLD = "userEnteredFormat.textFormat.bold"
 _RUNS = "textFormatRuns"
-_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS)
+_UNDERLINE = "userEnteredFormat.textFormat.underline"
+_COLOR = "userEnteredFormat.textFormat.foregroundColorStyle"
+_NUMBER = "userEnteredFormat.numberFormat"
+_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS, _UNDERLINE, _COLOR, _NUMBER)
+
+# The colour the API shows a link in, #1155cc, as it returns it: float32
+# fractions of each channel.
+LINK_BLUE = {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}
 
 
 def _link_target(value: Any) -> str | None:
@@ -647,14 +655,35 @@ def _link_target(value: Any) -> str | None:
     return None
 
 
+def _shown(held: dict[str, Any]) -> dict[str, Any]:
+    """The effective text format of a cell with the format ``held``.
+
+    A link underlines its text and shows it in :data:`LINK_BLUE`, with no
+    user-entered property saying so; the cell's own underline and colour win.
+    """
+    linked = "link" in held
+    color = held.get("color", LINK_BLUE if linked else {})
+    shown: dict[str, Any] = {
+        "bold": bool(held.get("bold")),
+        "underline": held.get("underline", linked),
+        "foregroundColor": dict(color),
+        "foregroundColorStyle": {"rgbColor": dict(color)},
+    }
+    if linked:
+        shown["link"] = {"uri": held["link"]}
+    return shown
+
+
 class _GridTab:
     """One tab of a :class:`FakeSheetGrid`: a dense grid of stored values.
 
     ``cells[r][c]`` is the value at 0-based row ``r`` and column ``c``, None
     when the cell is empty. ``formats[(r, c)]`` is the format of a cell that
     has one, a dict that may hold ``link`` (the target of a link on the whole
-    cell), ``bold``, and ``runs`` (its ``textFormatRuns``). ``widths`` holds
-    each column's pixel width.
+    cell), ``bold``, and ``runs`` (its ``textFormatRuns``), and ``underline``
+    and ``color`` (an ``rgbColor``) and ``number`` (its ``numberFormat``)
+    where they are set as the cell's own format. ``widths`` holds each
+    column's pixel width.
     """
 
     def __init__(self, sheet_id: int, title: str, rows: int, columns: int) -> None:
@@ -784,24 +813,43 @@ class FakeSheetGrid:
       ``UNFORMATTED_VALUE`` with ``SERIAL_NUMBER``, which is the API's default
       ``dateTimeRenderOption``, as its serial number. A string that looks like
       a date is a string under every option.
+    - A cell seeded by ``display`` has a number format: it reads as its
+      displayed text under ``FORMATTED_VALUE`` and as its value under
+      ``UNFORMATTED_VALUE``, while it holds that value. A string written over
+      it is displayed as written.
     - ``values.update`` / ``values.batchUpdate`` store each value as given (an
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
     - ``spreadsheets.batchUpdate`` applies ``insertDimension``,
-      ``appendDimension``, ``deleteDimension``, ``updateCells`` (from its
-      ``start``, honouring the ``fields`` mask), ``updateDimensionProperties``
-      (``pixelSize``), ``addSheet`` (a 1000 x 26 grid), and ``deleteSheet``,
-      all or nothing.
+      ``appendDimension``, ``deleteDimension``, ``moveDimension`` (rows),
+      ``updateCells`` (from its ``start``, honouring the ``fields`` mask),
+      ``updateDimensionProperties`` (``pixelSize``), ``addSheet`` (a 1000 x
+      26 grid), and ``deleteSheet``, in order and all or nothing.
+    - ``moveDimension`` counts its ``destinationIndex`` before the rows move
+      out, as the API does, and moves each row's values and formats. Like the
+      API it refuses a destination inside the rows moved and one past the
+      grid's last row; the grid's size does not change.
     - A value written as text that is a URL or a bare domain gains a link on
       the whole cell, by every write path. ``repeatCell`` and ``updateCells``
       honour a ``fields`` mask over the cell link, ``bold``, and
       ``textFormatRuns``: a field the mask names and the cell omits is
       cleared, and ``updateCells`` with the link in its mask writes a URL with
-      no link. ``spreadsheets.get`` with ``includeGridData`` returns
+      no link. The underline and ``foregroundColorStyle`` are honoured too
+      (an ``underline: false`` is kept, as it overrides the link's). A
+      ``repeatCell`` whose mask names the link and the runs both drops the
+      link, as the API does, whatever the cell says.
+      ``spreadsheets.get`` with ``includeGridData`` returns
       ``hyperlink`` for a link on the whole cell, the runs, and
       ``userEnteredFormat`` under its ``fields`` mask, for the one range
-      asked. Inserted rows and columns take ``bold`` from the side they
-      inherit from, and nothing else.
+      asked, and ``effectiveFormat`` for a cell with a value or a format: a
+      link underlines its text and shows it in :data:`LINK_BLUE` unless the
+      cell's own format says otherwise. Inserted rows and columns take
+      ``bold`` and the number format from the side they inherit from, and
+      nothing else.
+    - A number format (``userEnteredFormat.numberFormat``) is held as set by
+      ``repeatCell`` or ``updateCells`` under a mask naming it, and returned
+      by a grid read whose mask names ``numberFormat``. It changes no read of
+      values: a date serial written as a number reads as that number.
     - Any read or write outside a tab's grid raises the 400 ``HttpError`` the
       API returns; so do an unknown tab, a duplicate tab title, inheriting
       from before row or column 0, and deleting every row or column.
@@ -846,6 +894,16 @@ class FakeSheetGrid:
         for r, values in enumerate(grid, start=row - 1):
             for c, value in enumerate(values):
                 tab.put(r, c, value)
+
+    def display(self, title: str, row: int, column: int, value: Any, text: str) -> None:
+        """Store ``value`` at ``row`` and 1-based ``column``, displayed as ``text``.
+
+        Models a number format, such as ``0.5`` shown as ``50%``: a formatted
+        read of the cell returns ``text`` for as long as it holds ``value``.
+        """
+        tab = self.tab(title)
+        tab.put(row - 1, column - 1, value)
+        tab.held(row - 1, column - 1)["shown"] = (value, text)
 
     def format(self, title: str, row: int, column: int) -> dict[str, Any]:
         """The format of the cell at spreadsheet ``row`` and 1-based ``column``."""
@@ -972,7 +1030,10 @@ class FakeSheetGrid:
         tab, r1, r2, c1, c2 = self._span(range_)
         rows = self._truncated([row[c1:c2] for row in tab.cells[r1:r2]])
         if render != "UNFORMATTED_VALUE":
-            rows = [[_displayed(v) for v in row] for row in rows]
+            rows = [
+                [self._shown(tab, r, c, v) for c, v in enumerate(row, start=c1)]
+                for r, row in enumerate(rows, start=r1)
+            ]
         else:
             shown = _shown_date if date_time == "FORMATTED_STRING" else _serial
             rows = [
@@ -982,6 +1043,14 @@ class FakeSheetGrid:
         if rows:  # the API omits "values" for an empty range
             result["values"] = rows
         return result
+
+    @staticmethod
+    def _shown(tab: _GridTab, r: int, c: int, value: Any) -> str:
+        """A cell as displayed: its ``display`` text while it holds that value."""
+        shown = tab.formats.get((r, c), {}).get("shown")
+        if shown is not None and shown[0] == value:
+            return shown[1]
+        return _displayed(value)
 
     # -- handlers --
 
@@ -1077,9 +1146,18 @@ class FakeSheetGrid:
                 entered["link"] = {"uri": held["link"]}
             if held.get("bold"):
                 entered["bold"] = True
-        if entered:
-            cell["userEnteredFormat"] = {"textFormat": entered}
+            if "underline" in held:
+                entered["underline"] = held["underline"]
+            if "color" in held:
+                entered["foregroundColorStyle"] = {"rgbColor": dict(held["color"])}
+        top: dict[str, Any] = {"textFormat": entered} if entered else {}
+        if "numberFormat" in fields and "number" in held:
+            top["numberFormat"] = dict(held["number"])
+        if top:
+            cell["userEnteredFormat"] = top
         value = tab.cells[r][c]
+        if "effectiveFormat" in fields and (value is not None or held):
+            cell["effectiveFormat"] = {"textFormat": _shown(held)}
         if "formattedValue" in fields and value is not None:
             cell["formattedValue"] = _displayed(value)
         if "effectiveValue" in fields and value is not None:
@@ -1147,16 +1225,19 @@ class FakeSheetGrid:
         count = end - start
         source = start - 1 if inherit else start
 
-        # Bold is the one format the fake hands on to what is inserted.
-        bold = [
-            c if rows else r
+        # Bold and the number format are what the fake hands on to what is
+        # inserted.
+        handed = {
+            c if rows else r: {
+                name: held[name] for name in ("bold", "number") if held.get(name)
+            }
             for (r, c), held in tab.formats.items()
-            if (r if rows else c) == source and held.get("bold")
-        ]
+            if (r if rows else c) == source and (held.get("bold") or "number" in held)
+        }
         tab.shift(rows, start, count)
         for at in range(start, end):
-            for other in bold:
-                tab.formats[(at, other) if rows else (other, at)] = {"bold": True}
+            for other, held in handed.items():
+                tab.formats[(at, other) if rows else (other, at)] = dict(held)
         if rows:
             width = tab.column_count
             tab.cells[start:start] = [[None] * width for _ in range(count)]
@@ -1194,6 +1275,36 @@ class FakeSheetGrid:
             for row in tab.cells:
                 del row[start:end]
             del tab.widths[start:end]
+        return {}
+
+    def _req_moveDimension(self, body: dict[str, Any]) -> dict[str, Any]:
+        tab, rows, start, end = self._dimension(body["source"])
+        if not rows:
+            raise http_error(400, "the fake models moveDimension of rows only")
+        if not 0 <= start < end <= tab.row_count:
+            raise http_error(400, f"moveDimension: bad range {start}:{end}")
+        to = body["destinationIndex"]
+        if start <= to < end:
+            raise http_error(
+                400,
+                f"destinationIndex[{to}] must be outside the requested "
+                f"range[{start}-{end}]",
+            )
+        if to < 0:
+            raise http_error(400, f"moveDimension: bad destinationIndex {to}")
+        if to > tab.row_count:
+            raise http_error(
+                400, f"destinationIndex[{to}] is after last row[{tab.row_count}]"
+            )
+        # The destination is counted before the rows are taken out.
+        order = list(range(tab.row_count))
+        moving = order[start:end]
+        del order[start:end]
+        at = to if to < start else to - (end - start)
+        order[at:at] = moving
+        tab.cells = [tab.cells[r] for r in order]
+        now = {r: index for index, r in enumerate(order)}
+        tab.formats = {(now[r], c): held for (r, c), held in tab.formats.items()}
         return {}
 
     def _req_updateCells(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1246,6 +1357,9 @@ class FakeSheetGrid:
             _LINK: ("link", text.get("link", {}).get("uri")),
             _BOLD: ("bold", text.get("bold")),
             _RUNS: ("runs", cell.get(_RUNS)),
+            _UNDERLINE: ("underline", text.get("underline")),
+            _COLOR: ("color", text.get("foregroundColorStyle", {}).get("rgbColor")),
+            _NUMBER: ("number", cell.get("userEnteredFormat", {}).get("numberFormat")),
         }
         was_set = False
         for name in named:
@@ -1253,7 +1367,7 @@ class FakeSheetGrid:
                 continue
             key, value = given[name]
             held.pop(key, None)
-            if value:
+            if value or (key == "underline" and value is not None):
                 held[key] = value
                 was_set = True
         return was_set
@@ -1268,6 +1382,11 @@ class FakeSheetGrid:
         if not (0 <= r1 < r2 <= tab.row_count and 0 <= c1 < c2 <= tab.column_count):
             raise http_error(400, f"repeatCell: range {span} is outside the grid")
         cell = body.get("cell", {})
+        if _LINK in named and _RUNS in named:
+            # The API drops a link sent in the request that sets the runs.
+            text = cell.get("userEnteredFormat", {}).get("textFormat", {})
+            kept = {key: value for key, value in text.items() if key != "link"}
+            cell = cell | {"userEnteredFormat": {"textFormat": kept}}
         if self._format({}, cell, named):
             # Something is set, so every cell of the range takes it.
             for r in range(r1, r2):
@@ -1305,3 +1424,164 @@ class FakeSheetGrid:
     def _req_deleteSheet(self, body: dict[str, Any]) -> dict[str, Any]:
         self.tabs.remove(self._find_id(body["sheetId"]))
         return {}
+
+
+# -- Drive files fake --
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+_QUOTED = r"'((?:[^'\\]|\\.)*)'"
+
+
+def _unescaped(value: str) -> str:
+    """Undo ``escape_query_value``."""
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+class _DriveRequest:
+    """A Drive request: ``execute()`` runs it, as does a resumable upload's last chunk.
+
+    ``next_chunk()`` answers once with progress and no response, then with the
+    response, as a resumable upload of two chunks does.
+    """
+
+    def __init__(self, run: Any) -> None:
+        self._run = run
+        self._chunks = 0
+        self.retries: list[int] = []
+
+    def execute(self) -> dict[str, Any]:
+        return self._run()
+
+    def next_chunk(self, num_retries: int = 0) -> tuple[Any, dict[str, Any] | None]:
+        self.retries.append(num_retries)
+        self._chunks += 1
+        if self._chunks == 1:
+            return object(), None
+        return None, self._run()
+
+
+class FakeDriveFiles:
+    """A fake of the Drive v3 ``files`` resource that holds files and their content.
+
+    ``files`` are dicts with ``id``, ``name``, ``mimeType``, and optionally
+    ``parents`` and ``content`` (bytes). A response carries ``size`` and
+    ``md5Checksum`` computed from the content, for a file that has any, and
+    never for a Google-native one. A file in the trash has ``trashed`` set,
+    and ``files.list`` leaves it out. ``files.list`` answers the query
+    ``'<id>' in parents [and name = '<name>'] and trashed = false``, names
+    compared without regard to case, in ``pages`` of that many files.
+    ``files.create`` and ``files.update`` take a ``media_body`` and store its
+    bytes, and each such request is kept in ``requests``, where ``retries``
+    holds the ``num_retries`` of each chunk; with ``corrupt`` set, the stored
+    content loses its last byte, so a read-back finds a file that is not the
+    one sent. Every call is recorded
+    in ``calls``, and a request does nothing until it is executed. ``root``
+    is the ID of the file the alias ``root`` names.
+    """
+
+    def __init__(
+        self,
+        files: list[dict[str, Any]],
+        *,
+        pages: int = 1000,
+        root: str | None = None,
+    ) -> None:
+        self.items = {f["id"]: dict(f) for f in files}
+        self.root = root
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.corrupt = False
+        self.pages = pages
+        self.requests: list[_DriveRequest] = []
+
+    def files(self) -> "FakeDriveFiles":
+        return self
+
+    def named(self, method: str) -> list[dict[str, Any]]:
+        """The kwargs of each call of ``method``, in order."""
+        return [kwargs for name, kwargs in self.calls if name == method]
+
+    def _shown(self, item: dict[str, Any]) -> dict[str, Any]:
+        shown = {k: v for k, v in item.items() if k != "content"}
+        content = item.get("content")
+        if content is not None:
+            shown["size"] = str(len(content))
+            shown["md5Checksum"] = hashlib.md5(content).hexdigest()
+        return shown
+
+    def _write(self, run: Any) -> _DriveRequest:
+        """A create or an update, kept in ``requests`` for what it was sent with."""
+        request = _DriveRequest(run)
+        self.requests.append(request)
+        return request
+
+    def _content(self, media: Any) -> bytes:
+        content = media.getbytes(0, media.size())
+        return content[:-1] if self.corrupt else content
+
+    def get(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("get", kwargs))
+        file_id = kwargs["fileId"]
+        if file_id == "root" and self.root is not None:
+            file_id = self.root
+        return _DriveRequest(lambda: self._shown(self.items[file_id]))
+
+    def list(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("list", kwargs))
+        return _DriveRequest(lambda: self._list(kwargs))
+
+    def _list(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = kwargs["q"]
+        parent = re.search(_QUOTED + " in parents", query)
+        assert parent is not None, query
+        parent_id = _unescaped(parent.group(1))
+        name = re.search("name = " + _QUOTED, query)
+        found = [
+            self._shown(item)
+            for item in self.items.values()
+            if parent_id in item.get("parents", [])
+            and not item.get("trashed")
+            and (name is None or item["name"].lower() == _unescaped(name[1]).lower())
+        ]
+        start = int(kwargs.get("pageToken") or 0)
+        page: dict[str, Any] = {"files": found[start : start + self.pages]}
+        if start + self.pages < len(found):
+            page["nextPageToken"] = str(start + self.pages)
+        return page
+
+    def create(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("create", kwargs))
+        return self._write(lambda: self._create(kwargs))
+
+    def _create(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        item = dict(kwargs["body"])
+        item["id"] = f"new{len(self.named('create'))}"
+        media = kwargs.get("media_body")
+        if media is not None:
+            item["mimeType"] = media.mimetype()
+            item["content"] = self._content(media)
+        self.items[item["id"]] = item
+        return self._shown(item)
+
+    def update(self, **kwargs: Any) -> _DriveRequest:
+        self.calls.append(("update", kwargs))
+        return self._write(lambda: self._update(kwargs))
+
+    def _update(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        item = self.items[kwargs["fileId"]]
+        item.update(kwargs.get("body") or {})
+        media = kwargs["media_body"]
+        item["mimeType"] = media.mimetype()
+        item["content"] = self._content(media)
+        return self._shown(item)
+
+
+def patch_drive_service(monkeypatch: pytest.MonkeyPatch, svc: Any) -> dict[str, Any]:
+    """Make ``build_drive_service`` return ``svc``; the dict records its ``scopes``."""
+    rec: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "gdrives.auth.build_drive_service",
+        lambda scopes=None: rec.update(scopes=scopes) or svc,
+    )
+    return rec

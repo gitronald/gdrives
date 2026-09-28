@@ -502,7 +502,7 @@ def test_read_tab_reads_declared_dates_from_their_serials(seeded):
         service, sid, name, None, ["id"], types={"on": "date", "at": "datetime"}
     )
     assert table.rows == [
-        {"id": "a", "on": "2026-09-27", "at": "2026-09-27 10:30:15"},
+        {"id": "a", "on": "2026-09-27", "at": "2026-09-27 10:30:15.000"},
         {"id": "b", "on": "2026-09-28", "at": "2026-09-28T01:02:03"},
     ]
 
@@ -883,3 +883,186 @@ def test_push_that_shrinks_the_tab_clears_the_old_cells(seeded, tmp_path):
         ["total", "count"],
         ["a", "9"],
     ]
+
+
+def test_reorder_moves_whole_rows(seeded, shared_tab):
+    # What the fake's moveDimension rests on: the destination is counted
+    # before the row is taken out, a row takes its format and every column
+    # with it (the unnamed column C is never read into a record), and a blank
+    # row keeps its place. c crosses the blank row down, a moves up past it.
+    service, sid, name = seeded(
+        [
+            ["id", "name", "", "note"],
+            ["c", "Cy", "gap c", "third"],
+            ["b", "Bo", "", "second"],
+            ["", "", "", ""],
+            ["a", "Ada", "gap a", "first"],
+        ]
+    )
+    grey = {
+        "repeatCell": {
+            "range": {
+                "sheetId": shared_tab.sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 2,
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+            "cell": {"userEnteredFormat": {"backgroundColor": GREY}},
+            "fields": "userEnteredFormat.backgroundColor",
+        }
+    }
+    _patiently(service, sid, {"requests": [grey]})
+
+    result = sheets.reorder_rows(
+        service, sid, name, ["id"], ["a", "b", "c"], apply=True
+    )
+    assert result == sheets.ReorderResult(
+        moves=2, moved=[("a",), ("c",)], unchanged=False, applied=True
+    )
+    values, fills = _values_and_fills(service, sid, name, "A1:D5")
+    assert values == [
+        ["id", "name", "", "note"],
+        ["a", "Ada", "gap a", "first"],
+        ["b", "Bo", "", "second"],
+        [],
+        ["c", "Cy", "gap c", "third"],
+    ]
+    assert fills == [None, None, None, None, GREY]
+
+
+def test_set_url_links_keeps_the_bold_and_clears_the_runs(tab, shared_tab):
+    # What the fake's link formats rest on: a link set as the cell's own
+    # format takes, runs cleared in an earlier request of the same batch do
+    # not drop it, and link, underline, and colour under one mask leave the
+    # bold alone.
+    service, sid, name = tab
+    header = ["id", "site"]
+    rows = [["a", "https://example.com/a"], ["b", "https://example.com/b"]]
+    sheets.update_values(
+        service, sid, f"'{name}'!A1:B3", [header, *rows], input_option=sheets.RAW
+    )
+
+    def cell(row):
+        return {"sheetId": shared_tab.sheet_id, "rowIndex": row, "columnIndex": 1}
+
+    part = {"startIndex": 8, "format": {"link": {"uri": "https://part.example"}}}
+    bold = {"userEnteredFormat": {"textFormat": {"bold": True}}}
+    formats = [
+        {
+            "updateCells": {
+                "start": cell(1),
+                "rows": [{"values": [bold]}],
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        },
+        {
+            "updateCells": {
+                "start": cell(2),
+                "rows": [{"values": [{"textFormatRuns": [{"format": {}}, part]}]}],
+                "fields": "textFormatRuns",
+            }
+        },
+    ]
+    _patiently(service, sid, {"requests": formats})
+
+    fixed = sheets.set_url_links(service, sid, name, color="#33aa55")
+    assert [(problem.row, problem.column) for problem in fixed] == [
+        (2, "site"),
+        (3, "site"),
+    ]
+    assert {"color", "underline"} <= set(fixed[0].reasons)
+    assert "runs" in fixed[1].reasons
+
+    data = sheets.pull_grid(
+        service,
+        sid,
+        f"'{name}'!B2:B3",
+        "sheets(data(rowData(values(hyperlink,textFormatRuns,"
+        "userEnteredFormat(textFormat),effectiveFormat(textFormat)))))",
+    )
+    got = [row["values"][0] for row in data["rowData"]]
+    for read, (_, text) in zip(got, rows, strict=True):
+        assert read["hyperlink"] == text
+        assert "textFormatRuns" not in read
+        shown = read["effectiveFormat"]["textFormat"]
+        assert shown["underline"] is False
+        rgb = shown["foregroundColorStyle"]["rgbColor"]
+        assert [round(rgb.get(c, 0) * 255) for c in ("red", "green", "blue")] == [
+            0x33,
+            0xAA,
+            0x55,
+        ]
+    assert got[0]["userEnteredFormat"]["textFormat"]["bold"] is True
+    assert got[0]["effectiveFormat"]["textFormat"]["bold"] is True
+
+
+def test_sync_with_typed_writes_writes_values_the_sheet_computes_over(tab, tmp_path):
+    # A date, a date-time before 10:00, a float, and a boolean go to the sheet
+    # as values, with the date formats the package sets; a formula over the
+    # pushed date computes; and the next run finds everything in sync.
+    service, sid, name = tab
+    schema = {
+        "due": {"type": "date"},
+        "at": {"type": "datetime"},
+        "amt": {"type": "float"},
+        "paid": {"type": "bool"},
+    }
+    tab_config = {
+        "local": "dues.csv",
+        "key": ["id"],
+        "typed_writes": True,
+        "schema": schema,
+    }
+    target = _target(tmp_path, sid, name, tab_config)
+    local = local_file(target.tabs[0])
+    header = ["id", "due", "at", "amt", "paid"]
+    sheets.write_values_csv(
+        str(local),
+        [header, ["007", "2026-09-27", "2026-09-27 09:05:00", "2.5", "true"]],
+    )
+    first = sheets.run_target(service, sid, target, "sync", apply=True, adopt=True)
+    assert first.exit_code == 0, sheets.format_report(first)
+
+    serials = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!A2:E2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert serials == [["007", 46292, 46292 + (9 * 60 + 5) / 1440, 2.5, True]]
+    shown = sheets.pull_values(service, sid, f"'{name}'!B2:C2")
+    assert shown == [["2026-09-27", "2026-09-27 09:05:00"]]
+
+    # A formula over the pushed date computes, where over text it would not.
+    sheets.update_values(service, sid, f"'{name}'!F1:F2", [["next"], ["=B2+7"]])
+    (row,) = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!F2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert row == [46299]
+
+    # A local edit is pushed as a value, and the read-back compares by value.
+    sheets.write_values_csv(
+        str(local),
+        [header, ["007", "2026-10-01", "2026-09-27 09:05:00", "3.0", "FALSE"]],
+    )
+    second = sheets.run_target(service, sid, target, "sync", apply=True)
+    assert second.exit_code == 0, sheets.format_report(second)
+    serials = sheets.pull_values(
+        service,
+        sid,
+        f"'{name}'!A2:D2",
+        render=sheets.UNFORMATTED_VALUE,
+        date_time_render=sheets.SERIAL_NUMBER,
+    )
+    assert serials == [["007", 46296, 46292 + (9 * 60 + 5) / 1440, 3]]
+
+    third = sheets.run_target(service, sid, target, "sync")
+    assert third.exit_code == 0, sheets.format_report(third)
+    (report,) = third.tabs
+    assert report.plan is not None and not report.plan.has_writes

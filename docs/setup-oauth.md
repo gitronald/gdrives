@@ -35,7 +35,7 @@ A consent needs a terminal: when stdin is not one, a command skips OAuth and fal
 gdrives login                  # read access, for every read command
 gdrives login --scope sheets   # the sheets-* write commands
 gdrives login --scope docs     # the docs-* write commands
-gdrives login --scope drive    # mv
+gdrives login --scope drive    # mv, upload, sheets-create
 gdrives login --timeout 60     # wait 60 seconds for the consent (default 300)
 ```
 
@@ -43,7 +43,7 @@ It prints the consent URL, waits for the browser to come back, caches the token,
 
 Before any command waits on a consent or a token refresh, it says so on stderr with a line starting `Credential:`.
 
-The first `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, or `sheets-delete-rule` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Likewise, the first `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, or `docs-create` run authorizes the `documents` write scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_documents.json`. The first `mv` run without `--dry-run` authorizes the full `drive` scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_drive.json`. The scope is requested up front, so this happens even when the move turns out to be a no-op; only `mv --dry-run` stays on the read-only token. Read commands keep using the read-only token untouched, and each write scope has its own token, so authorizing one never re-prompts for another. A cached token whose grant does not cover the requested scope is passed over and re-authorized instead of failing with a 403.
+The first `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, or `sheets-delete-rule` run opens a second authorization for the `spreadsheets` write scope, cached separately in `$GOOGLE_CONFIG_DIR/gdrives_token_rw.json`. Likewise, the first `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, or `docs-create` run authorizes the `documents` write scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_documents.json`. The first `mv`, `upload`, or `sheets-create` run without `--dry-run` authorizes the full `drive` scope, cached in `$GOOGLE_CONFIG_DIR/gdrives_token_drive.json`. The scope is requested up front, so this happens even when a move turns out to be a no-op; with `--dry-run` each of them stays on the read-only token. Read commands keep using the read-only token untouched, and each write scope has its own token, so authorizing one never re-prompts for another. A cached token whose grant does not cover the requested scope is passed over and re-authorized instead of failing with a 403.
 
 A cached token with a broader grant than a command asks for is used as it is: a token granted `drive` serves the read commands and the Sheets and Docs write commands too, with no new consent.
 
@@ -55,7 +55,7 @@ A cached token with a broader grant than a command asks for is used as it is: a 
 | `gdrives_token.json` | Read-only token, auto-generated after first authorization |
 | `gdrives_token_rw.json` | Sheets write token, auto-generated on first Sheets write command |
 | `gdrives_token_documents.json` | Docs write token, auto-generated on first Docs write command |
-| `gdrives_token_drive.json` | Drive write token, auto-generated on first `mv` that writes |
+| `gdrives_token_drive.json` | Drive write token, auto-generated on first `mv`, `upload`, or `sheets-create` that writes |
 
 The names `gdrives_token*.json` are reserved for the tokens `gdrives` writes. If your own code keeps a token in the same directory, give it another name. A consent never overwrites a token file that holds a grant the new one does not include (or no recorded scopes, or content that does not parse): the new token is written under the name derived from its scopes instead, a warning names both files, and later runs look in both places.
 
@@ -66,4 +66,4 @@ The names `gdrives_token*.json` are reserved for the tokens `gdrives` writes. If
 | `documents` | `gdrives_token_documents.json` | (none: the token is used for the run and not saved) |
 | `drive` | `gdrives_token_drive.json` | (none: the token is used for the run and not saved) |
 
-Scopes: `drive.readonly` (read commands), `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`), `documents` (Docs write commands: `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `drive` (`mv`).
+Scopes: `drive.readonly` (read commands), `spreadsheets` (Sheets write commands: `sheets-update`, `sheets-append`, `sheets-clear`, `sheets-set`, `sheets-add-rule`, `sheets-delete-rule`), `documents` (Docs write commands: `docs-update`, `docs-append`, `docs-replace`, `docs-clear`, `docs-create`), and `drive` (`mv`, `upload`, `sheets-create`).

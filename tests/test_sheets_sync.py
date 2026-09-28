@@ -112,7 +112,7 @@ class TestPreview:
         assert report.apply is False
         assert writes(grid) == []
         assert grid.values("T") == [HEADER, *ROWS]
-        assert not target.base.exists()
+        assert target.base is not None and not target.base.exists()
         assert sorted(p.name for p in tmp_path.rglob("*")) == ["data", "local.csv"]
 
     def test_a_preview_of_a_missing_tab_writes_nothing(self, tmp_path):
@@ -921,7 +921,7 @@ class TestTypedDates:
         grid.tab("T").cells[1][2] = datetime(2026, 9, 27, 10, 30, 15, 123000)
         report = run(grid, target, apply=True)
         assert [(c.key, c.column, c.sheet) for c in plan_of(report).fold_cells] == [
-            (("a",), "at", "2026-09-27 10:30:15.123000")
+            (("a",), "at", "2026-09-27 10:30:15.123")
         ]
         assert report.wrote_local and report.wrote_base and not report.wrote_sheet
         again = run(grid, target, apply=True)
@@ -943,6 +943,36 @@ class TestTypedDates:
             ["c", "2026-09-29"],
         ]
         assert base_rows(target) == local
+        again = run(grid, target, apply=True)
+        assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
+
+    def test_a_base_in_the_old_datetime_form_is_in_sync_with_the_new(self, tmp_path):
+        # Bases saved by earlier versions hold str(datetime): no fraction when it is
+        # zero. The sheet now reads as .000, and that is the same value.
+        grid, target = self.scene(tmp_path)
+        grid.tab("T").cells[1][2] = datetime(2026, 9, 27, 10, 30, 15)
+        preview = plan_tab(grid, "S", target, target.tabs[0])
+        assert preview.table is not None
+        assert preview.table.rows[0]["at"] == "2026-09-27 10:30:15.000"
+        plan = plan_of(preview.report)
+        assert not (plan.pushes or plan.fold_cells or plan.conflicts)
+        before = snapshot(target)
+        report = run(grid, target, apply=True)
+        assert not (report.wrote_sheet or report.wrote_local or report.wrote_base)
+        assert snapshot(target) == before
+
+    def test_an_old_form_datetime_is_pushed_and_verified_as_written(self, tmp_path):
+        # verify compares raw strings: a pushed cell is text on the sheet, the
+        # serial read passes text through, so it reads back as it was sent.
+        local = [
+            ["a", "2026-09-27", "2026-10-02 08:00:00"],
+            ["b", "2026-09-28", "2026-09-28 01:02:03"],
+        ]
+        grid, target = self.scene(tmp_path, local=local)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert applied_of(report).pushed == 1
+        assert grid.values("T")[1][2] == "2026-10-02 08:00:00"
         again = run(grid, target, apply=True)
         assert not (again.wrote_sheet or again.wrote_local or again.wrote_base)
 
@@ -1762,3 +1792,164 @@ class TestPaths:
         assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
             ".._a_b.csv"
         ]
+
+
+class TestLinkUrls:
+    HEADER = ["id", "site"]
+    COLOR = {"link_urls": {"color": "#33aa55"}}
+
+    def scene(self, tmp_path, **fields):
+        target = make_target(tmp_path, **fields)
+        write_local(
+            target,
+            ["a", "https://a.example"],
+            ["b", "https://b.example"],
+            ["c", "https://c.example"],
+            header=self.HEADER,
+        )
+        write_base(
+            target, ["a", "plain"], ["b", "https://b.example"], header=self.HEADER
+        )
+        grid = FakeSheetGrid(
+            {"T": [self.HEADER, ["a", "plain"], ["b", "https://b.example"]]}
+        )
+        return grid, target
+
+    def test_a_sync_links_the_url_cells_it_wrote_and_no_others(self, tmp_path):
+        grid, target = self.scene(tmp_path, **self.COLOR)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert [(cell.row, cell.column) for cell in report.linked] == [
+            (2, "site"),
+            (4, "site"),
+        ]
+        assert applied_of(report).linked == report.linked
+        green = {"red": 0x33 / 255, "green": 0xAA / 255, "blue": 0x55 / 255}
+        for row, target_ in [(2, "https://a.example"), (4, "https://c.example")]:
+            assert grid.format("T", row, 2) == {
+                "link": target_,
+                "underline": False,
+                "color": green,
+            }
+        # Row b was not written, and keeps the link the API gave it.
+        assert grid.format("T", 3, 2) == {"link": "https://b.example"}
+        lines = format_report(SyncReport([report])).splitlines()
+        assert "  URL cells given a link: 2" in lines
+
+    def test_a_preview_does_not_run_the_check(self, tmp_path):
+        grid, target = self.scene(tmp_path / "linked", **self.COLOR)
+        report = run(grid, target)
+        plain, untouched = self.scene(tmp_path / "plain")
+        run(plain, untouched)
+        # The same requests as a preview without link_urls: no grid read.
+        assert grid.methods == plain.methods
+        assert report.linked == []
+        assert "URL cells" not in format_report(SyncReport([report]))
+
+
+class TestStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        target = make_target(tmp_path)
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        report = run(FakeSheetGrid({"T": [HEADER, *ROWS]}), target, apply=True)
+        assert report.problems == [] and report.exit_code == 0
+
+    def test_an_undeclared_projection_column_blocks_before_any_request(self, tmp_path):
+        target = make_target(
+            tmp_path, schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_key_column_needs_a_schema_entry_too(self, tmp_path):
+        target = make_target(
+            tmp_path, schema={"name": {}, "amt": {}}, strict_schema=True
+        )
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'id' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        report = run(FakeSheetGrid({"T": [HEADER, *ROWS]}), target, apply=True)
+        assert report.problems == [] and report.exit_code == 0
+
+    def test_a_carried_local_column_needs_a_schema_entry(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, ["a", "Ada", "1", "n"], header=[*HEADER, "notes"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"]]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'notes' has no schema entry, and the tab is "
+            "strict_schema"
+        ]
+        # A column both sides hold is reported once, at the local stage,
+        # before the sheet holding it too is even read.
+        assert grid.calls == []
+
+    def test_a_sheet_column_outside_the_projection_is_a_problem(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {
+                "T": [
+                    [*HEADER, "region"],
+                    [*ROWS[0], "east"],
+                    [*ROWS[1], "west"],
+                ]
+            }
+        )
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'region' has no schema entry, and the tab is "
+            "strict_schema"
+        ]
+        assert writes(grid) == []
+
+    def test_a_column_dropped_with_drop_extra_is_not_reported(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {
+                "T": [
+                    [*HEADER, "region"],
+                    [*ROWS[0], "east"],
+                    [*ROWS[1], "west"],
+                ]
+            }
+        )
+        report = run(grid, target, apply=True, drop_extra=True)
+        assert report.problems == []

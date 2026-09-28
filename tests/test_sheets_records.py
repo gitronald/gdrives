@@ -261,6 +261,14 @@ class TestJson:
         with pytest.raises(ValueError, match="newline applies only to .csv and .tsv"):
             write_records(tmp_path / "m.json", ["id"], [], newline="crlf")
 
+    def test_the_columns_are_checked_before_bom_and_newline(self, tmp_path):
+        # The order of 0.13.0: a row's unknown column is what a call hears of.
+        path, rows = tmp_path / "m.json", [{"id": "1", "zz": "2"}]
+        with pytest.raises(ValueError, match=r"unknown columns \['zz'\]"):
+            write_records(path, ["id"], rows, bom=True)
+        with pytest.raises(ValueError, match=r"unknown columns \['zz'\]"):
+            write_records(path, ["id"], rows, newline="crlf")
+
     def test_read_columns_are_every_key_in_first_seen_order(self, tmp_path):
         path = tmp_path / "m.json"
         path.write_text(json.dumps([{"b": 1, "a": None}, {"c": 2.0, "a": "x"}]))

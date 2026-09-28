@@ -86,6 +86,28 @@ PROMISED = {
         "run_widths",
         "tab_listing",
     ],
+    "reorder rows": ["ReorderResult", "reorder_rows"],
+    "json entry store": ["JsonEntryStore"],
+    "read as displayed": ["RENDERS"],
+    "url links": [
+        "URL_LINK_REASONS",
+        "UrlLinkProblem",
+        "set_url_links",
+        "url_link_problems",
+    ],
+    "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
+    "typed writes": [
+        "DATE_FORMATS",
+        "NUMBER_FORMAT_FIELD",
+        "RetypeCell",
+        "RetypeReport",
+        "cell_data",
+        "dated_cells",
+        "format_requests",
+        "retype_columns",
+        "to_serial",
+        "typed_columns",
+    ],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -95,8 +117,16 @@ PROMISED_ATTRIBUTES = [
     (ApplyResult, ["pushed_cells", "appended_columns"]),
     (TabReport, ["insert_row", "last_row", "warnings", "local_label", "applied"]),
     (TabConfig, ["newline", "blank_keys", "on_invalid", "clear_links", "sheet_id"]),
+    (TabConfig, ["render"]),
+    (Table, ["render"]),
     (TabConfig, ["store", "local_store"]),
     (Target, ["base_stores", "base_store"]),
+    (TabConfig, ["entry"]),
+    (TabConfig, ["link_urls"]),
+    (ApplyResult, ["linked"]),
+    (TabReport, ["linked"]),
+    (TabConfig, ["hooks"]),
+    (TabConfig, ["typed_writes"]),
 ]
 
 
@@ -169,8 +199,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 5
-        assert len(blocks(GUIDE, "python")) == 6
+        assert len(blocks(GUIDE, "json")) == 13
+        assert len(blocks(GUIDE, "python")) == 11
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -210,7 +240,11 @@ class TestGuidePython:
     def test_the_examples_run_in_order(self, tmp_path, monkeypatch):
         """Each block runs in one namespace, as a reader following the guide."""
         header = ["member_id", "name", "status", "website"]
-        rows = [["m1", "Ada", "active", "example.com"], ["m2", "Bea", "closed", ""]]
+        rows = [
+            ["m1", "Ada", "active", "example.com"],
+            ["m2", "Bea", "closed", ""],
+            ["m3", "Cy", "active", ""],
+        ]
         grid = FakeSheetGrid({"Members": [header, *rows]})
         write_values_csv(tmp_path / "data" / "members.csv", [header, *rows])
         held = [dict(zip(header[:3], row[:3], strict=True)) for row in rows]
@@ -232,8 +266,17 @@ class TestGuidePython:
         # The library example ends by exiting with the run's code.
         assert exits == [0]
         assert grid.tab("Summary").cells[0][:3] == ["id", "total", "paid"]
+        # The typed writes example turned the text the push wrote into values.
+        assert grid.tab("Summary").cells[1][:3] == [1, 2.5, True]
+        assert namespace["found"].changes and not namespace["found"].unparsed
+        # The ordering example put the active row m3 above the closed m2.
+        assert namespace["preview"].moves == 1
+        members = [row[0] for row in grid.values("Members")]
+        assert members == ["member_id", "m1", "m3", "m2"]
         assert json.loads(workbook.read_text())["Members"] == held
-        # The last one runs the hooks, and its check finds the column that the
+        # The hooks example runs the hooks, and its check finds the column that the
         # links example reads, which the store's tab does not declare.
         (checked,) = namespace["report"].tabs
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
+        # The transform example previews a sync of the same tab, in sync.
+        assert namespace["cleaned"].exit_code == 0

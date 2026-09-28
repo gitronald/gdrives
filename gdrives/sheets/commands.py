@@ -12,10 +12,17 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, ParamSpec, TypeVar
 
-from gdrives.local import escape_formula, slug
+from gdrives.local import escape_formula, printable, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
 from gdrives.sheets.config import Target, load_config
+from gdrives.sheets.create import (
+    check_tabs,
+    create_spreadsheet,
+    name_tabs,
+    spreadsheet_url,
+)
 from gdrives.sheets.files import read_values_csv, write_values_csv
+from gdrives.sheets.hooks import resolve_hooks
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import RetryNotice, retry_notices
 from gdrives.sheets.rules import (
@@ -249,6 +256,82 @@ def run_set(
     )
 
 
+def _describe_new(title: str, folder: dict[str, Any], tabs: Sequence[str]) -> str:
+    """Phrase a spreadsheet's creation for the dry run and the result message."""
+    text = (
+        f"create spreadsheet '{printable(title)}' in "
+        f"'{printable(folder['name'])}' ({folder['id']})"
+    )
+    if tabs:
+        text += f" with tabs: {', '.join(printable(tab) for tab in tabs)}"
+    return text
+
+
+@_noticed
+def run_create(
+    title: str,
+    *,
+    folder: str | None = None,
+    folder_id: str | None = None,
+    tabs: Sequence[str] = (),
+    dry_run: bool = False,
+) -> None:
+    """Create a native spreadsheet in a folder, printing its URL.
+
+    The folder is a Drive path (``folder``) or an ID (``folder_id``), and the
+    root of My Drive with neither. A file of the same name in the folder is
+    noted on stderr and is no obstacle, since Drive permits duplicates. The
+    URL goes to stdout and the ID to stderr. ``dry_run`` reads and prints,
+    on the read-only scope, and creates nothing.
+    """
+    from gdrives.auth import (
+        DRIVE_WRITE_SCOPES,
+        build_drive_service,
+        build_sheets_service,
+    )
+    from gdrives.files import find_named, get_folder
+    from gdrives.resolve import resolve_path
+
+    if not title.strip():
+        raise ValueError("--title must not be empty")
+    if folder is not None and folder_id is not None:
+        raise ValueError("pass at most one of --folder or --folder-id")
+    for label, value in (("--folder", folder), ("--folder-id", folder_id)):
+        if value is not None and not value.strip():
+            raise ValueError(f"{label} must not be empty")
+    titles = check_tabs(tabs)
+
+    # A dry run only reads, so it keeps the read-only default scope.
+    drive = build_drive_service(None if dry_run else DRIVE_WRITE_SCOPES)
+    if folder is not None:
+        folder_id = resolve_path(folder, drive)
+    # "root" is the alias of My Drive's root; the API answers with its real ID.
+    parent = get_folder(drive, folder_id or "root")
+
+    same = find_named(drive, parent["id"], title)
+    if same:
+        ids = ", ".join(f["id"] for f in same)
+        print(
+            f"Note: '{printable(parent['name'])}' already holds {len(same)} "
+            f"file(s) named '{printable(title)}': {ids}",
+            file=sys.stderr,
+        )
+
+    action = _describe_new(title, parent, titles)
+    if dry_run:
+        print(f"Would {action}")
+        return
+
+    # The drive scope serves the Sheets API too, so one consent covers both.
+    sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
+    spreadsheet_id = create_spreadsheet(drive, sheets, title, folder_id=parent["id"])
+    # Said before the tabs are named, so a failure there still names the file.
+    print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
+    name_tabs(sheets, spreadsheet_id, titles)
+    print(f"Done: {action}", file=sys.stderr)
+    print(spreadsheet_url(spreadsheet_id))
+
+
 @_noticed
 def run_widths(source: str, *, tab: str | None = None) -> None:
     """Print a tab's column widths as a JSON object, by header name.
@@ -443,10 +526,11 @@ def _run_config(
 ) -> int:
     """Run the ``mode`` tabs of config target ``name``; return the exit code.
 
-    The config, the target, and the tabs are checked before any request. A
-    preview reads with the read-only scope; ``apply`` on a sync or push tab
-    needs the Sheets write scope, and announces the credential first (as does
-    a pull, which writes only local files and stays read-only).
+    The config, the target, the tabs, and the hooks the config names (found
+    with :func:`~gdrives.sheets.hooks.resolve_hooks`) are checked before any
+    request. A preview reads with the read-only scope; ``apply`` on a sync or
+    push tab needs the Sheets write scope, and announces the credential first
+    (as does a pull, which writes only local files and stays read-only).
     """
     from gdrives.auth import (
         SHEETS_WRITE_SCOPES,
@@ -456,6 +540,11 @@ def _run_config(
 
     target = load_config(config).target(name)
     wanted = _config_tabs(target, mode, tabs)
+    # The config's hooks are imported before any request (and found again,
+    # from sys.modules, by run_target).
+    resolve_hooks(
+        target, wanted or [tab.title for tab in target.tabs if tab.mode == mode]
+    )
     scopes = SHEETS_WRITE_SCOPES if apply and mode != "pull" else None
     if apply:
         announce_credentials(scopes, always=True)
