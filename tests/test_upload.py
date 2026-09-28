@@ -477,6 +477,7 @@ class TestResolveFolder:
     def test_bare_name_that_is_no_drive_is_refused(self, monkeypatch):
         from gdrives import mv
 
+        # A service is given: with none, resolve_path would build a real one.
         monkeypatch.setattr("gdrives.drives.load", lambda: [])
         with pytest.raises(DrivePathError, match="No drive matching 'report.pdf'"):
-            mv.resolve_folder(None, "report.pdf")
+            mv.resolve_folder(object(), "report.pdf")
