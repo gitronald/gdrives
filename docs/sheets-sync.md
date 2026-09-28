@@ -122,7 +122,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -308,6 +308,59 @@ one a run is dropping, to have no `schema` entry:
 With `strict_schema`, `schema` may also name a column outside `columns`,
 which is refused otherwise: a carried or excluded column has to be declared
 somewhere.
+
+### Column presence and strict forms
+
+Two more per-column checks, each opt-in and independent of the other and of
+`strict_schema`.
+
+`present: true` says a column must be in the header, not that its cells must
+hold a value: a `present` column may still have blank cells, where `required`
+governs blanks and says nothing about whether the column exists at all. A
+`present` column the header lacks is reported once, whether or not the tab
+has any rows:
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "email": {"present": true}}
+}
+```
+
+```
+Members (sheet): column 'email' is declared present and the header lacks it
+```
+
+- Checked against the local file's columns at the `local` stage for a `sync`
+  or a `push`, and against the sheet's header at the `sheet` stage for a
+  `sync` or a `pull`. A `push` replaces the tab whole, so only the columns it
+  writes are its "local side"; the sheet's own header, about to be
+  overwritten, is not checked.
+- A column `--add-missing` is about to add is not reported for the sheet.
+- A `present` column always has a `schema` entry, so `exclude` naming one is
+  already refused as naming any `schema` column is.
+
+`strict: true` narrows a `bool` or `date` column to its one exact form:
+`TRUE` or `FALSE` for `bool` (`true` and `TRUE ` fail it), and `YYYY-MM-DD`
+for `date` (`20260927`, a valid ISO 8601 basic date, fails it). It is refused
+on any other type, in the config and by `ColumnSchema` itself.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "paid": {"type": "bool", "strict": true}}
+}
+```
+
+The check is part of `cell_problem`, so a value that fails it is a schema
+problem like any other: it blocks the write, and `on_invalid: "hold"` holds a
+sheet value that fails it, the same as any other invalid sheet value.
+**Comparison is unchanged**: a `strict` column still compares `true` and
+`TRUE` as one value, so a bare respelling is never folded or pushed. That
+also means the merge's own check, which only runs on a value about to be
+folded, never sees such a respelling; it is still reported, since nothing
+would be written for it either way, and it always refuses the tab under
+either `on_invalid` setting (there is nothing for `hold` to hold back).
 
 ### Ownership
 
