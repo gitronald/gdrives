@@ -263,6 +263,40 @@ class TestCellProblem:
         assert cell_problem("", ColumnSchema(type="int")) is None
         assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
 
+    @pytest.mark.parametrize("text", ["true", "True"])
+    def test_a_respelled_bool_is_a_problem_only_under_strict(self, text):
+        assert cell_problem(text, ColumnSchema(type="bool")) is None
+        assert cell_problem(text, ColumnSchema(type="bool", strict=True)) == (
+            f"{text!r} is not TRUE or FALSE, and the column is strict"
+        )
+
+    @pytest.mark.parametrize("text", ["TRUE", "FALSE"])
+    def test_the_strict_bool_forms_pass(self, text):
+        assert cell_problem(text, ColumnSchema(type="bool", strict=True)) is None
+
+    @pytest.mark.parametrize("text", ["20260927", "2026-W39-7"])
+    def test_another_iso_date_form_is_a_problem_only_under_strict(self, text):
+        assert cell_problem(text, ColumnSchema(type="date")) is None
+        assert cell_problem(text, ColumnSchema(type="date", strict=True)) == (
+            f"{text!r} is not YYYY-MM-DD, and the column is strict"
+        )
+
+    def test_the_strict_date_form_passes(self):
+        schema = ColumnSchema(type="date", strict=True)
+        assert cell_problem("2026-09-27", schema) is None
+
+    def test_an_invalid_date_is_a_problem_either_way(self):
+        problem = "'2026-02-30' is not a valid date"
+        assert cell_problem("2026-02-30", ColumnSchema(type="date")) == problem
+        assert cell_problem("2026-02-30", ColumnSchema(type="date", strict=True)) == (
+            problem
+        )
+
+    def test_a_blank_strict_cell_is_checked_by_required_only(self):
+        assert cell_problem("", ColumnSchema(type="bool", strict=True)) is None
+        schema = ColumnSchema(type="bool", strict=True, required=True)
+        assert cell_problem("", schema) == "is required"
+
 
 class TestSerialToCell:
     """Serial numbers count days from 1899-12-30, as a live read confirmed."""
@@ -638,9 +672,26 @@ class TestColumnSchema:
         schema = ColumnSchema()
         assert (schema.type, schema.required, schema.allowed) == ("str", False, None)
 
+    def test_present_and_strict_default_to_false(self):
+        schema = ColumnSchema()
+        assert (schema.present, schema.strict) == (False, False)
+
     def test_unknown_type_is_refused(self):
         with pytest.raises(ValueError, match="unknown column type 'money'"):
             ColumnSchema(type="money")
+
+    @pytest.mark.parametrize("type_", ["bool", "date"])
+    def test_strict_is_accepted_for_bool_and_date(self, type_):
+        schema = ColumnSchema(type=type_, strict=True)
+        assert schema.strict is True
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "datetime"])
+    def test_strict_is_refused_for_any_other_type(self, type_):
+        with pytest.raises(
+            ValueError,
+            match=r"strict is only for a column of \['bool', 'date'\]",
+        ):
+            ColumnSchema(type=type_, strict=True)
 
 
 class TestColumnSchemaOf:
@@ -661,6 +712,10 @@ class TestColumnSchemaOf:
     def test_the_constructor_still_refuses_a_class(self):
         with pytest.raises(ValueError, match="unknown column type"):
             ColumnSchema(type=int)  # pyrefly: ignore[bad-argument-type]
+
+    def test_present_and_strict_pass_through(self):
+        schema = ColumnSchema.of("bool", present=True, strict=True)
+        assert schema == ColumnSchema(type="bool", present=True, strict=True)
 
 
 class TestProblems:

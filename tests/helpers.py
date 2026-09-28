@@ -627,7 +627,13 @@ _DOMAIN_RE = re.compile(r"([a-z0-9-]+\.)+[a-z]{2,}(/\S*)?", re.IGNORECASE)
 _LINK = "userEnteredFormat.textFormat.link"
 _BOLD = "userEnteredFormat.textFormat.bold"
 _RUNS = "textFormatRuns"
-_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS)
+_UNDERLINE = "userEnteredFormat.textFormat.underline"
+_COLOR = "userEnteredFormat.textFormat.foregroundColorStyle"
+_FORMAT_FIELDS = (_LINK, _BOLD, _RUNS, _UNDERLINE, _COLOR)
+
+# The colour the API shows a link in, #1155cc, as it returns it: float32
+# fractions of each channel.
+LINK_BLUE = {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}
 
 
 def _link_target(value: Any) -> str | None:
@@ -647,14 +653,34 @@ def _link_target(value: Any) -> str | None:
     return None
 
 
+def _shown(held: dict[str, Any]) -> dict[str, Any]:
+    """The effective text format of a cell with the format ``held``.
+
+    A link underlines its text and shows it in :data:`LINK_BLUE`, with no
+    user-entered property saying so; the cell's own underline and colour win.
+    """
+    linked = "link" in held
+    color = held.get("color", LINK_BLUE if linked else {})
+    shown: dict[str, Any] = {
+        "bold": bool(held.get("bold")),
+        "underline": held.get("underline", linked),
+        "foregroundColor": dict(color),
+        "foregroundColorStyle": {"rgbColor": dict(color)},
+    }
+    if linked:
+        shown["link"] = {"uri": held["link"]}
+    return shown
+
+
 class _GridTab:
     """One tab of a :class:`FakeSheetGrid`: a dense grid of stored values.
 
     ``cells[r][c]`` is the value at 0-based row ``r`` and column ``c``, None
     when the cell is empty. ``formats[(r, c)]`` is the format of a cell that
     has one, a dict that may hold ``link`` (the target of a link on the whole
-    cell), ``bold``, and ``runs`` (its ``textFormatRuns``). ``widths`` holds
-    each column's pixel width.
+    cell), ``bold``, and ``runs`` (its ``textFormatRuns``), and ``underline``
+    and ``color`` (an ``rgbColor``) where they are set as the cell's own
+    format. ``widths`` holds each column's pixel width.
     """
 
     def __init__(self, sheet_id: int, title: str, rows: int, columns: int) -> None:
@@ -784,6 +810,10 @@ class FakeSheetGrid:
       ``UNFORMATTED_VALUE`` with ``SERIAL_NUMBER``, which is the API's default
       ``dateTimeRenderOption``, as its serial number. A string that looks like
       a date is a string under every option.
+    - A cell seeded by ``display`` has a number format: it reads as its
+      displayed text under ``FORMATTED_VALUE`` and as its value under
+      ``UNFORMATTED_VALUE``, while it holds that value. A string written over
+      it is displayed as written.
     - ``values.update`` / ``values.batchUpdate`` store each value as given (an
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
@@ -801,10 +831,17 @@ class FakeSheetGrid:
       honour a ``fields`` mask over the cell link, ``bold``, and
       ``textFormatRuns``: a field the mask names and the cell omits is
       cleared, and ``updateCells`` with the link in its mask writes a URL with
-      no link. ``spreadsheets.get`` with ``includeGridData`` returns
+      no link. The underline and ``foregroundColorStyle`` are honoured too
+      (an ``underline: false`` is kept, as it overrides the link's). A
+      ``repeatCell`` whose mask names the link and the runs both drops the
+      link, as the API does, whatever the cell says.
+      ``spreadsheets.get`` with ``includeGridData`` returns
       ``hyperlink`` for a link on the whole cell, the runs, and
       ``userEnteredFormat`` under its ``fields`` mask, for the one range
-      asked. Inserted rows and columns take ``bold`` from the side they
+      asked, and ``effectiveFormat`` for a cell with a value or a format: a
+      link underlines its text and shows it in :data:`LINK_BLUE` unless the
+      cell's own format says otherwise. Inserted rows and columns take
+      ``bold`` from the side they
       inherit from, and nothing else.
     - Any read or write outside a tab's grid raises the 400 ``HttpError`` the
       API returns; so do an unknown tab, a duplicate tab title, inheriting
@@ -850,6 +887,16 @@ class FakeSheetGrid:
         for r, values in enumerate(grid, start=row - 1):
             for c, value in enumerate(values):
                 tab.put(r, c, value)
+
+    def display(self, title: str, row: int, column: int, value: Any, text: str) -> None:
+        """Store ``value`` at ``row`` and 1-based ``column``, displayed as ``text``.
+
+        Models a number format, such as ``0.5`` shown as ``50%``: a formatted
+        read of the cell returns ``text`` for as long as it holds ``value``.
+        """
+        tab = self.tab(title)
+        tab.put(row - 1, column - 1, value)
+        tab.held(row - 1, column - 1)["shown"] = (value, text)
 
     def format(self, title: str, row: int, column: int) -> dict[str, Any]:
         """The format of the cell at spreadsheet ``row`` and 1-based ``column``."""
@@ -976,7 +1023,10 @@ class FakeSheetGrid:
         tab, r1, r2, c1, c2 = self._span(range_)
         rows = self._truncated([row[c1:c2] for row in tab.cells[r1:r2]])
         if render != "UNFORMATTED_VALUE":
-            rows = [[_displayed(v) for v in row] for row in rows]
+            rows = [
+                [self._shown(tab, r, c, v) for c, v in enumerate(row, start=c1)]
+                for r, row in enumerate(rows, start=r1)
+            ]
         else:
             shown = _shown_date if date_time == "FORMATTED_STRING" else _serial
             rows = [
@@ -986,6 +1036,14 @@ class FakeSheetGrid:
         if rows:  # the API omits "values" for an empty range
             result["values"] = rows
         return result
+
+    @staticmethod
+    def _shown(tab: _GridTab, r: int, c: int, value: Any) -> str:
+        """A cell as displayed: its ``display`` text while it holds that value."""
+        shown = tab.formats.get((r, c), {}).get("shown")
+        if shown is not None and shown[0] == value:
+            return shown[1]
+        return _displayed(value)
 
     # -- handlers --
 
@@ -1081,9 +1139,15 @@ class FakeSheetGrid:
                 entered["link"] = {"uri": held["link"]}
             if held.get("bold"):
                 entered["bold"] = True
+            if "underline" in held:
+                entered["underline"] = held["underline"]
+            if "color" in held:
+                entered["foregroundColorStyle"] = {"rgbColor": dict(held["color"])}
         if entered:
             cell["userEnteredFormat"] = {"textFormat": entered}
         value = tab.cells[r][c]
+        if "effectiveFormat" in fields and (value is not None or held):
+            cell["effectiveFormat"] = {"textFormat": _shown(held)}
         if "formattedValue" in fields and value is not None:
             cell["formattedValue"] = _displayed(value)
         if "effectiveValue" in fields and value is not None:
@@ -1280,6 +1344,8 @@ class FakeSheetGrid:
             _LINK: ("link", text.get("link", {}).get("uri")),
             _BOLD: ("bold", text.get("bold")),
             _RUNS: ("runs", cell.get(_RUNS)),
+            _UNDERLINE: ("underline", text.get("underline")),
+            _COLOR: ("color", text.get("foregroundColorStyle", {}).get("rgbColor")),
         }
         was_set = False
         for name in named:
@@ -1287,7 +1353,7 @@ class FakeSheetGrid:
                 continue
             key, value = given[name]
             held.pop(key, None)
-            if value:
+            if value or (key == "underline" and value is not None):
                 held[key] = value
                 was_set = True
         return was_set
@@ -1302,6 +1368,11 @@ class FakeSheetGrid:
         if not (0 <= r1 < r2 <= tab.row_count and 0 <= c1 < c2 <= tab.column_count):
             raise http_error(400, f"repeatCell: range {span} is outside the grid")
         cell = body.get("cell", {})
+        if _LINK in named and _RUNS in named:
+            # The API drops a link sent in the request that sets the runs.
+            text = cell.get("userEnteredFormat", {}).get("textFormat", {})
+            kept = {key: value for key, value in text.items() if key != "link"}
+            cell = cell | {"userEnteredFormat": {"textFormat": kept}}
         if self._format({}, cell, named):
             # Something is set, so every cell of the range takes it.
             for r in range(r1, r2):

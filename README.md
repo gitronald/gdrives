@@ -4,7 +4,8 @@ Command-line tools for Google Drive.
 
 Browse Google Drives, list folder contents by path or ID, export Google Docs,
 Sheets, and Slides to Office formats, download individual files or whole folder
-trees, rename and move files and folders, read and write Google Sheet cell
+trees, list and download a file's past revisions, rename and move files and
+folders, read and write Google Sheet cell
 ranges, keep a Sheet tab and a local file in step, read and edit Google Docs
 content in place, and generate hyperlinked folder maps — all from the terminal.
 Human-readable Drive paths (e.g. `My Drive/projects`) resolve against a local
@@ -27,7 +28,7 @@ Typer CLI.
 
 ```
 gdrives/
-├── cli.py       # Typer CLI: ls, export, download, mv, show-drives, sheets-*, docs-*
+├── cli.py       # Typer CLI: ls, export, download, revisions, mv, show-drives, sheets-*, docs-*
 ├── auth.py      # OAuth, service-account, and ADC authentication
 ├── drives.py    # Drive name→ID cache (fetch, save, resolve)
 ├── resolve.py   # Path→ID resolution (drive paths and "shared with me")
@@ -35,6 +36,7 @@ gdrives/
 ├── listing.py   # DriveEntry, recursive collection, and table/markdown/CSV formatters
 ├── export.py    # Export Google Docs, Sheets, and Slides to Office formats
 ├── download.py  # Download a single file, or recurse a folder, to local disk
+├── revisions.py # List a file's revisions, and download one (read-only)
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
 ├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
@@ -51,7 +53,7 @@ gdrives/
 │   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
 │   ├── structure.py  # Add and delete columns, create tabs, set column widths
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
-│   ├── stores.py     # Stores for the local side and the base (FileStore, MemoryStore)
+│   ├── stores.py     # Stores for the local side and the base (FileStore, JsonEntryStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
 │   └── commands.py   # run_* entry points for the sheets-* commands
 └── docs.py      # Read and edit Google Docs content in place (Docs API v1)
@@ -185,6 +187,24 @@ when the time runs out, or when the token could not be saved. It is also the
 way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
 starting `Credential:`.
+
+A caller that wants to say more can build on `gdrives.auth.describe_credentials()`,
+whose `CredentialInfo` names why a credential was chosen without a network call:
+`oauth_client` (the client secrets file, or `None` if OAuth is not configured),
+`terminal` (whether a terminal is on stdin), `consent_skipped` (True when OAuth
+is configured but no consent could run for lack of one), `service_account` (the
+service account key file, if any), and `passed_over` (each cached OAuth token
+file that was looked at and not used, as a `PassedToken(path, reason)` with
+`reason` one of `PASSED_REASONS`: `missing`, `scopes`, `unreadable`, or
+`invalid`). For example, to announce a fall back to the service account:
+
+```python
+from gdrives.auth import describe_credentials
+
+info = describe_credentials()
+if info.kind == "service_account" and info.consent_skipped:
+    print(f"No terminal for OAuth consent ({info.oauth_client}); using {info}")
+```
 
 ### List Drive contents
 
@@ -361,7 +381,17 @@ is added to the other. Deleted rows are flagged, never deleted. A `pull` tab
 replaces the local file with the tab, and a `push` tab replaces the tab's
 values with the local file. A pull tab's `exclude` names columns to leave out
 (the other way round from `columns`), so their values never reach the local
-file or a report, even for a column added on the sheet later.
+file or a report, even for a column added on the sheet later. A workbook kept
+in one JSON file, `{"Members": [...], "Dues": [...]}`, is synced by giving each
+tab an `entry` of its `.json` `local` file, and a target's `base_file` keeps
+every sync tab's base as an entry of one `.json` file instead of one CSV per
+tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
+`render: "formatted"` reads every cell as the sheet displays it, for local
+files that hold the displayed text. A tab's `strict_schema` makes it a problem
+for a column of either side to have no `schema` entry, so a column added later
+does not silently sync as text. A `schema` column's `present: true` makes it a
+problem for the header to lack it, and its `strict: true` narrows a `bool` or
+`date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`).
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
@@ -374,12 +404,27 @@ are synced, never formulas or formatting, and are written as literal strings.
 See [docs/sheets-sync.md](docs/sheets-sync.md) for the config fields, the merge
 and ownership rules, the first sync, and the exit codes.
 
+The sheet links a URL as it is written. A `sync` or `push` tab's
+`clear_links: true` leaves the cells a run writes with no link, and its
+`link_urls`, `{"color": "#1155cc"}`, gives each URL cell a run writes a link to
+its own text, in that colour, not underlined. See
+[links](docs/sheets-sync.md#links).
+
 A sync keeps the sheet's row order. To put a keyed tab back in an order of
 your own, compute the order in Python, as the rows' keys first to last, and
 call `reorder_rows` from `gdrives.sheets`. It moves whole rows, with their
 formatting and every column, in the fewest moves, previews unless given
 `apply=True`, and refuses an order that leaves out a row of the tab. See
 [keeping a tab in order](docs/sheets-sync.md#keeping-a-tab-in-order).
+
+A tab's `hooks`, or a target's for all its tabs, names checks of your own
+for the commands to run, as `"module:function"`: `{"validate":
+"roster_checks:known_status"}`, with `check`, `warn`, and `transform` beside
+`validate`. **Running a command on such a config runs those functions**, a
+preview included, so read a config from somewhere else before running it.
+The module is found as `import` finds it, never beside the config, and every
+name is checked before the first request. See
+[hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
 
 ### Read and edit Google Docs content
 
@@ -446,6 +491,27 @@ exit status 1. Rerun with `--skip-existing` to pick up where it stopped. Each
 entry maps to the same local path it got the first time, and entries already
 there are skipped instead of saved again as ` (1)` copies. Control characters
 in Drive names are replaced with `_` in local file names.
+
+### List and download a file's revisions
+
+```bash
+gdrives revisions <file-url>                                     # List revisions (id, modified time, by, size)
+gdrives revisions "My Drive/refs/paper.pdf"                       # By path
+gdrives revisions <file-url> --json                               # Raw revision list, as JSON
+gdrives revisions <sheet-url> --download <revision-id>            # Download one revision into ./
+gdrives revisions <sheet-url> --download <revision-id> -o out.csv # ...to a chosen path
+gdrives revisions <sheet-url> --download <revision-id> --format csv -o out/  # ...into a directory, as CSV
+```
+
+Read-only: this lists and downloads revisions but never restores, pins
+(`keepForever`), or deletes one, and it never touches Drive's write scopes.
+A binary file downloads its stored bytes as-is; a Google Doc, Sheet, or
+Slides file is fetched from that revision's own export links (an older
+revision, not just the latest, since Drive keeps them), in the format named
+by `--format` (an extension such as `xlsx`, `csv`, or `pdf`; default the
+type's usual export) — `--format` is refused for anything else. `-o` takes a
+file path or a directory; for a directory the local name is the file's name,
+the revision ID, and the format's extension.
 
 ### Rename and move files and folders
 

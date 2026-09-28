@@ -327,6 +327,13 @@ class TestPushRefusals:
         with pytest.raises(ValueError, match=r"lacks column\(s\) \['zz'\]"):
             push_tab(FakeSheetGrid(), "S", tab)
 
+    def test_no_rows_is_refused_before_a_lacking_column(self, tmp_path):
+        # The order of 0.13.0: an empty file says so, whatever else it lacks.
+        tab = one_tab(tmp_path, "push", columns=["id", "zz"])
+        write_local(tab)
+        with pytest.raises(ValueError, match="has no rows"):
+            push_tab(FakeSheetGrid(), "S", tab)
+
     def test_a_duplicate_local_key(self, tmp_path):
         tab = one_tab(tmp_path, "push", key=["id"])
         write_local(tab, ROWS[0], ROWS[0])
@@ -1666,3 +1673,191 @@ class TestBlankCells:
             "  row count drops by 1",
             "  rows removed (1): z",
         ]
+
+
+class TestPushLinkUrls:
+    HEADER = ["id", "site", "note"]
+    ROWS = [
+        ["a", "https://example.com/a", "see https://x.io"],
+        ["b", "example.com", "https://note.example"],
+    ]
+    GREEN = "#33aa55"
+    WANTED = {
+        "underline": False,
+        "color": {"red": 0x33 / 255, "green": 0xAA / 255, "blue": 0x55 / 255},
+    }
+
+    def push(self, grid, **options):
+        rows = as_records(*self.ROWS, header=self.HEADER)
+        return push_rows(grid, "S", "T", self.HEADER, rows, apply=True, **options)
+
+    def test_a_push_links_its_url_cells(self):
+        grid = FakeSheetGrid({"T": [self.HEADER, ["a", "old", "plain"]]})
+        grid.format("T", 2, 2)["bold"] = True
+        report = self.push(grid, link_urls=self.GREEN)
+        assert [(cell.row, cell.column) for cell in report.linked] == [
+            (2, "site"),
+            (3, "note"),
+        ]
+        assert (
+            grid.format("T", 2, 2)
+            == {
+                "link": "https://example.com/a",
+                "bold": True,
+            }
+            | self.WANTED
+        )
+        assert grid.format("T", 3, 3) == {"link": "https://note.example"} | self.WANTED
+        # A bare domain is no URL cell, and keeps the link the API gave it.
+        assert grid.format("T", 3, 2) == {"link": "http://example.com"}
+        assert report.exit_code == 0
+        lines = format_report(SyncReport([report])).splitlines()
+        assert "  URL cells given a link: 2" in lines
+        assert writes(grid) == ["values.update", "spreadsheets.batchUpdate"]
+
+    def test_an_unchanged_tab_is_not_checked(self):
+        grid = FakeSheetGrid({"T": [self.HEADER, *self.ROWS]})
+        report = self.push(grid, link_urls=self.GREEN)
+        assert report.linked == [] and writes(grid) == []
+        # The tab listing and the read of the values, and no grid read.
+        assert grid.methods == ["spreadsheets.get", "values.get"]
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"link_urls": "#33aa5"}, "a colour is written '#rrggbb', not '#33aa5'"),
+            (
+                {"link_urls": "#33aa55", "clear_links": True},
+                "tab 'T': clear_links and link_urls contradict each other",
+            ),
+        ],
+    )
+    def test_refusals_ask_nothing(self, options, message):
+        grid = FakeSheetGrid({"T": []})
+        with pytest.raises(ValueError, match=message):
+            self.push(grid, **options)
+        assert grid.calls == []
+
+    def test_a_tab_takes_the_setting_from_its_config(self, tmp_path):
+        tab = one_tab(tmp_path, "push", link_urls={"color": self.GREEN})
+        write_local(tab, *self.ROWS, header=self.HEADER)
+        grid = FakeSheetGrid({"T": []})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert len(report.linked) == 2
+        assert grid.format("T", 2, 2) == {"link": "https://example.com/a"} | self.WANTED
+
+
+class TestPushStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "push")
+        write_local(tab, *ROWS)
+        report = push_tab(FakeSheetGrid({"T": [HEADER, *ROWS]}), "S", tab, apply=True)
+        assert report.problems == []
+
+    def test_an_undeclared_local_column_blocks_before_any_request(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "push", schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "push",
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert grid.values("T") == [HEADER, *ROWS]
+
+    def test_push_rows_takes_the_flag_directly(self):
+        report = push_rows(
+            FakeSheetGrid({"T": [HEADER]}),
+            "S",
+            "T",
+            ["id", "name"],
+            [{"id": "a", "name": "Ada", "amt": "1"}],
+            schema={"id": ColumnSchema(), "name": ColumnSchema()},
+            strict_schema=True,
+        )
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+
+    def test_push_rows_default_is_off(self):
+        report = push_rows(
+            FakeSheetGrid({"T": [HEADER]}),
+            "S",
+            "T",
+            ["id", "name"],
+            [{"id": "a", "name": "Ada", "amt": "1"}],
+            schema={"id": ColumnSchema(), "name": ColumnSchema()},
+        )
+        assert report.problems == []
+
+
+class TestPullStrictSchema:
+    def test_default_off_changes_nothing(self, tmp_path):
+        tab = one_tab(tmp_path, "pull")
+        report = pull_tab(FakeSheetGrid({"T": [HEADER, *ROWS]}), "S", tab, apply=True)
+        assert report.problems == []
+
+    def test_an_undeclared_header_column_blocks_before_any_write(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "pull", schema={"id": {}, "name": {}}, strict_schema=True
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert not local_file(tab).exists()
+
+    def test_a_header_column_outside_columns_is_checked_too(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            columns=["id", "name"],
+            schema={"id": {}, "name": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert not local_file(tab).exists()
+
+    def test_an_excluded_column_is_not_checked(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            exclude=["amt"],
+            schema={"id": {}, "name": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert rows_of(tab.local) == [["a", "Ada"], ["b", "Bo"]]
+
+    def test_a_fully_declared_tab_runs_as_before(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema=True,
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert rows_of(tab.local) == ROWS

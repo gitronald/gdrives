@@ -2,10 +2,10 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
-| 018 | [Close the remaining gaps that keep a downstream sync off gdrives.sheets](plans/018-downstream-adoption-gaps/plan.md) | active | — | — |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | draft | — | — |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
+| 018 | [Close the remaining gaps that keep a downstream sync off gdrives.sheets](plans/018-downstream-adoption-gaps/plan.md) | done | 2026-09-27 20:12 PT | [#59](https://github.com/gitronald/gdrives/pull/59) |
 | 011 | [Read datetime serials in one fixed-width form](plans/011-datetime-cell-form/plan.md) | done | 2026-09-27 16:51 PT | [#56](https://github.com/gitronald/gdrives/pull/56) |
 | 007 | [Close the gaps that keep a caller's own sync code from moving onto gdrives.sheets](plans/007-sheets-sync-adoption-gaps/plan.md) | done | 2026-09-27 16:04 PT | [#44](https://github.com/gitronald/gdrives/pull/44) |
 | 008 | [Protect a caller's OAuth token and make a pending consent visible](plans/008-oauth-token-and-consent-safety/plan.md) | done | 2026-09-27 13:47 PT | [#45](https://github.com/gitronald/gdrives/pull/45) |

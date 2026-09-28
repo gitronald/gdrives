@@ -17,12 +17,16 @@ from gdrives.sheets import (
     ColumnSchema,
     Config,
     ConfigError,
+    FileStore,
+    JsonEntryStore,
+    MemoryStore,
     TabConfig,
     Target,
     find_config,
     load_config,
     parse_config,
 )
+from gdrives.sheets.config import _Checker
 
 ROOT = Path("/project")
 PATH = ROOT / CONFIG_NAME
@@ -874,3 +878,398 @@ class TestLoad:
         path = self.write(tmp_path, {})
         with pytest.raises(ConfigError, match=f"^{path}: 1 problem"):
             load_config(path)
+
+
+class TestJsonEntries:
+    """A tab's ``entry`` and a target's ``base_file``: entries of one JSON file."""
+
+    WHERE = "target 'roster', tab 'Members'"
+    BOOK = ROOT / "data" / "book.json"
+
+    def book(self, entry="Members", **fields):
+        """A sync tab over ``entry`` of ``data/book.json``."""
+        return members(local="data/book.json", entry=entry) | fields
+
+    def test_an_entry_tab_has_a_json_entry_store_typed_by_its_schema(self):
+        tab = self.book(schema={"n": {"type": "int"}})
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        (loaded,) = target.tabs
+        assert loaded.entry == "Members" and loaded.local == self.BOOK
+        assert loaded.local_store == JsonEntryStore(
+            self.BOOK, "Members", types={"n": "int"}
+        )
+
+    @pytest.mark.parametrize("mode", ["sync", "pull", "push"])
+    def test_an_entry_is_valid_for_every_mode(self, mode):
+        tab = self.book(mode=mode)
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].local_store == JsonEntryStore(self.BOOK, "Members", {})
+
+    @pytest.mark.parametrize("entry", ["", "  ", 3, None, ["Members"]])
+    def test_a_bad_entry(self, entry):
+        refused(
+            config({"Members": self.book(entry=entry)}),
+            f"{self.WHERE}: 'entry' must be a non-blank string",
+        )
+
+    @pytest.mark.parametrize("local", ["data/book.csv", "data/book.tsv"])
+    def test_an_entry_needs_a_json_local(self, local):
+        refused(
+            config({"Members": self.book(local=local)}),
+            f"{self.WHERE}: 'entry' needs a .json 'local'",
+        )
+
+    def test_an_entry_of_a_bad_local_reports_the_local_only(self):
+        refused(
+            config({"Members": self.book(local="data/book.xlsx")}),
+            f"{self.WHERE}: 'local' 'data/book.xlsx' must end in one of "
+            "['.csv', '.json', '.tsv']",
+        )
+
+    def test_an_entry_takes_neither_a_bom_nor_crlf(self):
+        assert problems_of(
+            config({"Members": self.book(bom=True, newline="crlf")})
+        ) == [
+            f"{self.WHERE}: 'bom' applies only to a .csv or .tsv file",
+            f"{self.WHERE}: 'newline' applies only to a .csv or .tsv file",
+        ]
+
+    def test_a_tab_in_code_refuses_an_entry_without_a_json_local(self):
+        with pytest.raises(ValueError, match="tab 'T': 'entry' needs a .json 'local'"):
+            TabConfig(title="T", local=Path("m.csv"), entry="T")
+        with pytest.raises(ValueError, match="tab 'T': 'entry' needs a .json 'local'"):
+            TabConfig(title="T", store=FileStore(Path("m.json")), entry="T")
+
+    def test_base_file_gives_each_sync_tab_an_entry_base(self):
+        tabs = {
+            "Members": members(schema={"n": {"type": "int"}}),
+            "Dues": members(local="data/dues.csv"),
+            "Summary": {"mode": "push", "local": "out/summary.csv"},
+            "Log": {"mode": "pull", "local": "out/log.csv"},
+        }
+        target = parse_config(
+            config(tabs, base_file="sheets-base/roster.json"), PATH
+        ).target("roster")
+        path = ROOT / "sheets-base" / "roster.json"
+        assert target.base_stores == {
+            "Members": JsonEntryStore(path, "Members", types={"n": "int"}),
+            "Dues": JsonEntryStore(path, "Dues", types={}),
+        }
+        members_tab = target.tab("Members")
+        assert target.base_store(members_tab) == target.base_stores["Members"]
+
+    def test_base_file_on_a_target_with_no_sync_tab_is_unused(self):
+        tabs = {"Summary": {"mode": "push", "local": "out/summary.csv"}}
+        data = config(tabs, base_file="sheets-base/roster.json")
+        assert parse_config(data, PATH).target("roster").base_stores == {}
+
+    def test_base_file_with_base(self):
+        refused(
+            config(base="sheets-base/roster", base_file="sheets-base/roster.json"),
+            "target 'roster': 'base' and 'base_file' contradict each other",
+        )
+
+    @pytest.mark.parametrize("value", ["", "  ", 7, None])
+    def test_a_bad_base_file(self, value):
+        refused(
+            config(base_file=value),
+            "target 'roster': 'base_file' must be a .json file path",
+        )
+
+    @pytest.mark.parametrize("value", ["sheets-base/roster.csv", "sheets-base"])
+    def test_a_base_file_that_is_not_json(self, value):
+        refused(
+            config(base_file=value),
+            f"target 'roster': 'base_file' {value!r} must end in .json",
+        )
+
+    @pytest.mark.parametrize("value", [".gdrives/base.json", "a/.gdrives/b.json"])
+    def test_a_base_file_inside_the_cache_directory(self, value):
+        refused(
+            config(base_file=value),
+            f"target 'roster': 'base_file' {value!r} is inside a .gdrives "
+            "directory, which is a cache; keep the base where it is committed",
+        )
+
+    def test_two_tabs_may_write_two_entries_of_one_file(self):
+        tabs = {
+            "Members": self.book(),
+            "Dues": self.book(entry="Dues", local="data/../data/BOOK.json"),
+            "Log": {"mode": "pull", "local": "data/book.json", "entry": "Log"},
+        }
+        data = config(tabs, base_file="data/base.json")
+        assert len(parse_config(data, PATH).target("roster").tabs) == 3
+
+    def test_two_tabs_writing_one_entry(self):
+        refused(
+            config(
+                {
+                    "Members": self.book(),
+                    "Copy": {
+                        "mode": "pull",
+                        "local": "data/./book.json",
+                        "entry": "Members",
+                    },
+                }
+            ),
+            f"{self.BOOK} [Members] would be written by more than one tab: "
+            f"{self.WHERE} (local file); target 'roster', tab 'Copy' (local file)",
+        )
+
+    def test_a_whole_file_writer_and_an_entry_writer_of_one_path(self):
+        refused(
+            config(
+                {
+                    "Members": self.book(),
+                    "Dues": self.book(entry="Dues"),
+                    "Copy": {"mode": "pull", "local": "data/Book.json"},
+                }
+            ),
+            f"{self.BOOK} would be written whole and by entry: "
+            "target 'roster', tab 'Copy' (local file); "
+            f"{self.WHERE} (local file); target 'roster', tab 'Dues' (local file)",
+        )
+
+    def test_a_push_tab_reads_an_entry_another_tab_writes(self):
+        tabs = {
+            "Members": self.book(),
+            "Out": {"mode": "push", "local": "data/book.json", "entry": "Members"},
+            "Whole": {"mode": "push", "local": "data/book.json"},
+        }
+        assert len(parse_config(config(tabs), PATH).target("roster").tabs) == 3
+
+    def test_a_local_entry_and_a_base_entry_of_one_file(self):
+        # The local side and the base are keyed by entry like any two writers:
+        # the base's entry is the tab's title, so a local entry of another
+        # name may share the file, and one of the same name may not.
+        data = config(
+            {"Members": self.book(entry="members")}, base_file="data/book.json"
+        )
+        assert parse_config(data, PATH).target("roster").base_stores
+        refused(
+            config({"Members": self.book()}, base_file="data/book.json"),
+            f"{self.BOOK} [Members] would be written by more than one tab: "
+            f"{self.WHERE} (local file); {self.WHERE} (base)",
+        )
+
+    def test_a_base_file_and_a_whole_local_file_of_one_path(self):
+        refused(
+            config(
+                {"Members": members(local="data/book.json")}, base_file="data/book.json"
+            ),
+            f"{self.BOOK} would be written whole and by entry: "
+            f"{self.WHERE} (local file); {self.WHERE} (base)",
+        )
+
+    def test_two_targets_sharing_a_base_file(self):
+        one = config(base_file="shared.json")["roster"]
+        two = config(
+            {"Members": members(local="other.csv"), "Dues": members(local="d.csv")},
+            base_file="./x/../SHARED.json",
+        )["roster"]
+        refused(
+            {"one": one, "two": two},
+            f"{ROOT / 'shared.json'} [Members] would be written by more than one "
+            "tab: target 'one', tab 'Members' (base); target 'two', tab 'Members' "
+            "(base)",
+        )
+        three = config({"Dues": members(local="d.csv")}, base_file="shared.json")
+        loaded = parse_config({"one": one, "three": three["roster"]}, PATH)
+        assert list(loaded.targets) == ["one", "three"]
+
+    def test_a_caller_s_own_stores_are_not_checked(self):
+        store = MemoryStore()
+        tabs = tuple(TabConfig(title=t, store=store, key=("id",)) for t in "AB")
+        target = Target(
+            name="t",
+            spreadsheet="S",
+            base=ROOT,
+            tabs=tabs,
+            base_stores={"A": store, "B": store},
+        )
+        checker = _Checker(ROOT)
+        checker.collisions([target])
+        assert checker.problems == []
+
+    def test_a_target_with_no_base_is_not_asked_for_one(self):
+        stored = TabConfig(title="A", store=MemoryStore(), key=("id",))
+        bare = TabConfig(title="B", local=ROOT / "b.csv", key=("id",))
+        target = Target(
+            name="t",
+            spreadsheet="S",
+            tabs=(stored, bare),
+            base_stores={"A": MemoryStore()},
+        )
+        checker = _Checker(ROOT)
+        checker.collisions([target, target])
+        assert checker.problems == [
+            f"{ROOT / 'b.csv'} would be written by more than one tab: "
+            "target 't', tab 'B' (local file); target 't', tab 'B' (local file)"
+        ]
+
+
+class TestLinkUrls:
+    WHERE = "target 'roster', tab 'Members'"
+
+    def tab_refused(self, tab, problem):
+        refused(config({"Members": tab}), f"{self.WHERE}: {problem}")
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_on_a_sync_or_a_push_tab(self, mode):
+        tab = members(mode=mode, link_urls={"color": "#1155CC"})
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].link_urls == "#1155CC"
+        assert target.tabs[0].clear_links is False
+
+    def test_absent_by_default(self):
+        target = parse_config(config(), PATH).target("roster")
+        assert target.tabs[0].link_urls is None
+
+    def test_on_a_pull_tab(self):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "link_urls": {"color": "#1155cc"}},
+            "'link_urls' does not apply to a pull tab",
+        )
+
+    def test_with_clear_links(self):
+        self.tab_refused(
+            members(clear_links=True, link_urls={"color": "#1155cc"}),
+            "'link_urls' and 'clear_links' contradict each other",
+        )
+        tab = members(clear_links=False, link_urls={"color": "#1155cc"})
+        assert parse_config(config({"Members": tab}), PATH).targets
+
+    @pytest.mark.parametrize("color", ["1155cc", "#15c", "#1155cg", "blue", 5, None])
+    def test_a_colour_that_is_not_rrggbb(self, color):
+        self.tab_refused(
+            members(link_urls={"color": color}),
+            f"'link_urls' color must be '#rrggbb', not {color!r}",
+        )
+
+    @pytest.mark.parametrize(
+        "given",
+        ["#1155cc", True, {}, {"colour": "#1155cc"}, {"color": "#1155cc", "x": 1}],
+    )
+    def test_not_an_object_with_a_color(self, given):
+        self.tab_refused(
+            members(link_urls=given),
+            "'link_urls' must be an object with one field, 'color'",
+        )
+
+    def test_a_tab_built_in_code(self, tmp_path):
+        local = tmp_path / "m.csv"
+        assert TabConfig("T", local, link_urls="#1155cc").link_urls == "#1155cc"
+        with pytest.raises(
+            ValueError, match="'link_urls' and 'clear_links' contradict"
+        ):
+            TabConfig("T", local, clear_links=True, link_urls="#1155cc")
+        with pytest.raises(ValueError, match="a colour is written '#rrggbb'"):
+            TabConfig("T", local, link_urls="1155cc")
+
+
+class TestStrictSchema:
+    @pytest.mark.parametrize("mode", ["sync", "push", "pull"])
+    def test_accepted_on_every_mode(self, mode):
+        tab = {"mode": mode, "local": "m.csv", "strict_schema": True}
+        if mode == "sync":
+            tab["key"] = ["id"]
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].strict_schema is True
+
+    def test_defaults_to_false(self):
+        target = parse_config(config({"Members": members()}), PATH).target("roster")
+        assert target.tabs[0].strict_schema is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(strict_schema="yes")}),
+            "target 'roster', tab 'Members': 'strict_schema' must be true or false",
+        )
+
+    def test_a_schema_column_outside_columns_is_accepted(self):
+        data = config(
+            {
+                "Members": members(
+                    columns=["id"],
+                    schema={"id": {}, "a": {}},
+                    strict_schema=True,
+                )
+            }
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert set(tab.schema) == {"id", "a"}
+
+    def test_a_schema_column_outside_columns_is_refused_without_it(self):
+        refused(
+            config({"Members": members(columns=["id"], schema={"id": {}, "a": {}})}),
+            "target 'roster', tab 'Members': schema column(s) ['a'] not in 'columns'",
+        )
+
+
+class TestSchemaPresent:
+    def test_accepted(self):
+        data = config({"Members": members(schema={"id": {"present": True}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].present is True
+
+    def test_defaults_to_false(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].present is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(schema={"id": {"present": "yes"}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'present' must be true or false",
+        )
+
+    def test_excluding_a_present_column_is_refused(self):
+        # A present column always has a schema entry, so the generic
+        # 'exclude' names schema column(s) refusal already covers it.
+        refused(
+            config(
+                {
+                    "Members": {
+                        "mode": "pull",
+                        "local": "data/members.csv",
+                        "schema": {"a": {"present": True}},
+                        "exclude": ["a"],
+                    }
+                }
+            ),
+            "target 'roster', tab 'Members': 'exclude' names schema column(s) "
+            "['a'], which would be read anyway",
+        )
+
+
+class TestSchemaStrict:
+    @pytest.mark.parametrize("type_", ["bool", "date"])
+    def test_accepted_for_bool_and_date(self, type_):
+        data = config(
+            {"Members": members(schema={"id": {"type": type_, "strict": True}})}
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].strict is True
+
+    def test_defaults_to_false(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].strict is False
+
+    def test_must_be_a_boolean(self):
+        refused(
+            config({"Members": members(schema={"id": {"strict": "yes"}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'strict' must be true or false",
+        )
+
+    @pytest.mark.parametrize("type_", ["str", "int", "float", "datetime"])
+    def test_refused_for_any_other_type(self, type_):
+        refused(
+            config(
+                {"Members": members(schema={"id": {"type": type_, "strict": True}})}
+            ),
+            "target 'roster', tab 'Members': schema 'id': 'strict' is only for "
+            f"a column of ['bool', 'date'], not {type_!r}",
+        )

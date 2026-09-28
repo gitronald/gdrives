@@ -19,6 +19,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
+- ``hooks``: the hooks a config names, found when a run starts
+  (``resolve_hooks``, ``tab_hooks``)
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
   records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
@@ -27,7 +29,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``order``: ``reorder_rows``, which puts a keyed tab's rows in a given
   order by moving whole rows
 - ``stores``: where a tab's local side and its base are kept (``Store``,
-  ``FileStore``, ``MemoryStore``)
+  ``FileStore``, ``JsonEntryStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
@@ -57,6 +59,7 @@ from gdrives.sheets.cells import (
     BLANK_KEYS,
     COLUMN_TYPES,
     SERIAL_TYPES,
+    STRICT_TYPES,
     ColumnSchema,
     Problem,
     cell_problem,
@@ -91,6 +94,7 @@ from gdrives.sheets.commands import (
 from gdrives.sheets.config import (
     BOOTSTRAPS,
     CONFIG_NAME,
+    HOOKS,
     INPUT_OPTIONS,
     LOCAL_EXTENSIONS,
     MODES,
@@ -111,6 +115,7 @@ from gdrives.sheets.files import (
     write_records,
     write_values_csv,
 )
+from gdrives.sheets.hooks import resolve_hooks, tab_hooks
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
     OVERRIDE_REASONS,
@@ -143,13 +148,15 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
-from gdrives.sheets.stores import FileStore, MemoryStore, Store
+from gdrives.sheets.stores import FileStore, JsonEntryStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     LINK_FIELDS,
     RUNS_FIELD,
+    URL_LINK_REASONS,
     WIDTH_FIELDS,
     LinkedCell,
+    UrlLinkProblem,
     add_columns,
     clear_link_format,
     delete_columns,
@@ -159,7 +166,9 @@ from gdrives.sheets.structure import (
     linked_cells,
     place_columns,
     set_column_widths,
+    set_url_links,
     strip_links,
+    url_link_problems,
 )
 from gdrives.sheets.sync import (
     STAGES,
@@ -190,6 +199,7 @@ from gdrives.sheets.values import (
     FORMATTED_VALUE,
     FORMULA,
     RAW,
+    RENDERS,
     SERIAL_NUMBER,
     UNFORMATTED_VALUE,
     USER_ENTERED,
@@ -232,7 +242,9 @@ __all__ = [
     "FORMULA",
     "GridTooLargeError",
     "IDEMPOTENT_STATUSES",
+    "JsonEntryStore",
     "HeldCell",
+    "HOOKS",
     "INPUT_OPTIONS",
     "LINK_FIELDS",
     "LOCAL_EXTENSIONS",
@@ -248,6 +260,7 @@ __all__ = [
     "Problem",
     "RATE_LIMIT_STATUSES",
     "RAW",
+    "RENDERS",
     "ROW_FLAGS",
     "RUNS_FIELD",
     "RetryNotice",
@@ -260,6 +273,7 @@ __all__ = [
     "SERIAL_TYPES",
     "SIDES",
     "STAGES",
+    "STRICT_TYPES",
     "SheetChangedError",
     "Store",
     "SyncReport",
@@ -271,7 +285,9 @@ __all__ = [
     "Table",
     "Target",
     "UNFORMATTED_VALUE",
+    "URL_LINK_REASONS",
     "USER_ENTERED",
+    "UrlLinkProblem",
     "WIDTH_FIELDS",
     "a1_quote",
     "a1_to_grid_range",
@@ -337,6 +353,7 @@ __all__ = [
     "read_tab",
     "read_values_csv",
     "reorder_rows",
+    "resolve_hooks",
     "row_key",
     "run_add_rule",
     "run_append",
@@ -355,14 +372,17 @@ __all__ = [
     "serial_to_cell",
     "set_by_match",
     "set_column_widths",
+    "set_url_links",
     "split_a1",
     "strip_links",
     "sync_tab",
     "tab_grid",
+    "tab_hooks",
     "tab_listing",
     "tab_sheet_ids",
     "to_cell",
     "update_values",
+    "url_link_problems",
     "verify",
     "with_retry",
     "write_records",

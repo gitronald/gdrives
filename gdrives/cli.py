@@ -166,6 +166,57 @@ def download(
 
 
 @app.command()
+def revisions(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="Drive file URL, ID, or path (e.g. 'My Drive/refs/paper.pdf')"
+        ),
+    ],
+    download: Annotated[
+        str | None,
+        typer.Option("--download", help="Revision ID to download (see the listing)"),
+    ] = None,
+    output: Annotated[
+        str,
+        typer.Option(
+            "-o",
+            "--output",
+            help="With --download: file path or directory (default: cwd)",
+        ),
+    ] = ".",
+    format_: Annotated[
+        str | None,
+        typer.Option(
+            "--format",
+            help="With --download: export extension for a native file, "
+            "e.g. xlsx, csv, pdf (default: the type's usual export)",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw revision list as JSON"),
+    ] = False,
+):
+    """List a file's revisions, or download one with --download.
+
+    Lists id, modified time, modified by, and size (binary files only) as
+    aligned columns; --json prints the raw list instead. --download fetches
+    one revision by ID: a native Google file (Doc, Sheet, Slides) is fetched
+    in the format named by --format, and any other file is fetched as stored
+    (--format does not apply to it). Read-only: this never restores, pins, or
+    deletes a revision.
+    """
+    if download is None and (format_ is not None or output != "."):
+        _fail("--output and --format require --download")
+
+    from gdrives.revisions import run
+
+    with _cli_errors():
+        run(source, download=download, output=output, format=format_, as_json=as_json)
+
+
+@app.command()
 def ls(
     path: Annotated[
         str | None,

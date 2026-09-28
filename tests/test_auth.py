@@ -1328,3 +1328,218 @@ class TestAnnounceCredentials:
             auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES)
             auth.announce_credentials(auth.SHEETS_WRITE_SCOPES, always=True)
         assert capsys.readouterr().err == f"Credential: {info}\n"
+
+
+# -- CredentialInfo's new fields: oauth_client, terminal, consent_skipped, --
+# -- service_account, and passed_over --
+
+
+class TestCredentialInfoNewFieldsIgnoredByEquality:
+    """The new fields have defaults and stay out of equality and __str__."""
+
+    def test_str_and_equality_ignore_the_new_fields(self):
+        base = auth.CredentialInfo(kind="oauth", source=Path("t.json"))
+        decorated = auth.CredentialInfo(
+            kind="oauth",
+            source=Path("t.json"),
+            oauth_client=Path("c.json"),
+            terminal=True,
+            consent_skipped=True,
+            service_account=Path("sa.json"),
+            passed_over=(auth.PassedToken(path=Path("x.json"), reason="missing"),),
+        )
+        assert base == decorated
+        assert str(base) == str(decorated)
+        assert hash(base) == hash(decorated)
+
+    def test_a_bare_construction_still_has_the_old_defaults(self):
+        info = auth.CredentialInfo(kind="adc")
+        assert (info.oauth_client, info.terminal, info.consent_skipped) == (
+            None,
+            False,
+            False,
+        )
+        assert (info.service_account, info.passed_over) == (None, ())
+
+
+class TestCredentialInfoDetailFields:
+    """Each new field, over each branch of describe_credentials()."""
+
+    @pytest.fixture(autouse=True)
+    def no_credentials(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+
+    def test_adc_when_nothing_is_configured(self):
+        info = auth.describe_credentials()
+        assert info.kind == "adc"
+        assert info.oauth_client is None
+        assert info.terminal is False
+        assert info.consent_skipped is False
+        assert info.service_account is None
+        assert info.passed_over == ()
+
+    def test_a_cached_token(self, monkeypatch, tmp_path):
+        creds = MagicMock(valid=True, expired=False)
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        secrets = tmp_path / "gdrives_credentials.json"
+        secrets.write_text("{}")
+        (tmp_path / "gdrives_token.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        info = auth.describe_credentials()
+        assert info.kind == "oauth"
+        assert info.oauth_client == secrets
+        assert info.terminal is False
+        assert info.consent_skipped is False
+        assert info.passed_over == ()
+
+    def test_a_refresh(self, monkeypatch, tmp_path):
+        creds = MagicMock(valid=False, expired=True, refresh_token="rt")
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        secrets = tmp_path / "gdrives_credentials.json"
+        secrets.write_text("{}")
+        (tmp_path / "gdrives_token.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        info = auth.describe_credentials()
+        assert info.refresh is True
+        assert info.oauth_client == secrets
+        assert info.consent_skipped is False
+        assert info.passed_over == ()
+
+    def test_a_consent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(auth, "_is_interactive", lambda: True)
+        secrets = tmp_path / "gdrives_credentials.json"
+        secrets.write_text("{}")
+        info = auth.describe_credentials()
+        assert info.consent is True
+        assert info.oauth_client == secrets
+        assert info.terminal is True
+        assert info.consent_skipped is False
+        assert [p.reason for p in info.passed_over] == ["missing", "missing"]
+
+    def test_a_service_account(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        secrets = tmp_path / "gdrives_credentials.json"
+        secrets.write_text("{}")
+        key = tmp_path / "service_account.json"
+        key.write_text(json.dumps({"client_email": "sa@example.com"}))
+        info = auth.describe_credentials()
+        assert info.kind == "service_account"
+        assert info.oauth_client == secrets
+        assert info.terminal is False
+        assert info.consent_skipped is True
+        assert info.service_account == key
+        assert [p.reason for p in info.passed_over] == ["missing", "missing"]
+
+    def test_not_configured_versus_skipped_for_no_terminal(self, monkeypatch, tmp_path):
+        not_configured = auth.describe_credentials()
+        assert (not_configured.oauth_client, not_configured.consent_skipped) == (
+            None,
+            False,
+        )
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        skipped = auth.describe_credentials()
+        assert skipped.oauth_client == tmp_path / "gdrives_credentials.json"
+        assert skipped.consent_skipped is True
+
+
+class TestPassedOverTokens:
+    """PassedToken and each of PASSED_REASONS, over the cached-token checks."""
+
+    @pytest.fixture(autouse=True)
+    def configured(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        self.dir = tmp_path
+
+    def test_missing(self):
+        info = auth.describe_credentials()
+        assert info.passed_over == (
+            auth.PassedToken(path=self.dir / "gdrives_token.json", reason="missing"),
+            auth.PassedToken(
+                path=self.dir / "gdrives_token_drive-readonly.json",
+                reason="missing",
+            ),
+        )
+
+    def test_scopes(self):
+        token = self.dir / "gdrives_token.json"
+        token.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        info = auth.describe_credentials()
+        assert info.passed_over[0] == auth.PassedToken(path=token, reason="scopes")
+
+    def test_unreadable(self):
+        token = self.dir / "gdrives_token.json"
+        token.write_text("not json")
+        info = auth.describe_credentials()
+        assert info.passed_over[0] == auth.PassedToken(path=token, reason="unreadable")
+
+    def test_invalid(self, monkeypatch):
+        token = self.dir / "gdrives_token.json"
+        token.write_text("{}")
+        creds = MagicMock(valid=False, expired=False, refresh_token=None)
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        info = auth.describe_credentials()
+        assert info.passed_over[0] == auth.PassedToken(path=token, reason="invalid")
+
+    def test_a_scope_mismatch_beside_a_token_that_serves(self, monkeypatch):
+        mismatched = self.dir / "gdrives_token.json"
+        mismatched.write_text(json.dumps({"scopes": auth.SHEETS_WRITE_SCOPES}))
+        derived = self.dir / "gdrives_token_drive-readonly.json"
+        derived.write_text(json.dumps({"scopes": auth.SCOPES}))
+        creds = MagicMock(valid=True, expired=False)
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        info = auth.describe_credentials()
+        assert info.passed_over == (auth.PassedToken(path=mismatched, reason="scopes"),)
+        assert info.source == derived
+
+
+class TestNoSecretIsHeld:
+    """No token, key, or secret value is ever held in a CredentialInfo field."""
+
+    def test_no_sentinel_in_repr(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        (tmp_path / "gdrives_token.json").write_text(
+            json.dumps({"scopes": auth.SCOPES, "refresh_token": "SECRET-TOKEN-VALUE"})
+        )
+        key = tmp_path / "service_account.json"
+        key.write_text(
+            json.dumps(
+                {
+                    "client_email": "sa@example.com",
+                    "private_key": "SECRET-KEY-VALUE",
+                    "private_key_id": "SECRET-KEY-ID",
+                }
+            )
+        )
+        creds = MagicMock(valid=False, expired=False, refresh_token=None)
+        monkeypatch.setattr(
+            "google.oauth2.credentials.Credentials.from_authorized_user_file",
+            lambda path, scopes=None: creds,
+        )
+        info = auth.describe_credentials()
+        assert info.kind == "service_account"
+        assert [p.reason for p in info.passed_over] == ["invalid", "missing"]
+        text = repr(info)
+        for sentinel in ("SECRET-TOKEN-VALUE", "SECRET-KEY-VALUE", "SECRET-KEY-ID"):
+            assert sentinel not in text

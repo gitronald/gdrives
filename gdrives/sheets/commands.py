@@ -16,6 +16,7 @@ from gdrives.local import escape_formula, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
 from gdrives.sheets.config import Target, load_config
 from gdrives.sheets.files import read_values_csv, write_values_csv
+from gdrives.sheets.hooks import resolve_hooks
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import RetryNotice, retry_notices
 from gdrives.sheets.rules import (
@@ -443,10 +444,11 @@ def _run_config(
 ) -> int:
     """Run the ``mode`` tabs of config target ``name``; return the exit code.
 
-    The config, the target, and the tabs are checked before any request. A
-    preview reads with the read-only scope; ``apply`` on a sync or push tab
-    needs the Sheets write scope, and announces the credential first (as does
-    a pull, which writes only local files and stays read-only).
+    The config, the target, the tabs, and the hooks the config names (found
+    with :func:`~gdrives.sheets.hooks.resolve_hooks`) are checked before any
+    request. A preview reads with the read-only scope; ``apply`` on a sync or
+    push tab needs the Sheets write scope, and announces the credential first
+    (as does a pull, which writes only local files and stays read-only).
     """
     from gdrives.auth import (
         SHEETS_WRITE_SCOPES,
@@ -456,6 +458,11 @@ def _run_config(
 
     target = load_config(config).target(name)
     wanted = _config_tabs(target, mode, tabs)
+    # The config's hooks are imported before any request (and found again,
+    # from sys.modules, by run_target).
+    resolve_hooks(
+        target, wanted or [tab.title for tab in target.tabs if tab.mode == mode]
+    )
     scopes = SHEETS_WRITE_SCOPES if apply and mode != "pull" else None
     if apply:
         announce_credentials(scopes, always=True)

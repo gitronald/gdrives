@@ -34,7 +34,9 @@ tab, which says whether the tab exists and, for a tab the config names by
 A caller's own checks are three hooks. ``validate`` takes rows, ``check`` a
 :class:`CheckContext` (the rows, the columns of both sides, and the merge),
 and both block a write. ``warn`` takes a :class:`CheckContext` too, runs once
-after every blocking check has passed, and blocks nothing.
+after every blocking check has passed, and blocks nothing. A ``transform``
+(pull and sync) cleans the rows read from the sheet before anything else sees
+them.
 
 A run that fails part way has recorded no sync that did not land: a failed
 guard or read-back leaves the local file and the base as they were, and the
@@ -70,7 +72,9 @@ from gdrives.sheets.apply import (
 from gdrives.sheets.cells import (
     ColumnSchema,
     _header_row,
+    cell_problem,
     index_rows,
+    normalize_cell,
     problems,
     row_key,
     to_cell,
@@ -82,9 +86,13 @@ from gdrives.sheets.config import (
     Target,
 )
 from gdrives.sheets.files import Records, read_records, write_records
+from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, Store
 from gdrives.sheets.structure import (
+    UrlLinkProblem,
+    _fix_url_links,
+    _rgb,
     add_columns,
     delete_columns,
     ensure_tabs,
@@ -104,10 +112,11 @@ from gdrives.sheets.values import (
     RAW,
     UNFORMATTED_VALUE,
     TabListing,
+    _check_render,
+    _pull_rendered,
     batch_update_spreadsheet,
     list_tabs,
     pull_many,
-    pull_values,
     tab_grid,
     tab_listing,
     update_values,
@@ -157,6 +166,15 @@ class CheckContext:
 
 #: A caller's own check with the context: one message per problem out.
 Check = Callable[[CheckContext], list[str]]
+
+#: A caller's own cleaning of the rows a tab is read as: rows in, rows out,
+#: one for each row given, in order, with the same columns.
+Transform = Callable[[Sequence[Mapping[str, str]]], Sequence[Mapping[str, str]]]
+
+#: The transform of :func:`pull_all_tabs`, which is also given the tab's title.
+TitledTransform = Callable[
+    [Sequence[Mapping[str, str]], str], Sequence[Mapping[str, str]]
+]
 
 _Key = tuple[str, ...]
 
@@ -223,6 +241,8 @@ class TabReport:
     step that landed is flagged even when a later one fails. A single sheet
     write that fails with an API error part way is not flagged; the error
     says what failed.
+
+    ``linked`` is each URL cell a run with ``link_urls`` gave a link.
     """
 
     tab: str
@@ -250,6 +270,7 @@ class TabReport:
     wrote_local: bool = False
     wrote_base: bool = False
     wrote_widths: bool = False
+    linked: list[UrlLinkProblem] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -299,6 +320,10 @@ class TabPlan:
     for a tab found by its ``sheet_id`` and renamed. The options are kept so
     :func:`apply_tab` can merge again after changing the tab's structure, and
     ``listing`` is the tab listing the plan was made with.
+
+    With a ``transform``, ``seen`` is ``table`` with the rows the transform
+    returned, which the merge compared; ``table`` stays the tab as read, for
+    the re-read guard and the read-back.
     """
 
     target: Target
@@ -320,20 +345,21 @@ class TabPlan:
     added: tuple[str, ...] = ()
     title: str = ""
     listing: TabListing | None = None
+    transform: Transform | None = None
+    seen: Table | None = None
 
 
 # -- reading --
 
 
-def _read_grid(service: Service, spreadsheet_id: str, title: str) -> list[list[Any]]:
-    """The whole tab's values, read as :func:`~gdrives.sheets.table.read_tab` reads."""
-    return pull_values(
-        service,
-        spreadsheet_id,
-        a1_quote(title),
-        render=UNFORMATTED_VALUE,
-        date_time_render=FORMATTED_STRING,
-    )
+def _read_grid(
+    service: Service, spreadsheet_id: str, title: str, render: str = "unformatted"
+) -> list[list[Any]]:
+    """The whole tab's values, read as :func:`~gdrives.sheets.table.read_tab` reads.
+
+    ``render`` is the tab's setting, as for :func:`~gdrives.sheets.table.read_tab`.
+    """
+    return _pull_rendered(service, spreadsheet_id, a1_quote(title), render)
 
 
 def _canonical(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
@@ -417,9 +443,94 @@ def _check(
     context: CheckContext,
     validate: Validate | None,
     check: Check | None,
+    *,
+    strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every schema, ``validate``, and ``check`` problem of a tab at one stage."""
-    return _problems(tab.schema, tab.key, context, validate, check)
+    """Every schema, ``validate``, and ``check`` problem of a tab at one stage.
+
+    ``strict_columns`` is the columns :attr:`TabConfig.strict_schema` checks
+    for a schema entry, when it differs from ``context.columns`` (as for a
+    pull, where the sheet's header holds more than the projection).
+    """
+    return _problems(
+        tab.schema,
+        tab.key,
+        context,
+        validate,
+        check,
+        strict_schema=tab.strict_schema,
+        strict_columns=strict_columns,
+    )
+
+
+def _strict_schema_problems(
+    tab: str, stage: str, schema: Mapping[str, ColumnSchema], columns: Iterable[str]
+) -> list[str]:
+    """One problem per column of ``columns`` that ``schema`` does not declare."""
+    label = f"{tab} ({stage})"
+    return [
+        f"{label}: column {column!r} has no schema entry, and the tab is strict_schema"
+        for column in columns
+        if column not in schema
+    ]
+
+
+def _respelling_problems(
+    tab: str,
+    local_rows: Sequence[Mapping[str, str]],
+    remote: Sequence[Mapping[str, str]],
+    schema: Mapping[str, ColumnSchema],
+    key: Sequence[str],
+) -> list[str]:
+    """A strict column's sheet text that fails it though the row compares in sync.
+
+    The merge's own schema check runs only on a sheet value about to be
+    folded (:func:`~gdrives.sheets.merge.merge`'s ``schema``); a cell that
+    compares equal after typed normalization (``true`` against ``TRUE``) is
+    never folded or pushed, so it never reaches that check. This finds it
+    anyway: nothing would be written for such a cell either way, so it always
+    refuses the tab, under either ``on_invalid`` setting, since there is
+    nothing for ``hold`` to hold back.
+    """
+    strict = [column for column, spec in schema.items() if spec.strict]
+    if not strict:
+        return []
+    label = f"{tab} (sheet)"
+    by_key = {row_key(row, key): row for row in local_rows}
+    found: list[str] = []
+    for sheet_row in remote:
+        local_row = by_key.get(row_key(sheet_row, key))
+        if local_row is None:
+            continue
+        for column in strict:
+            local_text = local_row.get(column, "")
+            sheet_text = sheet_row.get(column, "")
+            if local_text == sheet_text:
+                continue
+            type_ = schema[column].type
+            if normalize_cell(local_text, type_) != normalize_cell(sheet_text, type_):
+                continue  # a real difference; the merge's own check covers it
+            reason = cell_problem(sheet_text, schema[column])
+            if reason is not None:
+                where = row_key(sheet_row, key)
+                found.append(f"{label}: key {where}, column {column!r}: {reason}")
+    return found
+
+
+def _presence_problems(
+    tab: str, stage: str, schema: Mapping[str, ColumnSchema], available: Collection[str]
+) -> list[str]:
+    """One problem per schema column declared ``present`` that ``available`` lacks.
+
+    Reported once per column, independent of the row count: a header check,
+    not a per-cell one, so it fires on a tab with no rows too.
+    """
+    label = f"{tab} ({stage})"
+    return [
+        f"{label}: column {column!r} is declared present and the header lacks it"
+        for column, spec in schema.items()
+        if spec.present and column not in available
+    ]
 
 
 def _problems(
@@ -428,12 +539,26 @@ def _problems(
     context: CheckContext,
     validate: Validate | None,
     check: Check | None,
+    *,
+    strict_schema: bool = False,
+    strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every schema, ``validate``, and ``check`` problem at one stage, as messages."""
+    """Every schema, ``validate``, and ``check`` problem at one stage, as messages.
+
+    With ``strict_schema``, a column of ``strict_columns`` (``context.columns``
+    when None) that ``schema`` does not declare is a problem too, one per
+    column, independent of ``on_invalid`` and of the row-by-row schema check
+    above.
+    """
     label = f"{context.tab} ({context.stage})"
     found = [
         str(problem) for problem in problems(context.rows, schema, tab=label, key=key)
     ]
+    if strict_schema:
+        checked = strict_columns if strict_columns is not None else context.columns
+        found.extend(
+            _strict_schema_problems(context.tab, context.stage, schema, checked)
+        )
     if validate is not None:
         found.extend(f"{label}: {text}" for text in validate(context.rows))
     if check is not None:
@@ -478,6 +603,96 @@ def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
 
 
+def _with_tab_hooks(
+    tab: TabConfig,
+    validate: Validate | None,
+    check: Check | None,
+    warn: Check | None,
+    transform: Transform | None,
+) -> tuple[Validate | None, Check | None, Check | None, Transform | None]:
+    """The hooks ``tab``'s config names joined with those given, the config's first.
+
+    Messages are the config hook's, then the given one's; a config
+    ``transform`` runs first, and the given one cleans what it returns.
+    Nothing is imported for a tab with no ``hooks``.
+    """
+    if not tab.hooks:
+        return validate, check, warn, transform
+    named = tab_hooks(tab)
+    return (
+        _joined(named.get("validate"), validate),
+        _joined(named.get("check"), check),
+        _joined(named.get("warn"), warn),
+        _chained(named.get("transform"), transform),
+    )
+
+
+# -- transform --
+
+
+def _transformed(table: Table, transform: Transform) -> Table:
+    """``table`` with the rows ``transform`` returns for its rows, keyed again.
+
+    The hook is given copies, so the rows as read are never changed. What it
+    returns must be one row for each row given, each with exactly the
+    columns it was given, every value a string; anything else raises
+    ValueError saying which. With a key the rows are indexed again, with the
+    table's ``blank_keys``, so a key the transform made blank or made equal
+    to another is refused as the tab itself would be. Row numbers still
+    refer to the sheet's rows.
+    """
+    given = [dict(row) for row in table.rows]
+    returned = list(transform(given))
+    label = f"tab {table.tab!r}"
+    if len(returned) != len(given):
+        raise ValueError(
+            f"{label}: the transform returned {len(returned)} rows for "
+            f"{len(given)}; it returns one row for each row given"
+        )
+    rows: list[dict[str, str]] = []
+    for position, row in enumerate(returned, start=1):
+        if set(row) != set(table.columns):
+            raise ValueError(
+                f"{label}: the transform returned row {position} with columns "
+                f"{sorted(row)}, not {sorted(table.columns)}; it returns each "
+                "row with exactly the columns it was given"
+            )
+        wrong = [column for column in table.columns if not isinstance(row[column], str)]
+        if wrong:
+            raise ValueError(
+                f"{label}: the transform returned row {position} with a value "
+                f"that is not a string in column(s) {wrong}"
+            )
+        rows.append({column: row[column] for column in table.columns})
+    if not table.key:
+        return replace(table, rows=rows)
+    numbers = [table.row_numbers[row_key(row, table.key)] for row in table.rows]
+    row_numbers = index_rows(
+        rows,
+        table.key,
+        side=f"{label}, as transformed",
+        numbers=numbers,
+        blank_keys=table.blank_keys,
+    )
+    return replace(table, rows=rows, row_numbers=row_numbers)
+
+
+def _on_sheet(plan: MergePlan, table: Table, seen: Table | None) -> MergePlan:
+    """``plan`` with each push named by the key its row has on the sheet as read.
+
+    A merge over transformed rows names a row by its transformed key;
+    ``seen`` is the table it merged (None with no transform), and ``table``
+    the tab as read, which the re-read guard and the read-back compare with
+    the sheet. The two share row numbers, which map one key to the other.
+    """
+    if seen is None:
+        return plan
+    read = {number: found for found, number in table.row_numbers.items()}
+    keys = {found: read[number] for found, number in seen.row_numbers.items()}
+    pushes = [replace(cell, key=keys[cell.key]) for cell in plan.pushes]
+    return replace(plan, pushes=pushes)
+
+
 # -- sync --
 
 
@@ -496,6 +711,7 @@ def plan_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabPlan:
     """Read a sync tab, its local file, and its base, and merge them. Writes nothing.
 
@@ -506,8 +722,26 @@ def plan_tab(
     (:class:`CheckContext`). ``warn`` runs once, on the merged result, when
     no check found a problem; its messages go to the report's ``warnings``
     and block nothing.
-    The tab is read with the schema's types: a column declared ``date`` or
-    ``datetime`` costs a second read, and its date cells arrive as ISO 8601.
+    With the tab's ``strict_schema``, a local column with no ``schema`` entry
+    is a problem too, at the ``"local"`` stage (every local column, in and out
+    of the projection); a sheet column outside the projection is the same,
+    at the ``"sheet"`` stage, once the tab is read, less a column already
+    reported at the local stage and one this run drops with ``drop_extra``.
+    A schema column declared ``present`` is checked the same two stages, the
+    other way round: it must be in the local file's columns at ``"local"``,
+    and in the sheet's header at ``"sheet"`` (less a column this run is
+    adding with ``add_missing``, not yet there but about to be). The tab is
+    read with the schema's types: a column declared ``date`` or ``datetime``
+    costs a second read, and its date cells arrive as ISO 8601. Every read of
+    the tab in the run, the re-read guard and the read-back of
+    :func:`apply_tab` included, follows the tab's ``render``.
+
+    A row both sides hold, whose ``strict`` column compares equal only after
+    typed normalization (``true`` against ``TRUE``), is never folded or
+    pushed, so the merge's own schema check never sees the sheet's spelling.
+    It is still reported, at the ``"sheet"`` stage: nothing would be written
+    for that cell either way, so it refuses the tab under either
+    ``on_invalid`` setting.
 
     The schema's types also decide how cells compare: two spellings of one
     value in a typed column are one value
@@ -545,6 +779,18 @@ def plan_tab(
     as :func:`run_target` has; with None it is read here. A tab with a
     ``sheet_id`` is found by it, under whatever title it has now, and one the
     spreadsheet lacks is an error.
+
+    ``transform`` is given the sheet's rows as read, over the projection
+    columns the tab has, and returns them cleaned (see :func:`pull_tab`). The
+    merge, the checks, the report, the local file, and the base see the
+    cleaned rows, so a sheet cell that differs from the local side only by
+    what the transform removes is in sync, and is not pushed: the sheet keeps
+    its text. The re-read guard and the read-back of :func:`apply_tab`
+    compare the tab as read, and ``insert_above`` matches its values as read.
+    A merge after a restructure runs the transform again. It must be
+    idempotent: a local edit is pushed as written, and one the transform
+    would change is read back as a sheet edit on the next run and folded in,
+    once. The local side is never transformed.
     """
     if prefer is not None and prefer not in SIDES:
         raise ValueError(
@@ -554,6 +800,9 @@ def plan_tab(
     _started(report, tab)
     _refuse_exclude(tab)
     report.adopted = adopt
+    validate, check, warn, transform = _with_tab_hooks(
+        tab, validate, check, warn, transform
+    )
     options: dict[str, Any] = {
         "adopt": adopt,
         "add_missing": add_missing,
@@ -562,6 +811,7 @@ def plan_tab(
         "validate": validate,
         "check": check,
         "warn": warn,
+        "transform": transform,
     }
     return _plan(service, spreadsheet_id, target, tab, report, options, listing=listing)
 
@@ -596,6 +846,7 @@ def _plan(
     columns = _projection(tab, local)
 
     title = tab.title
+    seen: Table | None = None
 
     def planned(
         table: Table | None, plan: MergePlan | None, base: Records | None
@@ -613,6 +864,7 @@ def _plan(
             added=tuple(added),
             title=title,
             listing=listing,
+            seen=seen,
             **options,
         )
 
@@ -625,7 +877,10 @@ def _plan(
             columns=tuple(local.columns),
             projection=tuple(columns),
         )
-        report.problems = _check(tab, before, *hooks)
+        report.problems = [
+            *_check(tab, before, *hooks),
+            *_presence_problems(tab.title, "local", tab.schema, local.columns),
+        ]
         if report.problems:
             return planned(None, None, None)
 
@@ -650,7 +905,7 @@ def _plan(
         report.tab_state = "missing"
     else:
         title = found
-        grid = _read_grid(service, spreadsheet_id, title)
+        grid = _read_grid(service, spreadsheet_id, title, tab.render)
         try:
             whole = parse_tab(title, grid, None)
         except EmptyTabError:
@@ -667,6 +922,10 @@ def _plan(
             table, remote = _sheet_side(
                 tab, columns, grid, serials, whole, report, options
             )
+            if options["transform"] is not None:
+                seen = _transformed(table, options["transform"])
+                blank = dict.fromkeys(report.add_columns, "")
+                remote = [row | blank for row in seen.rows]
             fresh.update(report.add_columns)
     if report.tab_state != "present" and base is not None:
         raise ValueError(
@@ -722,7 +981,9 @@ def _plan(
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
     if table is not None and tab.insert_above is not None:
-        above = _insert_row(tab, table, grid, serials, plan, report.add_columns)
+        above = _insert_row(
+            tab, table, grid, serials, _on_sheet(plan, table, seen), report.add_columns
+        )
         if plan.appends:
             report.insert_row, report.last_row = above, table.last_row
     if check:
@@ -737,7 +998,37 @@ def _plan(
             dropping=tuple(report.drop_columns),
             plan=plan,
         )
-        report.problems = _check(tab, merged, *hooks)
+        # strict_schema already checked the local side at the "local" stage
+        # above, before the sheet was read; a column it found undeclared
+        # there already stopped the plan, so a column that reaches here is
+        # never one the local side also carries: reported once, at "local".
+        report.problems = _check(tab, merged, *hooks, strict_columns=())
+        if tab.strict_schema and sheet_columns is not None:
+            sheet_extra = [
+                column
+                for column in sheet_columns
+                if column not in columns and column not in report.drop_columns
+            ]
+            report.problems = [
+                *report.problems,
+                *_strict_schema_problems(tab.title, "sheet", tab.schema, sheet_extra),
+            ]
+        if sheet_columns is not None:
+            # A column this run is adding with add_missing is not yet in the
+            # header, but will be: it is not reported as absent.
+            report.problems = [
+                *report.problems,
+                *_presence_problems(
+                    tab.title,
+                    "sheet",
+                    tab.schema,
+                    (*sheet_columns, *report.add_columns),
+                ),
+            ]
+        report.problems = [
+            *report.problems,
+            *_respelling_problems(tab.title, local.rows, remote, tab.schema, tab.key),
+        ]
         _warn(report, merged, options["warn"])
     return planned(table, plan, base)
 
@@ -784,6 +1075,7 @@ def _sheet_side(
         types=tab.types,
         serials=serials,
         blank_keys=tab.blank_keys,
+        render=tab.render,
     )
     blank = dict.fromkeys(missing, "")
     return table, [row | blank for row in table.rows]
@@ -823,6 +1115,7 @@ def _insert_row(
             types=tab.types,
             serials=serials,
             blank_keys=tab.blank_keys,
+            render=tab.render,
         )
     return insert_point(table, plan, insert_above)
 
@@ -886,14 +1179,16 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             service,
             spreadsheet_id,
             table,
-            plan,
+            _on_sheet(plan, table, planned.seen),
             insert_above=tab.insert_above,
             clear_links=tab.clear_links,
+            link_urls=tab.link_urls,
         )
     except ReadBackError:
         report.wrote_sheet = True  # the writes went out; they did not read back
         raise
     report.applied = result
+    report.linked = result.linked
     if result.pushed or result.appended:
         report.wrote_sheet = True
 
@@ -905,7 +1200,9 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
         planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
-        set_column_widths(service, spreadsheet_id, planned.title, tab.widths)
+        set_column_widths(
+            service, spreadsheet_id, planned.title, tab.widths, render=tab.render
+        )
         report.wrote_widths = True
     return report
 
@@ -934,14 +1231,16 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         # A listing from before the tab was created is not used again.
         listing = None
     if state != "present":
-        add_columns(service, spreadsheet_id, title, planned.columns)
+        add_columns(service, spreadsheet_id, title, planned.columns, render=tab.render)
         report.wrote_sheet = True
     if added:
         # Placed on the sheet's header as it is now: the deletes run after.
-        place_columns(service, spreadsheet_id, title, planned.columns)
+        place_columns(
+            service, spreadsheet_id, title, planned.columns, render=tab.render
+        )
         report.wrote_sheet = True
     if dropped:
-        delete_columns(service, spreadsheet_id, title, list(dropped))
+        delete_columns(service, spreadsheet_id, title, list(dropped), render=tab.render)
         report.wrote_sheet = True
 
     options: dict[str, Any] = {
@@ -952,6 +1251,7 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         "validate": planned.validate,
         "check": planned.check,
         "warn": planned.warn,
+        "transform": planned.transform,
     }
     again = _plan(
         service,
@@ -995,6 +1295,7 @@ def sync_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabReport:
     """:func:`plan_tab`, then :func:`apply_tab` when ``apply``."""
     planned = plan_tab(
@@ -1011,6 +1312,7 @@ def sync_tab(
         warn=warn,
         listing=listing,
         report=report,
+        transform=transform,
     )
     if not apply:
         return planned.report
@@ -1080,6 +1382,7 @@ def pull_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabReport:
     """Replace ``tab``'s local file with the tab's records (with ``apply``).
 
@@ -1090,7 +1393,14 @@ def pull_tab(
     tab, a tab with no header row, or one with no rows is refused, and the
     local file is left alone. The records are checked against the schema,
     ``validate``, and ``check`` before anything is written, at the stage
-    ``"sheet"``, and ``warn`` runs when they pass. The report's ``replacement``
+    ``"sheet"``, and ``warn`` runs when they pass. With ``strict_schema``, a
+    named header column with no ``schema`` entry is a problem too, checked at
+    the same stage, whether or not it is read: every named column, less any
+    ``exclude`` names, not just ``columns``. A schema column declared
+    ``present`` is checked there too, against the same named header columns,
+    the other way round: a problem when the header lacks it, before the "no
+    rows" refusal, so it is reported on a tab with no rows too. The report's
+    ``replacement``
     compares them with the current local file (rows added, removed, and
     changed by key when there is one, and the drop in row count); a missing
     local file is simply created. An unchanged file is not rewritten. A
@@ -1108,12 +1418,26 @@ def pull_tab(
     whose named columns are all excluded, with its own message.
     :func:`plan_tab` and :func:`push_tab` refuse a tab with ``exclude``.
 
-    ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`.
+    ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`. The
+    tab is read as its ``render`` says.
+
+    ``transform`` cleans the records after the tab is parsed, declared date
+    columns already ISO 8601, and before anything else: the checks, the
+    hooks, the report, and the file see what it returns, never the rows as
+    read. It is given a copy of the rows and returns one row for each, in
+    the same order, each with exactly the columns it was given and every
+    value a string; anything else is refused, saying which. The keys are
+    indexed again after it, with the tab's ``blank_keys``, so a transform
+    that makes a key blank or makes two equal is refused, and the local
+    side is left alone.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
     _excluded(tab)
+    validate, check, warn, transform = _with_tab_hooks(
+        tab, validate, check, warn, transform
+    )
     left = f"the {_side(store)} is left alone"
     if listing is None:
         listing = tab_listing(service, spreadsheet_id)
@@ -1121,7 +1445,7 @@ def pull_tab(
     if title is None:
         report.tab_state = "missing"
         raise ValueError(f"no tab named {tab.title!r}; {left}")
-    grid = _read_grid(service, spreadsheet_id, title)
+    grid = _read_grid(service, spreadsheet_id, title, tab.render)
     columns: Sequence[str] | None = tab.columns
     if tab.exclude:
         header = _header_row(grid)
@@ -1151,12 +1475,25 @@ def pull_tab(
             types=tab.types,
             serials=serials,
             blank_keys=tab.blank_keys,
+            render=tab.render,
         )
     except EmptyTabError:
         report.tab_state = "empty"
         raise ValueError(f"tab {tab.title!r} has no header row; {left}") from None
+    # strict_schema and 'present' check every named header column, not just
+    # the ones read (table.columns), less any 'exclude' names, which are not
+    # read at all. 'present' is checked here, before the "no rows" refusal
+    # below, so it is reported on a tab with no rows too.
+    checked = [name for name in table.header if name and name not in tab.exclude]
+    presence = _presence_problems(tab.title, "sheet", tab.schema, checked)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
     if not table.rows:
         raise ValueError(f"tab {tab.title!r} has no rows; {left}")
+    if transform is not None:
+        table = _transformed(table, transform)
     context = CheckContext(
         tab=tab.title,
         stage="sheet",
@@ -1166,7 +1503,7 @@ def pull_tab(
         sheet_columns=tuple(name for name in table.header if name),
     )
     report.warnings = list[str]()
-    report.problems = _check(tab, context, validate, check)
+    report.problems = _check(tab, context, validate, check, strict_columns=checked)
     if report.problems:
         return report
     _warn(report, context, warn)
@@ -1215,24 +1552,35 @@ def push_tab(
     :func:`push_rows`, which says what is checked, written, and refused. The
     header row and every local row are written in the local file's column
     order (the configured columns only, when there are some), and the tab's
-    ``key``, ``blank_keys``, ``schema``, ``widths``, and ``sheet_id`` are
-    passed on, with ``listing``. A local side that does not exist, holds no
-    rows, or lacks a configured column is refused.
+    ``key``, ``blank_keys``, ``schema``, ``widths``, ``sheet_id``,
+    ``render``, and ``strict_schema`` are passed on, with ``listing``. A local
+    side that does not exist, holds no rows, or lacks a configured column is
+    refused, in that order. A schema column declared ``present`` is checked
+    against the columns being written (the configured columns the local side
+    has, or every local column), before the "no rows" refusal, so a local
+    side with no rows is still checked for it.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
     _refuse_exclude(tab)
     report.apply = apply
+    validate, check, warn, _ = _with_tab_hooks(tab, validate, check, warn, None)
     local = _read_local(tab)
+    wanted = tab.columns if tab.columns is not None else local.columns
+    out = [column for column in local.columns if column in wanted]
+    presence = _presence_problems(tab.title, "local", tab.schema, out)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
     if not local.rows:
         raise ValueError(f"tab {tab.title!r}: {_named(store)} has no rows")
     _projection(tab, local)  # refuses a configured column the file lacks
-    wanted = tab.columns if tab.columns is not None else local.columns
     return push_rows(
         service,
         spreadsheet_id,
         tab.title,
-        [column for column in local.columns if column in wanted],
+        out,
         local.rows,
         key=tab.key,
         blank_keys=tab.blank_keys,
@@ -1244,10 +1592,13 @@ def push_tab(
         warn=warn,
         widths=tab.widths,
         clear_links=tab.clear_links,
+        link_urls=tab.link_urls,
         label=_named(store),
         sheet_id=tab.sheet_id,
+        strict_schema=tab.strict_schema,
         listing=listing,
         report=report,
+        render=tab.render,
     )
 
 
@@ -1268,10 +1619,13 @@ def push_rows(
     warn: Check | None = None,
     widths: Mapping[str, int] | None = None,
     clear_links: bool = False,
+    link_urls: str | None = None,
     label: str = "rows",
     sheet_id: int | None = None,
+    strict_schema: bool = False,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    render: str = "unformatted",
 ) -> TabReport:
     """Replace the values of the tab ``title`` with ``rows`` (with ``apply``).
 
@@ -1291,7 +1645,14 @@ def push_rows(
     ``validate``, and ``check`` first, before any request, at the stage
     ``"local"``; ``warn`` runs when they pass. With a ``key`` the rows are
     indexed by it, which refuses a blank or repeated key (``blank_keys`` as
-    for :func:`~gdrives.sheets.cells.index_rows`).
+    for :func:`~gdrives.sheets.cells.index_rows`). With ``strict_schema``, a
+    column any row holds that ``schema`` does not declare is a problem too,
+    checked at the same stage. A schema column declared ``present`` is
+    checked there too, against ``columns``: a problem when it is not one of
+    them, before the "no rows" refusal, so it is reported on an empty push
+    too. A push replaces the tab whole, so only ``columns``, what is written,
+    is the "local side" a push checks presence against; the sheet's own
+    header, about to be overwritten, means nothing here.
 
     The report's ``replacement`` says what the sheet holds that the rows do
     not: rows by key when there is a key, and always row and cell counts and
@@ -1311,18 +1672,47 @@ def push_rows(
     read when it left some. A link that remains raises
     :class:`ReadBackError`.
 
+    ``link_urls``, a ``#rrggbb`` colour, does the opposite: after the write,
+    each URL cell of the columns pushed is given a link to its own text in
+    that colour, not underlined
+    (:func:`~gdrives.sheets.structure.set_url_links`), and the report's
+    ``linked`` lists them. It costs a read of the tab's values and a grid
+    read of its URL cells, and when any needs a link, one write and the two
+    reads again. A colour that is not ``#rrggbb``, or ``link_urls`` with
+    ``clear_links``, is refused before any request.
+
     With ``sheet_id`` the tab is found by it, under whatever title it has
     now, and ``title`` is only what the report calls it; a ``sheet_id`` the
     spreadsheet lacks is an error, and no tab is created. ``listing`` is the
     spreadsheet's tab listing when the caller has read it.
+
+    ``render`` is how the tab is read, as for
+    :func:`~gdrives.sheets.table.read_tab`: the read of what it holds, the
+    read before the write, the read-back, and the header read of ``widths``
+    all follow it. The rows are written as ``RAW`` strings either way, and a
+    string reads as written under either setting.
     """
     report = report if report is not None else TabReport(tab=title, mode="push")
     report.apply = apply
+    _check_render(render)
+    if link_urls is not None:
+        if clear_links:
+            raise ValueError(
+                f"tab {title!r}: clear_links and link_urls contradict each other"
+            )
+        _rgb(link_urls)
     out = list(columns)
     if not out or "" in out or len(set(out)) != len(out):
         raise ValueError(
             f"tab {title!r}: columns must be one or more names, each once: {out}"
         )
+    # 'present' checks the columns being written, before the "no rows"
+    # refusal below, so it is reported on an empty push too.
+    presence = _presence_problems(title, "local", schema or {}, out)
+    if presence:
+        report.warnings = list[str]()
+        report.problems = presence
+        return report
     if not rows:
         named = "no rows to push" if label == "rows" else f"{label} has no rows"
         raise ValueError(f"tab {title!r}: {named}")
@@ -1334,7 +1724,9 @@ def push_rows(
         projection=tuple(out),
     )
     report.warnings = list[str]()
-    report.problems = _problems(schema or {}, key, context, validate, check)
+    report.problems = _problems(
+        schema or {}, key, context, validate, check, strict_schema=strict_schema
+    )
     if report.problems:
         return report
     _warn(report, context, warn)
@@ -1347,7 +1739,7 @@ def push_rows(
     found = _sheet_title(title, sheet_id, listing, report)
     exists = found is not None
     title = found if found is not None else title
-    grid = _read_grid(service, spreadsheet_id, title) if exists else []
+    grid = _read_grid(service, spreadsheet_id, title, render) if exists else []
     if not exists:
         report.tab_state = "missing"
     records = _sheet_records(title, grid)
@@ -1367,7 +1759,7 @@ def push_rows(
         return report
 
     if exists:
-        again = _read_grid(service, spreadsheet_id, title)
+        again = _read_grid(service, spreadsheet_id, title, render)
         if again != grid:
             raise SheetChangedError(
                 f"tab {title!r} changed since it was read, so nothing was written"
@@ -1391,15 +1783,19 @@ def push_rows(
         input_option=input_option,
     )
     report.wrote_sheet = True
-    _check_push(service, spreadsheet_id, title, expected, input_option)
+    _check_push(service, spreadsheet_id, title, expected, input_option, render)
     if clear_links:
         left = strip_links(
             service, spreadsheet_id, title, out, header=out, sheet_id=sheet_id
         )
         if left:
             raise _links_left(title, left, "push")
+    if link_urls is not None:
+        report.linked = _fix_url_links(
+            service, spreadsheet_id, title, link_urls, columns=out, sheet_id=sheet_id
+        )
     if widths:
-        set_column_widths(service, spreadsheet_id, title, widths)
+        set_column_widths(service, spreadsheet_id, title, widths, render=render)
         report.wrote_widths = True
     return report
 
@@ -1443,9 +1839,10 @@ def _check_push(
     title: str,
     expected: list[list[str]],
     input_option: str,
+    render: str = "unformatted",
 ) -> None:
     """Read a pushed tab back and check it, raising :class:`ReadBackError`."""
-    back = _canonical(_read_grid(service, spreadsheet_id, title))
+    back = _canonical(_read_grid(service, spreadsheet_id, title, render))
     failed = f"tab {title!r}: the read-back does not match the push"
     want = _canonical(expected)
     if input_option == RAW:
@@ -1476,6 +1873,7 @@ def pull_all_tabs(
     apply: bool = False,
     bom: bool = False,
     name: Callable[[str], str] | None = None,
+    transform: TitledTransform | None = None,
 ) -> SyncReport:
     """Dump every tab to ``out_dir``, one record file per tab, with no config.
 
@@ -1496,6 +1894,11 @@ def pull_all_tabs(
     row, is reported and skipped, never written as an empty file. With
     ``apply`` the files are written (and ``out_dir`` created), a delimited
     one with LF line endings; an unchanged file is not rewritten.
+
+    ``transform`` cleans each tab's rows before they are compared and
+    written, as for :func:`pull_tab`, and is given the tab's title as a
+    second argument, since one function serves every tab. A tab it fails
+    for is reported with the error and not written.
     """
     if extension.lower() not in LOCAL_EXTENSIONS:
         raise ValueError(
@@ -1546,7 +1949,7 @@ def pull_all_tabs(
         tab_report = TabReport(tab=title, mode="pull", local=path, apply=apply)
         report.tabs.append(tab_report)
         try:
-            _dump_tab(tab_report, title, grid, path, apply, bom)
+            _dump_tab(tab_report, title, grid, path, apply, bom, transform)
         except TAB_ERRORS as e:
             tab_report.error = str(e)
     return report
@@ -1559,6 +1962,7 @@ def _dump_tab(
     path: Path,
     apply: bool,
     bom: bool = False,
+    transform: TitledTransform | None = None,
 ) -> None:
     """Write one tab of :func:`pull_all_tabs`, or say why it was skipped."""
     try:
@@ -1574,6 +1978,8 @@ def _dump_tab(
         report.notes.append(
             f"rows {table.wide_rows} hold cells past the header, which are not written"
         )
+    if transform is not None:
+        table = _transformed(table, lambda rows: transform(rows, title))
     before = read_records(path) if path.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, ())
     if apply and not report.replacement.unchanged:
@@ -1599,17 +2005,27 @@ def run_target(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    transform: Transform | None = None,
 ) -> SyncReport:
     """Run every ``mode`` tab of ``target`` (or just ``tabs``), one report each.
 
-    ``validate``, ``check``, and ``warn`` are passed to every tab. The
+    ``validate``, ``check``, and ``warn`` are passed to every tab, and
+    ``transform`` to every pull and sync tab, given the rows alone (a caller
+    that needs the tab closes over it, or runs a function per tab). The
     spreadsheet's tabs are listed once, and again only after a tab was
     created, so a run of N tabs makes one listing and not N.
     ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
     that fails (a refusal, an API error, a failed guard) is reported with its
     error and the run goes on to the next tab, since tabs are independent.
     Raises ValueError, before any request, for an unknown mode or tab, a
-    selected tab of another mode, or a sync-only option on another mode.
+    selected tab of another mode, a sync-only option on another mode, or a
+    ``transform`` on a push.
+
+    The hooks a selected tab's config names are found first
+    (:func:`~gdrives.sheets.hooks.resolve_hooks`), and a
+    :class:`~gdrives.sheets.config.ConfigError` lists every name that does
+    not resolve, before any request. Each tab runs its config's hooks, then
+    the ones given here.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
@@ -1621,6 +2037,8 @@ def run_target(
         raise ValueError(
             f"prefer must be one of {sorted(SIDES)} or None, not {prefer!r}"
         )
+    if mode == "push" and transform is not None:
+        raise ValueError("transform applies only to pull and sync tabs")
     if tabs:
         selected = [target.tab(title) for title in tabs]
         other = [tab.title for tab in selected if tab.mode != mode]
@@ -1632,6 +2050,7 @@ def run_target(
         selected = [tab for tab in target.tabs if tab.mode == mode]
         if not selected:
             raise ValueError(f"target {target.name!r} has no {mode} tabs")
+    resolve_hooks(target, [tab.title for tab in selected])
 
     report = SyncReport(target=target.name)
     listing: TabListing | None = None
@@ -1658,6 +2077,7 @@ def run_target(
                     warn=warn,
                     listing=listing,
                     report=tab_report,
+                    transform=transform,
                 )
             elif mode == "pull":
                 pull_tab(
@@ -1670,6 +2090,7 @@ def run_target(
                     warn=warn,
                     listing=listing,
                     report=tab_report,
+                    transform=transform,
                 )
             else:
                 push_tab(
@@ -1775,6 +2196,8 @@ def _format_tab(tab: TabReport) -> list[str]:
     if tab.warnings:
         lines.append(f"  warnings ({len(tab.warnings)}):")
         lines.extend(f"    {printable(warning)}" for warning in tab.warnings)
+    if tab.linked:
+        lines.append(f"  URL cells given a link: {len(tab.linked)}")
     wrote = [
         name
         for name, done in (

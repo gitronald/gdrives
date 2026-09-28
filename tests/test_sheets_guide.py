@@ -87,6 +87,15 @@ PROMISED = {
         "tab_listing",
     ],
     "reorder rows": ["ReorderResult", "reorder_rows"],
+    "json entry store": ["JsonEntryStore"],
+    "read as displayed": ["RENDERS"],
+    "url links": [
+        "URL_LINK_REASONS",
+        "UrlLinkProblem",
+        "set_url_links",
+        "url_link_problems",
+    ],
+    "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
 }
 
 #: The fields and properties those steps added to classes that existed.
@@ -96,8 +105,15 @@ PROMISED_ATTRIBUTES = [
     (ApplyResult, ["pushed_cells", "appended_columns"]),
     (TabReport, ["insert_row", "last_row", "warnings", "local_label", "applied"]),
     (TabConfig, ["newline", "blank_keys", "on_invalid", "clear_links", "sheet_id"]),
+    (TabConfig, ["render"]),
+    (Table, ["render"]),
     (TabConfig, ["store", "local_store"]),
     (Target, ["base_stores", "base_store"]),
+    (TabConfig, ["entry"]),
+    (TabConfig, ["link_urls"]),
+    (ApplyResult, ["linked"]),
+    (TabReport, ["linked"]),
+    (TabConfig, ["hooks"]),
 ]
 
 
@@ -170,8 +186,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 6
-        assert len(blocks(GUIDE, "python")) == 7
+        assert len(blocks(GUIDE, "json")) == 12
+        assert len(blocks(GUIDE, "python")) == 10
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -242,7 +258,9 @@ class TestGuidePython:
         members = [row[0] for row in grid.values("Members")]
         assert members == ["member_id", "m1", "m3", "m2"]
         assert json.loads(workbook.read_text())["Members"] == held
-        # The last one runs the hooks, and its check finds the column that the
+        # The hooks example runs the hooks, and its check finds the column that the
         # links example reads, which the store's tab does not declare.
         (checked,) = namespace["report"].tabs
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
+        # The transform example previews a sync of the same tab, in sync.
+        assert namespace["cleaned"].exit_code == 0

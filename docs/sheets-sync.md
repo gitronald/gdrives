@@ -15,6 +15,7 @@ would change, and writes nothing. Add `--apply` to write.
 - [The config file](#the-config-file)
 - [How a sync merges](#how-a-sync-merges)
 - [The base snapshot](#the-base-snapshot)
+- [A workbook in one JSON file](#a-workbook-in-one-json-file)
 - [The first sync](#the-first-sync)
 - [Moving an existing sync over](#moving-an-existing-sync-over)
 - [Pull and push](#pull-and-push)
@@ -107,30 +108,37 @@ to keep in step with local files:
 | `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs |
 | `tabs` | yes | An object of one or more tabs, by tab title |
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
+| `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab must use `RAW` |
+| `hooks` | no | The default `hooks` of the target's tabs, hook by hook: a tab's own name for a hook wins. A push tab is not given the target's `transform`. See [hooks in the config](#hooks-in-the-config) |
 
 ### Tab fields
 
 | Field | Modes | Meaning |
 |---|---|---|
 | `local` | all (required) | The local file. Its extension picks the format: `.csv`, `.tsv`, or `.json` |
+| `entry` | all | An entry of a `.json` `local` file that holds several, as `{"Members": [...], "Dues": [...]}`: the tab's local side is then that entry. Needs a `.json` `local`. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `mode` | all | `sync` (the default), `pull`, or `push` |
 | `sheet_id` | all | The tab's `sheetId`, a whole number. The tab is then found by it, under whatever title it has on the sheet. See [a tab named by its sheetId](#a-tab-named-by-its-sheetid) |
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), and `allowed` (a list of permitted values). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
+| `render` | all | How the tab's cells are read: `unformatted` (the default) reads a number as its value, and `formatted` reads every cell as the sheet displays it, so a cell showing `50%` reads as `50%`, not `0.5`. See [how cells are read and written](#how-cells-are-read-and-written) |
 | `widths` | `sync`, `push` | Column widths in pixels, by header name. Set only on a run that wrote to the sheet |
 | `clear_links` | `sync`, `push` | `true` leaves the cells a run writes with no link, where the sheet links a URL or a domain as it is written. Default `false`. See [links](#links) |
+| `link_urls` | `sync`, `push` | An object with one field, `color`, a `#rrggbb` colour. After a write, each URL cell the run wrote is given a link to its own text, in that colour, not underlined. Contradicts `clear_links`. See [links](#links) |
 | `local_owned` | `sync` | Columns whose local value always wins. See [ownership](#ownership) |
 | `sheet_owned` | `sync` | Columns whose sheet value always wins |
 | `owns_rows` | `sync` | `true` makes the local file own the set of rows. Default `false` |
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
+| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
+| `hooks` | all | Functions that run as the tab's `validate`, `check`, `warn`, and `transform`, each named as `"module:function"`. **Naming a function runs it**: see [hooks in the config](#hooks-in-the-config). No `transform` on a `push` tab |
 
 The loader checks the whole file before any request is made and reports every
 problem at once: unknown fields, a missing or empty key on a `sync` tab, key or
@@ -139,7 +147,8 @@ owned columns outside `columns`, a column both `local_owned` and
 `push` tab, `widths` on a `pull` tab, a malformed `insert_above` or schema,
 `USER_ENTERED` on a target with a `sync` tab, and two tabs that would write the
 same file (a local file or a base file, compared case-insensitively, across
-the whole config).
+the whole config), the same entry of a file, or a whole file and an entry of
+it.
 
 Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
@@ -267,6 +276,94 @@ sheet is corrected.
 - A pull has no such option. It replaces the whole file, and refuses a tab
   with any problem.
 
+### Requiring every column to be declared
+
+A column with no `schema` entry is read and written as `str`. For a column
+meant to hold a number or a date, that is a silent failure: a new column
+added locally syncs as text until someone notices.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "paid": {"type": "bool"}},
+  "strict_schema": true
+}
+```
+
+`strict_schema: true` makes it a problem for a column of either side, less
+one a run is dropping, to have no `schema` entry:
+
+- The local file's columns, in and out of the projection (a carried column
+  included), are checked at the `local` stage, before any request. A `sync`
+  or a `push` with such a column is refused before the sheet is even read.
+- The sheet's named header columns outside the projection are checked at the
+  `sheet` stage, once the tab is read: for a `sync`, once the merge is done
+  and before anything is written; for a `pull`, before the local file is
+  written. A `sync`'s local-side check runs first, so a column both sides
+  carry is reported once, at the `local` stage.
+- A column a `sync` run drops with `--drop-extra` is not checked, since it
+  will not be on the sheet after the run. A `pull`'s `exclude` names a column
+  that is never read, and is not checked either.
+- A key column needs an entry too, one line (`"member_id": {}`, `str` is the
+  default): a key has a type as much as any other column does.
+
+With `strict_schema`, `schema` may also name a column outside `columns`,
+which is refused otherwise: a carried or excluded column has to be declared
+somewhere.
+
+### Column presence and strict forms
+
+Two more per-column checks, each opt-in and independent of the other and of
+`strict_schema`.
+
+`present: true` says a column must be in the header, not that its cells must
+hold a value: a `present` column may still have blank cells, where `required`
+governs blanks and says nothing about whether the column exists at all. A
+`present` column the header lacks is reported once, whether or not the tab
+has any rows:
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "email": {"present": true}}
+}
+```
+
+```
+Members (sheet): column 'email' is declared present and the header lacks it
+```
+
+- Checked against the local file's columns at the `local` stage for a `sync`
+  or a `push`, and against the sheet's header at the `sheet` stage for a
+  `sync` or a `pull`. A `push` replaces the tab whole, so only the columns it
+  writes are its "local side"; the sheet's own header, about to be
+  overwritten, is not checked.
+- A column `--add-missing` is about to add is not reported for the sheet.
+- A `present` column always has a `schema` entry, so `exclude` naming one is
+  already refused as naming any `schema` column is.
+
+`strict: true` narrows a `bool` or `date` column to its one exact form:
+`TRUE` or `FALSE` for `bool` (`true` and `TRUE ` fail it), and `YYYY-MM-DD`
+for `date` (`20260927`, a valid ISO 8601 basic date, fails it). It is refused
+on any other type, in the config and by `ColumnSchema` itself.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {"member_id": {}, "paid": {"type": "bool", "strict": true}}
+}
+```
+
+The check is part of `cell_problem`, so a value that fails it is a schema
+problem like any other: it blocks the write, and `on_invalid: "hold"` holds a
+sheet value that fails it, the same as any other invalid sheet value.
+**Comparison is unchanged**: a `strict` column still compares `true` and
+`TRUE` as one value, so a bare respelling is never folded or pushed. That
+also means the merge's own check, which only runs on a value about to be
+folded, never sees such a respelling; it is still reported, since nothing
+would be written for it either way, and it always refuses the tab under
+either `on_invalid` setting (there is nothing for `hold` to hold back).
+
 ### Ownership
 
 Ownership overrides the cell rule for whole columns:
@@ -344,13 +441,85 @@ The local file and the base are rewritten only when they change.
 The base is one CSV per sync tab, `<base>/<tab title>.csv`, holding the
 projection columns only. It records what both sides held after the last
 applied sync, which is what lets a sync tell "edited on the sheet" from
-"edited locally".
+"edited locally". A target's `base_file` keeps every tab's base in one JSON
+file instead: see [a workbook in one JSON file](#a-workbook-in-one-json-file).
 
 **Commit the base alongside the local file.** Everyone who syncs the same
 target then shares one base, and a clone of the project syncs correctly on its
 first run. A base that is lost or out of date makes a sync misread which side
 changed, so do not keep it in an ignored or cache directory (the loader refuses
 a base inside `.gdrives/`).
+
+## A workbook in one JSON file
+
+A project may keep a whole workbook in one JSON file, an object of entries
+each holding a tab's rows, with typed values:
+
+```
+{
+  "Members": [{"member_id": "m1", "name": "Ada", "paid": true}],
+  "Dues": [{"member_id": "m1", "amount": 25.5, "due": "2026-10-01"}]
+}
+```
+
+A tab's `entry` names its entry of a `.json` `local` file, and a target's
+`base_file` keeps every `sync` tab's base in a second file of the same shape,
+the entry named by the tab's title:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "base_file": "sheets-base/roster.json",
+    "tabs": {
+      "Members": {
+        "local": "data/workbook.json",
+        "entry": "Members",
+        "key": ["member_id"],
+        "schema": {"paid": {"type": "bool"}}
+      },
+      "Dues": {
+        "local": "data/workbook.json",
+        "entry": "Dues",
+        "key": ["member_id"],
+        "schema": {"amount": {"type": "float"}, "due": {"type": "date"}}
+      },
+      "Summary": {"mode": "pull", "local": "data/workbook.json", "entry": "Summary"}
+    }
+  }
+}
+```
+
+- An entry is read and written as a `.json` local file is: an array of flat
+  objects, each value typed by the tab's `schema`, a blank cell as `null`,
+  and a date as its ISO 8601 string. The base in `base_file` is typed by the
+  same schema. `bom` and `crlf` do not apply.
+- A write reads the file again, replaces the tab's entry, or adds it at the
+  end when it is new, and replaces the whole file through a temporary file
+  and a rename. Every other entry keeps its value and its place.
+- The file is written with a two-space indent, non-ASCII text as it is, and
+  a final newline, so a rewrite that changes nothing leaves a file in that
+  form byte-for-byte the same. A file formatted another way by hand is
+  reformatted on its first write, with every value kept. A run that changes
+  nothing does not write the file at all.
+- A file that is not a JSON object, or whose object names an entry twice, is
+  an error for the tab, and is never taken for a missing entry and
+  overwritten.
+- Two tabs may write two entries of one file. The loader refuses two tabs
+  that would write the same entry, and a tab that writes the whole file
+  beside one that writes an entry of it. A `push` tab only reads its entry.
+- Tabs run one after another, and each write reads the file as the tab
+  before left it. If a later tab fails, the file holds the earlier tab's new
+  entry and the failed tab's old one, as two separate files would: the
+  earlier tab's sheet, local entry, and base entry all landed, and the
+  failed tab's did not.
+- **Another process writing the file during a run is not guarded against**,
+  as it is not for any local file: its write can be lost to the run's, or the
+  run's to it. Do not edit the file, or run a second sync over it, while a
+  run is going.
+
+In code, `JsonEntryStore(path, entry, types=None)` is the store these become,
+for a `TabConfig(store=...)` or a `Target(base_stores=...)` of your own.
 
 ## The first sync
 
@@ -428,6 +597,18 @@ one value. Check the preview for pushes of such cells. A push means the local
 file holds the displayed text and the base does not, and applying it writes
 the text `50%` over the number.
 
+**Files that hold what the sheet displays.** Where the local file and the
+base are meant to hold the displayed text, set `render: "formatted"` on the
+tab instead. Every read of the tab then returns what the sheet displays, so
+the first preview reports no edit for such cells, and the sheet's numbers are
+never folded into the file. The setting applies to a pull and a push too: a
+pull writes the displayed text, and a push compares the file with it. A value
+a run writes is still a literal string, so a cell the run changes holds the
+text `75%` from then on, where it held the number 0.75. Declared date columns
+still arrive as ISO 8601. A column declared `int` or `float` does not go with
+`formatted` on a tab with number formats: see
+[how cells are read and written](#how-cells-are-read-and-written).
+
 **Starting over.** Deleting the base makes the next run a
 [first sync](#the-first-sync). A bootstrap takes the local file as the base,
 so the same cells fold in. `--adopt` makes the local file win, which writes
@@ -457,6 +638,13 @@ composite key of which a component can be absent, set
 **Line endings.** A `.csv` or `.tsv` file is written with LF unless the tab
 sets `newline: "crlf"`. A file is rewritten only when its records change, so
 one with CRLF keeps it until a run changes the file, and changes once then.
+
+**Cleaning done in code.** Code that cleaned the cells it read (collapsing
+spaces, rewriting links to one form) and kept the cleaned text in its files
+moves the cleaning into a [`transform`](#cleaning-what-is-read). Without
+it, each cleaned cell reads as a sheet edit and the text as read is folded
+into the local file. With it, those cells are in sync, the sheet keeps its
+text, and a pull writes the cleaned text.
 
 **An existing layout.** `--config PATH` names a config kept anywhere, and a
 target's `base` field names the directory of its base snapshots. A base is one
@@ -652,10 +840,70 @@ API cannot take a link out of a run without rewriting the run, so
 hold no link keeps them. `runs=False` leaves runs alone and saves the read
 that finds them.
 
-A caller that wants links, not plain text, looks for a target that differs
-from the cell's text. Setting a link is the caller's to do. A link sent as a
-text format run over the whole text takes; a link set as the cell's own
-format on plain text did not, when tried.
+A link set as the cell's own format (`userEnteredFormat.textFormat.link`,
+sent with `repeatCell`) takes, on plain text and on a cell whose link points
+elsewhere. A link sent as a text format run over the whole text takes too,
+and the API stores it as the cell's own link. A link sent in the request
+that clears the cell's text format runs does not: the API drops it without
+an error, so the runs are cleared by an earlier request, which may be in the
+same batch.
+
+### URL cells that keep a link
+
+A tab meant to hold links wants the opposite: each cell whose whole text is
+a URL holds a link to exactly that text, in a colour of its own, and not
+underlined. A **URL cell** is one whose text, stripped, is `http://` or
+`https://` followed by characters with no whitespace. A bare domain, a URL
+inside a sentence, and an email address are not URL cells, and are never
+read or written here.
+
+`link_urls` on a sync or a push tab gives the URL cells a run writes their
+link, and touches no other cell:
+
+```json
+"Members": {
+  "local": "data/members.csv",
+  "key": ["member_id"],
+  "link_urls": {"color": "#1155cc"}
+}
+```
+
+- A **push** checks the URL cells of the columns it pushed, after the
+  write. A **sync** checks the cells it pushed and the rows it added.
+- The check reads the tab's values, then one grid read bounded to the rows
+  and columns of the URL cells. A run that wrote no URL costs the first read
+  only.
+- A cell is fixed when it holds no link, its link points somewhere other
+  than its text, its text is not in the colour, its text is underlined, or
+  it has text format runs. **The text is the authority**: a link that points
+  elsewhere is pointed at the text, and the text is never changed.
+- The fix sends one request, in which each cell gets its link, its colour,
+  and `underline: false` under a mask of exactly those three properties, so
+  the cell keeps its bold, its fill, and its font. A cell with text format
+  runs has them cleared by a request of its own, earlier in the batch. The
+  cells are then checked again, and one that is still wrong stops the run
+  with a read-back error.
+- A preview does not run the check. The report of an apply says how many
+  cells were given a link: `URL cells given a link: 2`.
+- It is refused on a pull tab, and together with `clear_links`.
+
+As a library, `url_link_problems` returns each URL cell that breaks the rule
+as a `UrlLinkProblem` (its row, its column, its text, and its `reasons`, from
+`URL_LINK_REASONS`), and `set_url_links` fixes them and returns them. Both
+take `columns` and `rows` as `clear_link_format` does, so a caller can pass
+the cells an `ApplyResult` wrote:
+
+```python
+from gdrives.sheets import set_url_links, url_link_problems
+
+for cell in url_link_problems(service, "<spreadsheet-id>", "Members", color="#1155cc"):
+    print(cell.row, cell.column, cell.text, cell.reasons)
+
+set_url_links(service, "<spreadsheet-id>", "Members", color="#1155cc")
+```
+
+The colour is compared with the one the API returns, a fraction per channel,
+to the nearest of 255 steps. A tab with no problem gets no write.
 
 ## Keeping a tab in order
 
@@ -737,6 +985,31 @@ checkbox reads as `TRUE` or `FALSE`, a blank cell as an empty string, and a
 formula cell as its result. Columns are found by header name, never by
 position, and a header that repeats a name stops the run.
 
+**Displayed values.** A tab with `render: "formatted"` is read as the sheet
+displays it instead: a cell showing `50%` reads as `50%`, one showing
+`$1,234.50` as `$1,234.50`, a date as its display text, and a checkbox as
+`TRUE` or `FALSE`, as before. Every read a run makes of the tab follows the
+setting: the read of the preview, the read before the writes, the read-back
+after them, and the read of the header row a run makes to add, place, or
+delete columns or to set widths. So the checks of a run compare one kind of
+read with the same kind. Writes do not change: a value is written as a
+literal string, which the sheet displays as written whatever the cell's
+number format, so a cell a run wrote reads back as the text it wrote.
+
+- A column declared `date` or `datetime` is still read a second time, as
+  serial numbers, which does not depend on the setting, and arrives as ISO
+  8601. Declaring a date column is the way to keep it out of the display's
+  hands.
+- A column declared `int` or `float` is read as displayed too, and a number
+  displayed with a format, such as `1,234.50` or `50%`, does not parse as its
+  type. It is a schema problem like any other, and a sync with
+  `on_invalid: "hold"` holds it. A column of plain numbers displays its
+  values and reads as before, so nothing refuses the combination, but a typed
+  numeric column and `formatted` do not go together on a tab with number
+  formats.
+- A `bool` column reads `TRUE` or `FALSE` under either setting.
+- `sheets-pull --all-tabs` takes no config and always reads unformatted.
+
 **Dates.** A date cell reads as the text its number format shows, which
 depends on the format and the spreadsheet's locale: `9/27/2026` on one sheet
 and `27.09.2026` on another. A column the `schema` declares `date` or
@@ -814,7 +1087,9 @@ a run with any problem writes nothing.
   result, and a push to that cell replaces the formula with a literal value,
   so keep formula columns out of the projection or make them `sheet_owned`.
   Links are the one format a tab can ask a run to touch: `clear_links` takes
-  off the link the sheet gives a URL when it is written. See [links](#links).
+  off the link the sheet gives a URL when it is written, and `link_urls`
+  gives a URL cell a link to its text, a colour, and no underline. See
+  [links](#links).
 - **A changed key is not followed.** Editing a key cell reads as one row
   removed and another added: the old key is flagged as deleted, and the new
   one arrives as a new row. To change a key, edit it on both sides (on the
@@ -994,10 +1269,11 @@ The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
 ### Stores
 
 A run reads and writes the local side of a tab, and its base, through a
-**store**. A config names files, and each becomes a `FileStore`. A caller
-whose local side is not one flat file per tab gives the tab a store of its
-own: one tab of a file that holds several, typed rows, rows written back in
-an order of its choosing, or a local side that is computed.
+**store**. A config names files, and each becomes a `FileStore`, or a
+`JsonEntryStore` for a tab's `entry` and a target's `base_file`. A caller
+whose local side is none of these gives the tab a store of its own: typed
+rows kept some other way, rows written back in an order of its choosing, or
+a local side that is computed.
 
 A store has a `label`, which reports and errors show where a path was shown,
 and three methods:
@@ -1014,8 +1290,16 @@ and three methods:
 file. `MemoryStore` holds records in memory, for tests and for a caller that
 saves them itself after the run.
 
+`Target.base` is optional: when every sync tab has an entry in
+`base_stores`, a target built in code needs no base directory at all (a
+pull-only or push-only target needs neither, since those modes never read a
+base). A sync tab with no `base` and no entry in `base_stores` is reported
+with a `ValueError` naming the target and the tab, and the run goes on to the
+next tab.
+
 This store is one tab of a JSON file that holds several, as
-`{"Members": [...], "Summary": [...]}`:
+`{"Members": [...], "Summary": [...]}`. `JsonEntryStore` does this, typed and
+atomically; the example shows the shape of a store of your own:
 
 ```python
 import json
@@ -1074,8 +1358,10 @@ What a store has to keep to:
   schema avoids it.
 - **`write` may raise `ValueError` or `OSError`.** Both are reported for the
   tab, as a file error is.
-- The config loader refuses two tabs that would write one file. It checks
-  files only, so a caller that gives tabs stores of its own owns that check.
+- The config loader refuses two tabs that would write one file, or one entry
+  of one. It checks the stores a config builds (`FileStore` and
+  `JsonEntryStore`) only, so a caller that gives tabs stores of its own owns
+  that check.
 
 ### A retry of your own
 
@@ -1188,6 +1474,126 @@ report = run_target(
 
 A message from `validate` or `check` is a problem: the tab is written
 nowhere, and the run exits 1. A message from `warn` is printed under
-`warnings` and changes neither what is written nor the exit code. The
-commands take no hooks, so a caller with checks in code runs the library from
-a command of its own.
+`warnings` and changes neither what is written nor the exit code. For the
+commands to run a caller's hooks, the config names them: see
+[hooks in the config](#hooks-in-the-config).
+
+### Cleaning what is read
+
+`pull_tab`, `plan_tab`, `sync_tab`, `run_target`, and `pull_all_tabs` take a
+fourth hook, `transform`, which cleans the rows read from the sheet before
+anything else looks at them. It is given the rows, as dicts of cell strings,
+and returns them cleaned. Declared `date` and `datetime` columns already
+hold ISO 8601. The checks, the other hooks, the merge, the report, the local
+file, and the base see what it returns, never the text as read.
+
+It returns one row for each row given, in the same order, each with exactly
+the columns it was given, every value a string. It may change a key cell,
+and the keys are checked again after it, so a transform that makes two keys
+equal, or one blank, is refused as a tab holding them would be, and the local
+side is left alone. `run_target` gives it the rows alone, to every pull and
+sync tab, and refuses it on a push; a caller that needs the tab uses a
+function per tab or closes over the title. `pull_all_tabs` gives it the
+title as a second argument, since one function serves every tab.
+
+This one collapses runs of spaces and tabs and trims each line of a cell,
+keeping its line breaks:
+
+```python
+def collapse(rows):
+    """Collapse runs of spaces and tabs, and trim each line; keep line breaks."""
+    return [
+        {
+            column: "\n".join(" ".join(line.split()) for line in text.split("\n"))
+            for column, text in row.items()
+        }
+        for row in rows
+    ]
+
+
+cleaned = run_target(service, "<spreadsheet-id>", target, "sync", transform=collapse)
+```
+
+On a sync the transform cleans the sheet's side of the merge, so a sheet cell
+that differs from the local side and the base only by what the transform
+removes is in sync. **The sheet keeps its text**: a cell the transform changed
+and nobody edited is not pushed, and the local file and the base hold the
+cleaned text. A real sheet edit is folded in cleaned. The re-read guard and
+the read-back compare the tab as read, not as cleaned, and `insert_above`
+matches the values as read. The local side is never transformed.
+
+**A transform must be idempotent**: applied to its own result, it changes
+nothing. A local edit is pushed as written. If the transform would change it,
+the next run reads the cleaned form as a sheet edit and folds it into the
+local file, once, and the two sides agree from then on. A run that adds or
+deletes columns merges again after doing so, and calls the transform again,
+so it must also return the same rows for the same input.
+
+### Hooks in the config
+
+**Running a command on a config runs the functions it names.** A `hooks`
+field is code: `sheets-sync`, `sheets-pull`, and `sheets-push`, a preview
+included, import each module it names and call its function with your
+credentials in reach. Read a config from somewhere else before you run it, as
+you would a script.
+
+A tab's `hooks` names the functions that run as its `validate`, `check`,
+`warn`, and `transform` (no `transform` on a `push` tab), so the commands run a
+caller's checks. A target's `hooks` is the default for its tabs, hook by hook,
+and a tab's own name for a hook wins:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "hooks": {"warn": "roster_checks:counted"},
+    "tabs": {
+      "Members": {
+        "local": "data/members.csv",
+        "key": ["member_id"],
+        "hooks": {"validate": "roster_checks:known_status"}
+      }
+    }
+  }
+}
+```
+
+Each name is `module:function`. The module is imported as `import` finds it,
+so it is installed where `gdrives` runs (a project's own package, under
+`uv run gdrives ...`) or on `PYTHONPATH`. The config's directory is not
+searched: a file beside the config is not found, and cannot shadow a module
+of the same name. Here `roster_checks` holds:
+
+```python
+KNOWN_STATUSES = {"active", "closed"}
+
+
+def known_status(rows):
+    """Refuse a status the roster does not know."""
+    return [
+        f"{row['member_id']}: unknown status {row['status']!r}"
+        for row in rows
+        if row["status"] not in KNOWN_STATUSES
+    ]
+
+
+def counted(context):
+    """Say how many rows a run saw."""
+    return [f"{len(context.rows)} rows"]
+```
+
+Reading a config imports nothing: `load_config` checks only that each name
+has the form `module:function`, and a config with no `hooks` imports nothing
+at any point. A run finds the names before its first request, and every
+module that does not import, name it lacks, and value that is not a function
+is listed at once, the command exiting 1. `resolve_hooks(target)` does the
+same from code, and returns the functions by tab and hook.
+
+A hook named in the config takes and returns what the same hook given in code
+does ([hooks](#hooks), [cleaning what is read](#cleaning-what-is-read)), with
+one difference: whatever it raises, or a return that is not a list of
+messages (for a `transform`, not a list of rows), is the tab's error, naming
+the hook and the function, and the run goes on to the next tab. `run_target`
+runs a tab's config hooks too, before the ones given in code: the messages
+are the config hook's, then the code hook's, and a config `transform` runs
+first, the code's cleaning what it returns.
