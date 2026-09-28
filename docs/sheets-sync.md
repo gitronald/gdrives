@@ -548,6 +548,13 @@ composite key of which a component can be absent, set
 sets `newline: "crlf"`. A file is rewritten only when its records change, so
 one with CRLF keeps it until a run changes the file, and changes once then.
 
+**Cleaning done in code.** Code that cleaned the cells it read (collapsing
+spaces, rewriting links to one form) and kept the cleaned text in its files
+moves the cleaning into a [`transform`](#cleaning-what-is-read). Without
+it, each cleaned cell reads as a sheet edit and the text as read is folded
+into the local file. With it, those cells are in sync, the sheet keeps its
+text, and a pull writes the cleaned text.
+
 **An existing layout.** `--config PATH` names a config kept anywhere, and a
 target's `base` field names the directory of its base snapshots. A base is one
 CSV per tab, `<base>/<tab title>.csv`, holding the projection columns, so a
@@ -1379,3 +1386,54 @@ nowhere, and the run exits 1. A message from `warn` is printed under
 `warnings` and changes neither what is written nor the exit code. The
 commands take no hooks, so a caller with checks in code runs the library from
 a command of its own.
+
+### Cleaning what is read
+
+`pull_tab`, `plan_tab`, `sync_tab`, `run_target`, and `pull_all_tabs` take a
+fourth hook, `transform`, which cleans the rows read from the sheet before
+anything else looks at them. It is given the rows, as dicts of cell strings,
+and returns them cleaned. Declared `date` and `datetime` columns already
+hold ISO 8601. The checks, the other hooks, the merge, the report, the local
+file, and the base see what it returns, never the text as read.
+
+It returns one row for each row given, in the same order, each with exactly
+the columns it was given, every value a string. It may change a key cell,
+and the keys are checked again after it, so a transform that makes two keys
+equal, or one blank, is refused as a tab holding them would be, and the local
+side is left alone. `run_target` gives it the rows alone, to every pull and
+sync tab, and refuses it on a push; a caller that needs the tab uses a
+function per tab or closes over the title. `pull_all_tabs` gives it the
+title as a second argument, since one function serves every tab.
+
+This one collapses runs of spaces and tabs and trims each line of a cell,
+keeping its line breaks:
+
+```python
+def collapse(rows):
+    """Collapse runs of spaces and tabs, and trim each line; keep line breaks."""
+    return [
+        {
+            column: "\n".join(" ".join(line.split()) for line in text.split("\n"))
+            for column, text in row.items()
+        }
+        for row in rows
+    ]
+
+
+cleaned = run_target(service, "<spreadsheet-id>", target, "sync", transform=collapse)
+```
+
+On a sync the transform cleans the sheet's side of the merge, so a sheet cell
+that differs from the local side and the base only by what the transform
+removes is in sync. **The sheet keeps its text**: a cell the transform changed
+and nobody edited is not pushed, and the local file and the base hold the
+cleaned text. A real sheet edit is folded in cleaned. The re-read guard and
+the read-back compare the tab as read, not as cleaned, and `insert_above`
+matches the values as read. The local side is never transformed.
+
+**A transform must be idempotent**: applied to its own result, it changes
+nothing. A local edit is pushed as written. If the transform would change it,
+the next run reads the cleaned form as a sheet edit and folds it into the
+local file, once, and the two sides agree from then on. A run that adds or
+deletes columns merges again after doing so, and calls the transform again,
+so it must also return the same rows for the same input.

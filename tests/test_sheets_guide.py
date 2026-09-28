@@ -185,7 +185,7 @@ class TestGuideConfigs:
 
     def test_the_guide_has_the_examples_this_reads(self):
         assert len(blocks(GUIDE, "json")) == 8
-        assert len(blocks(GUIDE, "python")) == 8
+        assert len(blocks(GUIDE, "python")) == 9
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -256,7 +256,9 @@ class TestGuidePython:
         members = [row[0] for row in grid.values("Members")]
         assert members == ["member_id", "m1", "m3", "m2"]
         assert json.loads(workbook.read_text())["Members"] == held
-        # The last one runs the hooks, and its check finds the column that the
+        # The hooks example runs the hooks, and its check finds the column that the
         # links example reads, which the store's tab does not declare.
         (checked,) = namespace["report"].tabs
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
+        # The transform example previews a sync of the same tab, in sync.
+        assert namespace["cleaned"].exit_code == 0

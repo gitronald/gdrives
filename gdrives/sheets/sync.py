@@ -34,7 +34,9 @@ tab, which says whether the tab exists and, for a tab the config names by
 A caller's own checks are three hooks. ``validate`` takes rows, ``check`` a
 :class:`CheckContext` (the rows, the columns of both sides, and the merge),
 and both block a write. ``warn`` takes a :class:`CheckContext` too, runs once
-after every blocking check has passed, and blocks nothing.
+after every blocking check has passed, and blocks nothing. A ``transform``
+(pull and sync) cleans the rows read from the sheet before anything else sees
+them.
 
 A run that fails part way has recorded no sync that did not land: a failed
 guard or read-back leaves the local file and the base as they were, and the
@@ -161,6 +163,15 @@ class CheckContext:
 
 #: A caller's own check with the context: one message per problem out.
 Check = Callable[[CheckContext], list[str]]
+
+#: A caller's own cleaning of the rows a tab is read as: rows in, rows out,
+#: one for each row given, in order, with the same columns.
+Transform = Callable[[Sequence[Mapping[str, str]]], Sequence[Mapping[str, str]]]
+
+#: The transform of :func:`pull_all_tabs`, which is also given the tab's title.
+TitledTransform = Callable[
+    [Sequence[Mapping[str, str]], str], Sequence[Mapping[str, str]]
+]
 
 _Key = tuple[str, ...]
 
@@ -306,6 +317,10 @@ class TabPlan:
     for a tab found by its ``sheet_id`` and renamed. The options are kept so
     :func:`apply_tab` can merge again after changing the tab's structure, and
     ``listing`` is the tab listing the plan was made with.
+
+    With a ``transform``, ``seen`` is ``table`` with the rows the transform
+    returned, which the merge compared; ``table`` stays the tab as read, for
+    the re-read guard and the read-back.
     """
 
     target: Target
@@ -327,6 +342,8 @@ class TabPlan:
     added: tuple[str, ...] = ()
     title: str = ""
     listing: TabListing | None = None
+    transform: Transform | None = None
+    seen: Table | None = None
 
 
 # -- reading --
@@ -484,6 +501,72 @@ def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
 
 
+# -- transform --
+
+
+def _transformed(table: Table, transform: Transform) -> Table:
+    """``table`` with the rows ``transform`` returns for its rows, keyed again.
+
+    The hook is given copies, so the rows as read are never changed. What it
+    returns must be one row for each row given, each with exactly the
+    columns it was given, every value a string; anything else raises
+    ValueError saying which. With a key the rows are indexed again, with the
+    table's ``blank_keys``, so a key the transform made blank or made equal
+    to another is refused as the tab itself would be. Row numbers still
+    refer to the sheet's rows.
+    """
+    given = [dict(row) for row in table.rows]
+    returned = list(transform(given))
+    label = f"tab {table.tab!r}"
+    if len(returned) != len(given):
+        raise ValueError(
+            f"{label}: the transform returned {len(returned)} rows for "
+            f"{len(given)}; it returns one row for each row given"
+        )
+    rows: list[dict[str, str]] = []
+    for position, row in enumerate(returned, start=1):
+        if set(row) != set(table.columns):
+            raise ValueError(
+                f"{label}: the transform returned row {position} with columns "
+                f"{sorted(row)}, not {sorted(table.columns)}; it returns each "
+                "row with exactly the columns it was given"
+            )
+        wrong = [column for column in table.columns if not isinstance(row[column], str)]
+        if wrong:
+            raise ValueError(
+                f"{label}: the transform returned row {position} with a value "
+                f"that is not a string in column(s) {wrong}"
+            )
+        rows.append({column: row[column] for column in table.columns})
+    if not table.key:
+        return replace(table, rows=rows)
+    numbers = [table.row_numbers[row_key(row, table.key)] for row in table.rows]
+    row_numbers = index_rows(
+        rows,
+        table.key,
+        side=f"{label}, as transformed",
+        numbers=numbers,
+        blank_keys=table.blank_keys,
+    )
+    return replace(table, rows=rows, row_numbers=row_numbers)
+
+
+def _on_sheet(plan: MergePlan, table: Table, seen: Table | None) -> MergePlan:
+    """``plan`` with each push named by the key its row has on the sheet as read.
+
+    A merge over transformed rows names a row by its transformed key;
+    ``seen`` is the table it merged (None with no transform), and ``table``
+    the tab as read, which the re-read guard and the read-back compare with
+    the sheet. The two share row numbers, which map one key to the other.
+    """
+    if seen is None:
+        return plan
+    read = {number: found for found, number in table.row_numbers.items()}
+    keys = {found: read[number] for found, number in seen.row_numbers.items()}
+    pushes = [replace(cell, key=keys[cell.key]) for cell in plan.pushes]
+    return replace(plan, pushes=pushes)
+
+
 # -- sync --
 
 
@@ -502,6 +585,7 @@ def plan_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabPlan:
     """Read a sync tab, its local file, and its base, and merge them. Writes nothing.
 
@@ -553,6 +637,18 @@ def plan_tab(
     as :func:`run_target` has; with None it is read here. A tab with a
     ``sheet_id`` is found by it, under whatever title it has now, and one the
     spreadsheet lacks is an error.
+
+    ``transform`` is given the sheet's rows as read, over the projection
+    columns the tab has, and returns them cleaned (see :func:`pull_tab`). The
+    merge, the checks, the report, the local file, and the base see the
+    cleaned rows, so a sheet cell that differs from the local side only by
+    what the transform removes is in sync, and is not pushed: the sheet keeps
+    its text. The re-read guard and the read-back of :func:`apply_tab`
+    compare the tab as read, and ``insert_above`` matches its values as read.
+    A merge after a restructure runs the transform again. It must be
+    idempotent: a local edit is pushed as written, and one the transform
+    would change is read back as a sheet edit on the next run and folded in,
+    once. The local side is never transformed.
     """
     if prefer is not None and prefer not in SIDES:
         raise ValueError(
@@ -570,6 +666,7 @@ def plan_tab(
         "validate": validate,
         "check": check,
         "warn": warn,
+        "transform": transform,
     }
     return _plan(service, spreadsheet_id, target, tab, report, options, listing=listing)
 
@@ -604,6 +701,7 @@ def _plan(
     columns = _projection(tab, local)
 
     title = tab.title
+    seen: Table | None = None
 
     def planned(
         table: Table | None, plan: MergePlan | None, base: Records | None
@@ -621,6 +719,7 @@ def _plan(
             added=tuple(added),
             title=title,
             listing=listing,
+            seen=seen,
             **options,
         )
 
@@ -675,6 +774,10 @@ def _plan(
             table, remote = _sheet_side(
                 tab, columns, grid, serials, whole, report, options
             )
+            if options["transform"] is not None:
+                seen = _transformed(table, options["transform"])
+                blank = dict.fromkeys(report.add_columns, "")
+                remote = [row | blank for row in seen.rows]
             fresh.update(report.add_columns)
     if report.tab_state != "present" and base is not None:
         raise ValueError(
@@ -730,7 +833,9 @@ def _plan(
             plan = _defer_pushes(plan, tab.key, report)
     report.plan = plan
     if table is not None and tab.insert_above is not None:
-        above = _insert_row(tab, table, grid, serials, plan, report.add_columns)
+        above = _insert_row(
+            tab, table, grid, serials, _on_sheet(plan, table, seen), report.add_columns
+        )
         if plan.appends:
             report.insert_row, report.last_row = above, table.last_row
     if check:
@@ -896,7 +1001,7 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
             service,
             spreadsheet_id,
             table,
-            plan,
+            _on_sheet(plan, table, planned.seen),
             insert_above=tab.insert_above,
             clear_links=tab.clear_links,
             link_urls=tab.link_urls,
@@ -968,6 +1073,7 @@ def _restructure(service: Service, spreadsheet_id: str, planned: TabPlan) -> Tab
         "validate": planned.validate,
         "check": planned.check,
         "warn": planned.warn,
+        "transform": planned.transform,
     }
     again = _plan(
         service,
@@ -1011,6 +1117,7 @@ def sync_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabReport:
     """:func:`plan_tab`, then :func:`apply_tab` when ``apply``."""
     planned = plan_tab(
@@ -1027,6 +1134,7 @@ def sync_tab(
         warn=warn,
         listing=listing,
         report=report,
+        transform=transform,
     )
     if not apply:
         return planned.report
@@ -1096,6 +1204,7 @@ def pull_tab(
     warn: Check | None = None,
     listing: TabListing | None = None,
     report: TabReport | None = None,
+    transform: Transform | None = None,
 ) -> TabReport:
     """Replace ``tab``'s local file with the tab's records (with ``apply``).
 
@@ -1126,6 +1235,16 @@ def pull_tab(
 
     ``listing`` and the tab's ``sheet_id`` are as for :func:`plan_tab`. The
     tab is read as its ``render`` says.
+
+    ``transform`` cleans the records after the tab is parsed, declared date
+    columns already ISO 8601, and before anything else: the checks, the
+    hooks, the report, and the file see what it returns, never the rows as
+    read. It is given a copy of the rows and returns one row for each, in
+    the same order, each with exactly the columns it was given and every
+    value a string; anything else is refused, saying which. The keys are
+    indexed again after it, with the tab's ``blank_keys``, so a transform
+    that makes a key blank or makes two equal is refused, and the local
+    side is left alone.
     """
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
@@ -1175,6 +1294,8 @@ def pull_tab(
         raise ValueError(f"tab {tab.title!r} has no header row; {left}") from None
     if not table.rows:
         raise ValueError(f"tab {tab.title!r} has no rows; {left}")
+    if transform is not None:
+        table = _transformed(table, transform)
     context = CheckContext(
         tab=tab.title,
         stage="sheet",
@@ -1525,6 +1646,7 @@ def pull_all_tabs(
     apply: bool = False,
     bom: bool = False,
     name: Callable[[str], str] | None = None,
+    transform: TitledTransform | None = None,
 ) -> SyncReport:
     """Dump every tab to ``out_dir``, one record file per tab, with no config.
 
@@ -1545,6 +1667,11 @@ def pull_all_tabs(
     row, is reported and skipped, never written as an empty file. With
     ``apply`` the files are written (and ``out_dir`` created), a delimited
     one with LF line endings; an unchanged file is not rewritten.
+
+    ``transform`` cleans each tab's rows before they are compared and
+    written, as for :func:`pull_tab`, and is given the tab's title as a
+    second argument, since one function serves every tab. A tab it fails
+    for is reported with the error and not written.
     """
     if extension.lower() not in LOCAL_EXTENSIONS:
         raise ValueError(
@@ -1595,7 +1722,7 @@ def pull_all_tabs(
         tab_report = TabReport(tab=title, mode="pull", local=path, apply=apply)
         report.tabs.append(tab_report)
         try:
-            _dump_tab(tab_report, title, grid, path, apply, bom)
+            _dump_tab(tab_report, title, grid, path, apply, bom, transform)
         except TAB_ERRORS as e:
             tab_report.error = str(e)
     return report
@@ -1608,6 +1735,7 @@ def _dump_tab(
     path: Path,
     apply: bool,
     bom: bool = False,
+    transform: TitledTransform | None = None,
 ) -> None:
     """Write one tab of :func:`pull_all_tabs`, or say why it was skipped."""
     try:
@@ -1623,6 +1751,8 @@ def _dump_tab(
         report.notes.append(
             f"rows {table.wide_rows} hold cells past the header, which are not written"
         )
+    if transform is not None:
+        table = _transformed(table, lambda rows: transform(rows, title))
     before = read_records(path) if path.exists() else Records([], [])
     report.replacement = _compare(before, table.columns, table.rows, ())
     if apply and not report.replacement.unchanged:
@@ -1648,17 +1778,21 @@ def run_target(
     validate: Validate | None = None,
     check: Check | None = None,
     warn: Check | None = None,
+    transform: Transform | None = None,
 ) -> SyncReport:
     """Run every ``mode`` tab of ``target`` (or just ``tabs``), one report each.
 
-    ``validate``, ``check``, and ``warn`` are passed to every tab. The
+    ``validate``, ``check``, and ``warn`` are passed to every tab, and
+    ``transform`` to every pull and sync tab, given the rows alone (a caller
+    that needs the tab closes over it, or runs a function per tab). The
     spreadsheet's tabs are listed once, and again only after a tab was
     created, so a run of N tabs makes one listing and not N.
     ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
     that fails (a refusal, an API error, a failed guard) is reported with its
     error and the run goes on to the next tab, since tabs are independent.
     Raises ValueError, before any request, for an unknown mode or tab, a
-    selected tab of another mode, or a sync-only option on another mode.
+    selected tab of another mode, a sync-only option on another mode, or a
+    ``transform`` on a push.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
@@ -1670,6 +1804,8 @@ def run_target(
         raise ValueError(
             f"prefer must be one of {sorted(SIDES)} or None, not {prefer!r}"
         )
+    if mode == "push" and transform is not None:
+        raise ValueError("transform applies only to pull and sync tabs")
     if tabs:
         selected = [target.tab(title) for title in tabs]
         other = [tab.title for tab in selected if tab.mode != mode]
@@ -1707,6 +1843,7 @@ def run_target(
                     warn=warn,
                     listing=listing,
                     report=tab_report,
+                    transform=transform,
                 )
             elif mode == "pull":
                 pull_tab(
@@ -1719,6 +1856,7 @@ def run_target(
                     warn=warn,
                     listing=listing,
                     report=tab_report,
+                    transform=transform,
                 )
             else:
                 push_tab(
