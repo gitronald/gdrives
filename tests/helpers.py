@@ -1459,11 +1459,19 @@ class FakeDriveFiles:
     ``files.create`` and ``files.update`` take a ``media_body`` and store its
     bytes; with ``corrupt`` set, the stored content loses its last byte, so a
     read-back finds a file that is not the one sent. Every call is recorded
-    in ``calls``, and a request does nothing until it is executed.
+    in ``calls``, and a request does nothing until it is executed. ``root``
+    is the ID of the file the alias ``root`` names.
     """
 
-    def __init__(self, files: list[dict[str, Any]], *, pages: int = 1000) -> None:
+    def __init__(
+        self,
+        files: list[dict[str, Any]],
+        *,
+        pages: int = 1000,
+        root: str | None = None,
+    ) -> None:
         self.items = {f["id"]: dict(f) for f in files}
+        self.root = root
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.corrupt = False
         self.pages = pages
@@ -1489,7 +1497,10 @@ class FakeDriveFiles:
 
     def get(self, **kwargs: Any) -> _DriveRequest:
         self.calls.append(("get", kwargs))
-        return _DriveRequest(lambda: self._shown(self.items[kwargs["fileId"]]))
+        file_id = kwargs["fileId"]
+        if file_id == "root" and self.root is not None:
+            file_id = self.root
+        return _DriveRequest(lambda: self._shown(self.items[file_id]))
 
     def list(self, **kwargs: Any) -> _DriveRequest:
         self.calls.append(("list", kwargs))

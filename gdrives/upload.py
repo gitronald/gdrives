@@ -34,20 +34,16 @@ from typing import Any
 from gdrives.files import (
     DriveFile,
     Service,
-    escape_query_value,
     file_url,
+    find_named,
     get_file_metadata,
     is_folder,
     is_native,
-    paginate_files,
 )
 from gdrives.local import printable
 
 # What a replace needs to know of its target, and what the read-back compares.
 UPLOAD_FIELDS = "id, name, mimeType, size, md5Checksum, webViewLink"
-
-# The same, for each file of a files.list page.
-_LIST_FIELDS = f"nextPageToken, incompleteSearch, files({UPLOAD_FIELDS})"
 
 # The type sent for a file whose extension names none.
 DEFAULT_MIME_TYPE = "application/octet-stream"
@@ -148,29 +144,6 @@ def check_folder(service: Service, folder_id: str) -> DriveFile:
     return folder
 
 
-def _by_id(f: DriveFile) -> str:
-    """Sort key: files.list promises no order, and a refusal lists the same one."""
-    return f["id"]
-
-
-def find_named(service: Service, folder_id: str, name: str) -> list[DriveFile]:
-    """List the files named ``name`` in a folder, ordered by ID.
-
-    Names compare without regard to case, as path resolution compares them.
-    A folder of that name is not a match: it is not a file an upload could
-    replace, and Drive lets a file share its name.
-    """
-    query = (
-        f"'{escape_query_value(folder_id)}' in parents "
-        f"and name = '{escape_query_value(name)}' and trashed = false"
-    )
-    found = paginate_files(service, query, _LIST_FIELDS, "allDrives")
-    matches = [
-        f for f in found if f["name"].lower() == name.lower() and not is_folder(f)
-    ]
-    return sorted(matches, key=_by_id)
-
-
 def check_replaceable(target: DriveFile) -> None:
     """Refuse a target whose content an upload cannot replace."""
     if is_folder(target):
@@ -220,7 +193,7 @@ def plan_upload(
 
     folder = check_folder(service, str(folder_id))
     name = name or path.name
-    matches = find_named(service, folder["id"], name)
+    matches = find_named(service, folder["id"], name, fields=UPLOAD_FIELDS)
     if len(matches) > 1:
         raise _several(name, folder, matches)
     if matches:

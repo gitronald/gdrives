@@ -544,6 +544,43 @@ def sheets_widths(
         run_widths(source, tab=tab)
 
 
+@app.command(name="sheets-create")
+def sheets_create(
+    title: Annotated[str, typer.Option("--title", help="Title of the new spreadsheet")],
+    folder: Annotated[
+        str | None,
+        typer.Option(
+            "--folder", help="Folder path, e.g. 'My Drive/reports' (default: root)"
+        ),
+    ] = None,
+    folder_id: Annotated[
+        str | None,
+        typer.Option("--folder-id", help="Folder ID (skip resolution)"),
+    ] = None,
+    tab: Annotated[
+        list[str] | None,
+        typer.Option("--tab", help="A tab to name, in order (repeatable)"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print what would be created, create nothing"),
+    ] = False,
+):
+    """Create a native spreadsheet in a folder (write access, except --dry-run).
+
+    Prints the new spreadsheet's URL. With --tab, its one tab is renamed to
+    the first title and the others are added after it; with none, the tab
+    is left as it is. A file of the same name in the folder is noted, not
+    refused.
+    """
+    from gdrives.sheets import run_create
+
+    with _cli_errors():
+        run_create(
+            title, folder=folder, folder_id=folder_id, tabs=tab or (), dry_run=dry_run
+        )
+
+
 def _flag(name: str, what: str) -> typer.models.OptionInfo:
     return typer.Option(f"--{name}", help=f"Format matching cells {what}")
 

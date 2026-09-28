@@ -120,39 +120,6 @@ class TestLocal:
             upload.check_local(str(tmp_path))
 
 
-class TestFindNamed:
-    def test_matches_without_regard_to_case_and_skips_folders(self):
-        svc = FakeDriveFiles(
-            [
-                folder(),
-                held("Report.pdf", id="B"),
-                held("report.pdf", id="A"),
-                held("other.pdf", id="C"),
-                {**folder("E", "report.pdf"), "parents": ["D"]},
-                held("report.pdf", id="Z", parent="elsewhere"),
-            ]
-        )
-        found = upload.find_named(svc, "D", "report.pdf")
-        assert [f["id"] for f in found] == ["A", "B"]
-
-    def test_query_escapes_the_name_and_reaches_shared_drives(self):
-        svc = FakeDriveFiles([folder(), held("it's.pdf")])
-        (found,) = upload.find_named(svc, "D", "it's.pdf")
-        assert found["id"] == "F"
-        (call,) = svc.named("list")
-        assert call["q"] == (
-            "'D' in parents and name = 'it\\'s.pdf' and trashed = false"
-        )
-        assert call["supportsAllDrives"] is True
-        assert call["includeItemsFromAllDrives"] is True
-
-    def test_every_page_is_read(self):
-        files = [held("report.pdf", id=f"F{i}") for i in range(3)]
-        svc = FakeDriveFiles([folder(), *files], pages=2)
-        assert len(upload.find_named(svc, "D", "report.pdf")) == 3
-        assert len(svc.named("list")) == 2
-
-
 class TestPlanUpload:
     def test_no_file_of_that_name_is_a_create(self, local):
         svc = FakeDriveFiles([folder()])

@@ -964,6 +964,7 @@ SUBMODULES = (
     "cells",
     "commands",
     "config",
+    "create",
     "files",
     "hooks",
     "match",

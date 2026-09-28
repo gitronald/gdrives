@@ -207,6 +207,36 @@ def list_children(
     return sorted(items, key=_folders_first)
 
 
+def _by_id(f: DriveFile) -> str:
+    """Sort key: files.list promises no order, and a message lists the same one."""
+    return f["id"]
+
+
+def find_named(
+    service: Service,
+    folder_id: str,
+    name: str,
+    *,
+    fields: str = "id, name, mimeType",
+) -> list[DriveFile]:
+    """List the files named ``name`` in a folder, ordered by ID.
+
+    Names compare without regard to case, as path resolution compares them.
+    A folder of that name is not a match: it is not a file, and Drive lets a
+    file share its name. ``fields`` names what is asked of each file.
+    """
+    query = (
+        f"'{escape_query_value(folder_id)}' in parents "
+        f"and name = '{escape_query_value(name)}' and trashed = false"
+    )
+    listed = f"nextPageToken, incompleteSearch, files({fields})"
+    found = paginate_files(service, query, listed, "allDrives")
+    matches = [
+        f for f in found if f["name"].lower() == name.lower() and not is_folder(f)
+    ]
+    return sorted(matches, key=_by_id)
+
+
 def list_shared_with_me(service: Service, name: str | None = None) -> list[DriveFile]:
     """List items shared with the authenticated user.
 

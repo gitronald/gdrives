@@ -1075,3 +1075,46 @@ class TestUpload:
         assert result.exit_code == 0
         assert (rec["l"], rec["d"], rec["file_id"]) == ("out.pdf", None, "F")
         assert rec["mime_type"] == "application/pdf"
+
+
+class TestSheetsCreate:
+    def test_delegates_with_options(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_create",
+            lambda title, **options: rec.update(t=title, **options),
+        )
+        result = CliRunner().invoke(
+            cli.app,
+            ["sheets-create", "--title", "Roster", "--folder", "My Drive/reports"]
+            + ["--tab", "Members", "--tab", "Dues", "--dry-run"],
+        )
+        assert result.exit_code == 0
+        assert rec == {
+            "t": "Roster",
+            "folder": "My Drive/reports",
+            "folder_id": None,
+            "tabs": ["Members", "Dues"],
+            "dry_run": True,
+        }
+
+    def test_no_tab_is_no_tabs(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_create",
+            lambda title, **options: rec.update(t=title, **options),
+        )
+        cli.sheets_create(title="Roster", folder_id="D")
+        assert rec["tabs"] == ()
+
+    def test_http_error_exits_1(self, monkeypatch, capsys):
+        from helpers import http_error
+
+        def boom(*a, **k):
+            raise http_error(403, "Forbidden")
+
+        monkeypatch.setattr("gdrives.sheets.run_create", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli.sheets_create(title="Roster")
+        assert exc.value.code == 1
+        assert "Drive API request failed" in capsys.readouterr().err
