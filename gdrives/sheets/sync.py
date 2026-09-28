@@ -510,16 +510,10 @@ def _respelling_problems(
             type_ = schema[column].type
             if normalize_cell(local_text, type_) != normalize_cell(sheet_text, type_):
                 continue  # a real difference; the merge's own check covers it
-            # The local text already passed the local-stage schema check, so
-            # a sheet text that compares equal but is not identical always
-            # fails a strict column's one exact form (bool and date each
-            # have a single valid strict spelling per value). The fallback
-            # is defensive: cell_problem is never actually None here.
-            reason = cell_problem(sheet_text, schema[column]) or (
-                f"{sheet_text!r} does not match the strict form"
-            )
-            where = row_key(sheet_row, key)
-            found.append(f"{label}: key {where}, column {column!r}: {reason}")
+            reason = cell_problem(sheet_text, schema[column])
+            if reason is not None:
+                where = row_key(sheet_row, key)
+                found.append(f"{label}: key {where}, column {column!r}: {reason}")
     return found
 
 

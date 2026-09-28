@@ -375,3 +375,22 @@ class TestUnchangedDefaults:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         planned = plan_tab(grid, "S", target, target.tabs[0])
         assert planned.report.problems == []
+
+
+class TestRespellings:
+    SCHEMA = {"on": ColumnSchema(type="bool", strict=True)}
+
+    def problems(self, local, sheet):
+        from gdrives.sheets.sync import _respelling_problems
+
+        rows = lambda text: [{"id": "a", "on": text}]  # noqa: E731
+        return _respelling_problems("T", rows(local), rows(sheet), self.SCHEMA, ["id"])
+
+    def test_a_sheet_respelling_that_fails_the_strict_form_is_a_problem(self):
+        assert self.problems("TRUE", "true") == [
+            "T (sheet): key ('a',), column 'on': 'true' is not TRUE or FALSE, "
+            "and the column is strict"
+        ]
+
+    def test_a_sheet_cell_in_the_strict_form_is_none(self):
+        assert self.problems("true", "TRUE") == []
