@@ -21,6 +21,11 @@ datetime cells, shipped as [plan 011](../011-datetime-cell-form/plan.md). The si
 below were drafted as plans 012 to 017. They were folded into this one plan and those
 plans were retired.
 
+Steps 7 to 12 were added on 2026-09-27, while step 2 was in progress. They come from
+a second list of gaps by the same downstream caller, in `gdrives.sheets` and in
+`gdrives.auth`. One item of that list overlaps a step already here: step 4 refuses an
+undeclared column of the projection, and step 12 adds the wider check beside it.
+
 ### Steps
 
 Each step is independent, lands as its own branch and PR into `dev`, and keeps line
@@ -37,6 +42,12 @@ spec for each step is in `subplans/`.
 | 4 | [Refuse undeclared columns](subplans/4-strict-schema.md) | `strict_schema` tab field: a projection column with no schema entry is a problem | not started |
 | 5 | [Optional `Target.base`](subplans/5-optional-target-base.md) | `base` may be None, with a clear error when a tab without a base store needs it | not started |
 | 6 | [Drive revisions, read-only](subplans/6-drive-revisions.md) | `gdrives/revisions.py` and a `revisions` command: list, and download by media or export link, checked against the live API | not started |
+| 7 | [Set and check the links of URL cells](subplans/7-url-links.md) | `url_link_problems`, `set_url_links`, and a `link_urls` tab field for sync and push tabs, refused with `clear_links`. How a link is set is checked live first | not started |
+| 8 | [Read a tab as displayed](subplans/8-render-option.md) | `render` tab field (`unformatted`, `formatted`), recorded on `Table` so the guard and the read-back read the same way | not started |
+| 9 | [Transform the rows a tab is read as](subplans/9-transform-hook.md) | `transform` hook on a pull, run before the checks and the comparison, and on a sync for comparing cells | not started |
+| 10 | [Say more in `describe_credentials`](subplans/10-credential-details.md) | `CredentialInfo` says whether OAuth is configured, whether a consent was skipped for lack of a terminal, and why each cached token was passed over | not started |
+| 11 | [Name a run's hooks in the config file](subplans/11-config-hooks.md) | `hooks` tab field naming `module:function`. Starts as a design note, and may stop there | not started |
+| 12 | [Stricter schema checks](subplans/12-stricter-schema-checks.md) | `strict_schema: "all"`, and the schema fields `present` and `strict`. May stop at a write-up | not started |
 
 ### Execution order
 
@@ -44,6 +55,21 @@ In the order above, which ranks the steps by how much downstream code each one
 unblocks. One step at a time: each merges before the next branches, so the changelog
 and `sync.py` never conflict. Step 5 comes after step 3 because a config's `base_file`
 feeds `base_stores`, which is what makes a target with no `base` useful.
+
+Steps 7 to 12 follow step 6, in the order of their value to the caller. Step 11 comes
+after step 9, whose hook it names, and step 12 after step 4, whose setting it widens.
+
+### Rules for steps 7 to 12
+
+- Every change is additive. A config or a call written for 0.13.0 behaves the same,
+  with the same report.
+- Unit tests use fakes and never the network.
+- **A live check needs the owner's word first.** Where a step says to check live, ask
+  for a scratch spreadsheet before any request, and touch nothing else.
+- No release is cut. Each step updates `[Unreleased]`.
+- Steps 11 and 12 are lower value. If the design of one looks doubtful once the code
+  is open, its options are written up in the Log and the step stops there.
+- Each step reports what was checked live and what was not.
 
 This plan stays `active` until the last step merges. Each step's status is updated
 here, and each step's work is logged in this plan's `## Log`.
@@ -99,3 +125,28 @@ pyrefly clean. Two tests use a synthetic sentinel value in an excluded column: o
 asserts it is in neither the report text nor the file bytes, and one that no
 `validate`, `check`, or `warn` hook is given it. No live test was added or run for
 this step, since a pull with `exclude` makes the same requests as one without.
+
+### 2026-09-27 — six steps added
+
+Written at 2026-09-27T17:32:12-07:00, while step 2 was being implemented. The owner
+gave a second list of six gaps and asked for subplans for those the plan did not
+cover. Five were not covered at all, and became steps 7 to 11. The sixth, stricter
+schema checks, has three parts. Two were not covered (column presence, and strict
+forms for `bool` and `date`). The third, undeclared columns, is step 4 with a wider
+reach: step 4 checks the projection and says why it stops there, and the list asks
+for every column of either side, less the columns a run drops. Step 4 is left as it
+was written, and step 12 adds the wider check as `strict_schema: "all"`.
+
+The list asked for one plan for each item. They are steps of this plan, as the owner
+asked when handing the list over, each with its own branch and PR as the first six
+have.
+
+Decisions the subplans make, which the list left open:
+
+- **Step 8:** a declared `date` or `datetime` column is still read from its serial
+  number under `formatted`, and nothing is refused in the config check. A displayed
+  number that does not parse as its declared type is a schema problem.
+- **Step 9:** a sync tab takes the hook. It is applied to the sheet's rows before
+  the merge, the sheet keeps its text, and a transform must be idempotent.
+- **Step 10:** fields of `CredentialInfo` make the three private helpers
+  unnecessary, and no public name is added for them.
