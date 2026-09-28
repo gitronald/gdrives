@@ -21,6 +21,7 @@ from gdrives.sheets import (
     NewRow,
     ReadBackError,
     SheetChangedError,
+    UrlLinkProblem,
     apply_plan,
     insert_point,
     read_tab,
@@ -965,3 +966,77 @@ class TestVerify:
         grid.write("T", [["", "", "no key"]], row=4)
         with pytest.raises(ReadBackError, match=r"blank key \['id'\] in rows \[4\]"):
             verify(grid, "S", table, plan([push("a", "name", "Ada")]))
+
+
+class TestLinkUrls:
+    HEADER = ["id", "note", "site", "", "name"]
+    ROWS = [
+        ["a", "https://n.example", "https://a.example", "", "Ada"],
+        ["b", "old", "plain", "", "https://bo.example"],
+    ]
+    PROJECT = ["id", "site", "name"]
+    GREEN = "#33aa55"
+    GREEN_RGB = {"red": 0x33 / 255, "green": 0xAA / 255, "blue": 0x55 / 255}
+
+    def sheet(self):
+        return sheet(*self.ROWS, header=self.HEADER, project=self.PROJECT)
+
+    def new_row(self, key, site):
+        return NewRow((key,), {"id": key, "site": site, "name": "New"})
+
+    def test_the_url_cells_a_run_writes_are_linked_and_no_others(self):
+        grid, table = self.sheet()
+        the_plan = plan(
+            [push("b", "site", "https://b.example"), push("a", "name", "Ada L")],
+            [self.new_row("c", "https://c.example"), self.new_row("d", "d.example")],
+        )
+        result = apply_plan(grid, "S", table, the_plan, link_urls=self.GREEN)
+        both = ("color", "underline")
+        assert result.linked == [
+            UrlLinkProblem(3, "site", "https://b.example", both),
+            UrlLinkProblem(4, "site", "https://c.example", both),
+        ]
+        wanted = {"underline": False, "color": self.GREEN_RGB}
+        assert grid.format("T", 3, 3) == {"link": "https://b.example"} | wanted
+        assert grid.format("T", 4, 3) == {"link": "https://c.example"} | wanted
+        # Cells the run did not write keep the link the API gave them, and a
+        # bare domain is no URL cell.
+        for row, column, target in [
+            (2, 2, "https://n.example"),
+            (2, 3, "https://a.example"),
+            (3, 5, "https://bo.example"),
+            (5, 3, "http://d.example"),
+        ]:
+            assert grid.format("T", row, column) == {"link": target}
+        # The fix follows the read-back of the values.
+        assert grid.methods[:6] == [READ, GRID, PUSH, STRUCTURE, READ, READ]
+
+    def test_a_run_that_writes_no_url_reads_the_values_only(self):
+        grid, table = self.sheet()
+        result = apply_plan(
+            grid, "S", table, plan([push("a", "name", "Al")]), link_urls=self.GREEN
+        )
+        assert result.linked == []
+        assert grid.methods == [READ, PUSH, READ, READ]
+
+    def test_nothing_to_write_asks_nothing(self):
+        grid, table = self.sheet()
+        assert apply_plan(grid, "S", table, plan(), link_urls=self.GREEN).linked == []
+        assert grid.calls == []
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"link_urls": "green"}, "a colour is written '#rrggbb', not 'green'"),
+            (
+                {"link_urls": "#33aa55", "clear_links": True},
+                "clear_links and link_urls contradict each other",
+            ),
+        ],
+    )
+    def test_refusals_ask_nothing(self, options, message):
+        grid, table = self.sheet()
+        the_plan = plan([push("b", "site", "https://b.example")])
+        with pytest.raises(ValueError, match=message):
+            apply_plan(grid, "S", table, the_plan, **options)
+        assert grid.calls == []

@@ -1792,3 +1792,56 @@ class TestPaths:
         assert sorted(p.name for p in (tmp_path / "cfg" / "snapshots").iterdir()) == [
             ".._a_b.csv"
         ]
+
+
+class TestLinkUrls:
+    HEADER = ["id", "site"]
+    COLOR = {"link_urls": {"color": "#33aa55"}}
+
+    def scene(self, tmp_path, **fields):
+        target = make_target(tmp_path, **fields)
+        write_local(
+            target,
+            ["a", "https://a.example"],
+            ["b", "https://b.example"],
+            ["c", "https://c.example"],
+            header=self.HEADER,
+        )
+        write_base(
+            target, ["a", "plain"], ["b", "https://b.example"], header=self.HEADER
+        )
+        grid = FakeSheetGrid(
+            {"T": [self.HEADER, ["a", "plain"], ["b", "https://b.example"]]}
+        )
+        return grid, target
+
+    def test_a_sync_links_the_url_cells_it_wrote_and_no_others(self, tmp_path):
+        grid, target = self.scene(tmp_path, **self.COLOR)
+        report = run(grid, target, apply=True)
+        assert report.exit_code == 0, report.error
+        assert [(cell.row, cell.column) for cell in report.linked] == [
+            (2, "site"),
+            (4, "site"),
+        ]
+        assert applied_of(report).linked == report.linked
+        green = {"red": 0x33 / 255, "green": 0xAA / 255, "blue": 0x55 / 255}
+        for row, target_ in [(2, "https://a.example"), (4, "https://c.example")]:
+            assert grid.format("T", row, 2) == {
+                "link": target_,
+                "underline": False,
+                "color": green,
+            }
+        # Row b was not written, and keeps the link the API gave it.
+        assert grid.format("T", 3, 2) == {"link": "https://b.example"}
+        lines = format_report(SyncReport([report])).splitlines()
+        assert "  URL cells given a link: 2" in lines
+
+    def test_a_preview_does_not_run_the_check(self, tmp_path):
+        grid, target = self.scene(tmp_path / "linked", **self.COLOR)
+        report = run(grid, target)
+        plain, untouched = self.scene(tmp_path / "plain")
+        run(plain, untouched)
+        # The same requests as a preview without link_urls: no grid read.
+        assert grid.methods == plain.methods
+        assert report.linked == []
+        assert "URL cells" not in format_report(SyncReport([report]))

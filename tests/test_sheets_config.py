@@ -1090,3 +1090,62 @@ class TestJsonEntries:
         checker = _Checker(ROOT)
         checker.collisions([target])
         assert checker.problems == []
+
+
+class TestLinkUrls:
+    WHERE = "target 'roster', tab 'Members'"
+
+    def tab_refused(self, tab, problem):
+        refused(config({"Members": tab}), f"{self.WHERE}: {problem}")
+
+    @pytest.mark.parametrize("mode", ["sync", "push"])
+    def test_on_a_sync_or_a_push_tab(self, mode):
+        tab = members(mode=mode, link_urls={"color": "#1155CC"})
+        target = parse_config(config({"Members": tab}), PATH).target("roster")
+        assert target.tabs[0].link_urls == "#1155CC"
+        assert target.tabs[0].clear_links is False
+
+    def test_absent_by_default(self):
+        target = parse_config(config(), PATH).target("roster")
+        assert target.tabs[0].link_urls is None
+
+    def test_on_a_pull_tab(self):
+        self.tab_refused(
+            {"mode": "pull", "local": "m.csv", "link_urls": {"color": "#1155cc"}},
+            "'link_urls' does not apply to a pull tab",
+        )
+
+    def test_with_clear_links(self):
+        self.tab_refused(
+            members(clear_links=True, link_urls={"color": "#1155cc"}),
+            "'link_urls' and 'clear_links' contradict each other",
+        )
+        tab = members(clear_links=False, link_urls={"color": "#1155cc"})
+        assert parse_config(config({"Members": tab}), PATH).targets
+
+    @pytest.mark.parametrize("color", ["1155cc", "#15c", "#1155cg", "blue", 5, None])
+    def test_a_colour_that_is_not_rrggbb(self, color):
+        self.tab_refused(
+            members(link_urls={"color": color}),
+            f"'link_urls' color must be '#rrggbb', not {color!r}",
+        )
+
+    @pytest.mark.parametrize(
+        "given",
+        ["#1155cc", True, {}, {"colour": "#1155cc"}, {"color": "#1155cc", "x": 1}],
+    )
+    def test_not_an_object_with_a_color(self, given):
+        self.tab_refused(
+            members(link_urls=given),
+            "'link_urls' must be an object with one field, 'color'",
+        )
+
+    def test_a_tab_built_in_code(self, tmp_path):
+        local = tmp_path / "m.csv"
+        assert TabConfig("T", local, link_urls="#1155cc").link_urls == "#1155cc"
+        with pytest.raises(
+            ValueError, match="'link_urls' and 'clear_links' contradict"
+        ):
+            TabConfig("T", local, clear_links=True, link_urls="#1155cc")
+        with pytest.raises(ValueError, match="a colour is written '#rrggbb'"):
+            TabConfig("T", local, link_urls="1155cc")
