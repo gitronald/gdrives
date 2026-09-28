@@ -323,6 +323,94 @@ class TestDimensions:
             batch(grid, {"updateDimensionProperties": request})
 
 
+def move(start, to, end=None, sheet_id=0):
+    """A ``moveDimension`` of rows ``start`` to ``end`` (one row by default)."""
+    source = rows_dim(start, start + 1 if end is None else end, sheet_id)
+    return {"moveDimension": {"source": source, "destinationIndex": to}}
+
+
+class TestMoves:
+    """The rule the live API was seen to follow, on rows id, A to E of 8."""
+
+    ROWS = [["id"], ["A"], ["B"], ["C"], ["D"], ["E"]]
+
+    def grid(self):
+        return FakeSheetGrid({"T": self.ROWS}, rows=8)
+
+    def ids(self, grid):
+        return [row[0] for row in grid.values("T")[1:]]
+
+    @pytest.mark.parametrize(
+        ("start", "to", "after"),
+        [
+            # The destination is counted before the row is taken out: a row
+            # moved down lands directly before the row that was at `to`.
+            (1, 4, "BCADE"),
+            (5, 1, "EABCD"),
+            (1, 6, "BCDEA"),
+            # The index just past the row moves nothing.
+            (1, 2, "ABCDE"),
+        ],
+    )
+    def test_the_destination_is_counted_before_the_row_moves(self, start, to, after):
+        grid = self.grid()
+        batch(grid, move(start, to))
+        assert self.ids(grid) == list(after)
+        assert grid.tab("T").row_count == 8
+
+    def test_requests_in_a_batch_apply_in_order(self):
+        grid = self.grid()
+        batch(grid, move(1, 4), move(1, 6))
+        assert self.ids(grid) == list("CADEB")
+
+    def test_a_block_of_rows_moves_together(self):
+        grid = self.grid()
+        batch(grid, move(1, 5, end=3))
+        assert self.ids(grid) == list("CDABE")
+
+    def test_the_grid_s_last_row_is_a_destination(self):
+        grid = self.grid()
+        batch(grid, move(1, 8))
+        assert grid.values("T")[1:] == [["B"], ["C"], ["D"], ["E"], [], [], ["A"]]
+
+    def test_formats_move_with_their_rows(self):
+        grid = FakeSheetGrid({"T": [["id", "site"], ["A", "a.io"], ["B", ""]]})
+        grid.format("T", 3, 1)["bold"] = True
+        batch(grid, move(2, 1))
+        assert grid.values("T") == [["id", "site"], ["B"], ["A", "a.io"]]
+        assert grid.links("T") == {(3, 2): "http://a.io"}
+        assert grid.format("T", 2, 1) == {"bold": True}
+        assert grid.format("T", 3, 1) == {}
+
+    @pytest.mark.parametrize(
+        ("request_", "message"),
+        [
+            (move(1, 1), r"destinationIndex\[1\] must be outside"),
+            (move(1, 2, end=3), r"destinationIndex\[2\] must be outside"),
+            (move(1, 9), r"destinationIndex\[9\] is after last row\[8\]"),
+            (move(1, -1), "bad destinationIndex -1"),
+            (move(2, 0, end=2), "bad range 2:2"),
+            (move(7, 0, end=9), "bad range 7:9"),
+            (
+                {"moveDimension": {"source": cols_dim(0, 1), "destinationIndex": 2}},
+                "rows only",
+            ),
+        ],
+    )
+    def test_bad_moves_are_a_400(self, request_, message):
+        grid = self.grid()
+        with pytest.raises(HttpError, match=message) as raised:
+            batch(grid, request_)
+        assert status(raised) == 400
+        assert self.ids(grid) == list("ABCDE")
+
+    def test_a_failing_move_rolls_back_the_whole_batch(self):
+        grid = self.grid()
+        with pytest.raises(HttpError):
+            batch(grid, move(1, 4), move(1, 1))
+        assert self.ids(grid) == list("ABCDE")
+
+
 class TestUpdateCells:
     def cells(self, row, col, *rows, fields="userEnteredValue", sheet_id=0):
         return {

@@ -788,10 +788,14 @@ class FakeSheetGrid:
       empty string clears the cell). ``USER_ENTERED`` parsing is not modelled.
       A batch is applied all or nothing.
     - ``spreadsheets.batchUpdate`` applies ``insertDimension``,
-      ``appendDimension``, ``deleteDimension``, ``updateCells`` (from its
-      ``start``, honouring the ``fields`` mask), ``updateDimensionProperties``
-      (``pixelSize``), ``addSheet`` (a 1000 x 26 grid), and ``deleteSheet``,
-      all or nothing.
+      ``appendDimension``, ``deleteDimension``, ``moveDimension`` (rows),
+      ``updateCells`` (from its ``start``, honouring the ``fields`` mask),
+      ``updateDimensionProperties`` (``pixelSize``), ``addSheet`` (a 1000 x
+      26 grid), and ``deleteSheet``, in order and all or nothing.
+    - ``moveDimension`` counts its ``destinationIndex`` before the rows move
+      out, as the API does, and moves each row's values and formats. Like the
+      API it refuses a destination inside the rows moved and one past the
+      grid's last row; the grid's size does not change.
     - A value written as text that is a URL or a bare domain gains a link on
       the whole cell, by every write path. ``repeatCell`` and ``updateCells``
       honour a ``fields`` mask over the cell link, ``bold``, and
@@ -1194,6 +1198,36 @@ class FakeSheetGrid:
             for row in tab.cells:
                 del row[start:end]
             del tab.widths[start:end]
+        return {}
+
+    def _req_moveDimension(self, body: dict[str, Any]) -> dict[str, Any]:
+        tab, rows, start, end = self._dimension(body["source"])
+        if not rows:
+            raise http_error(400, "the fake models moveDimension of rows only")
+        if not 0 <= start < end <= tab.row_count:
+            raise http_error(400, f"moveDimension: bad range {start}:{end}")
+        to = body["destinationIndex"]
+        if start <= to < end:
+            raise http_error(
+                400,
+                f"destinationIndex[{to}] must be outside the requested "
+                f"range[{start}-{end}]",
+            )
+        if to < 0:
+            raise http_error(400, f"moveDimension: bad destinationIndex {to}")
+        if to > tab.row_count:
+            raise http_error(
+                400, f"destinationIndex[{to}] is after last row[{tab.row_count}]"
+            )
+        # The destination is counted before the rows are taken out.
+        order = list(range(tab.row_count))
+        moving = order[start:end]
+        del order[start:end]
+        at = to if to < start else to - (end - start)
+        order[at:at] = moving
+        tab.cells = [tab.cells[r] for r in order]
+        now = {r: index for index, r in enumerate(order)}
+        tab.formats = {(now[r], c): held for (r, c), held in tab.formats.items()}
         return {}
 
     def _req_updateCells(self, body: dict[str, Any]) -> dict[str, Any]:
