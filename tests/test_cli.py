@@ -231,6 +231,34 @@ class TestLs:
         assert rec["k"]["save_as"] == ["map.md"]
         assert rec["k"]["service"] is service
 
+    def test_newline_is_passed_on(self, monkeypatch, service):
+        rec = {}
+        monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(a=a, k=k))
+        cli.ls(shared_with_me=True, save_as=["data.csv"], newline="lf")
+        assert rec["k"]["newline"] == "lf"
+        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda p, svc: "FID")
+        cli.ls(path="My Drive", save_as=["data.csv"], newline="crlf")
+        assert rec["a"] == ("FID",) and rec["k"]["newline"] == "crlf"
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"newline": "lf"}, "newline applies to a saved listing"),
+            ({"newline": "cr", "save_as": ["data.csv"]}, "newline must be one of"),
+        ],
+    )
+    def test_a_newline_is_checked_before_authenticating(
+        self, monkeypatch, capsys, options, message
+    ):
+        def build():
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        with pytest.raises(SystemExit) as exc:
+            cli.ls(path="My Drive", **options)
+        assert exc.value.code == 1
+        assert message in capsys.readouterr().err
+
     def test_shared_with_path_resolves(self, monkeypatch, service):
         rec = {}
         monkeypatch.setattr(

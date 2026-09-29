@@ -262,6 +262,14 @@ def ls(
             help="Resolve path from 'Shared with me' items",
         ),
     ] = False,
+    newline: Annotated[
+        str | None,
+        typer.Option(
+            "--newline",
+            help="With --save-as, end each saved file's lines with lf or crlf "
+            "(default: lf for .md, crlf for .csv)",
+        ),
+    ] = None,
 ):
     """List contents of a Drive folder by path or ID."""
     if path is not None and drive_id is not None:
@@ -279,21 +287,31 @@ def ls(
         _fail("--depth is not supported when listing all shared items")
 
     from gdrives.auth import build_drive_service
+    from gdrives.listing import check_newline
     from gdrives.listing import ls as remote_ls
     from gdrives.resolve import resolve_path, resolve_shared_path
 
     with _cli_errors():
+        check_newline(newline, save_as)
         # One service resolves the path and lists it: one authentication.
         service = build_drive_service()
         if shared_with_me and path is None:
-            remote_ls(shared_with_me=True, save_as=save_as, service=service)
+            remote_ls(
+                shared_with_me=True, save_as=save_as, service=service, newline=newline
+            )
         else:
             if shared_with_me:
                 assert path is not None  # the path-less shared case returned above
                 folder_id = resolve_shared_path(path, service)
             else:
                 folder_id = drive_id or resolve_path(path or "My Drive", service)
-            remote_ls(folder_id, depth=depth, save_as=save_as, service=service)
+            remote_ls(
+                folder_id,
+                depth=depth,
+                save_as=save_as,
+                service=service,
+                newline=newline,
+            )
 
 
 @app.command(name="show-drives")

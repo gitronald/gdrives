@@ -22,7 +22,7 @@ from gdrives.files import (
     shared_by,
     walk_tree,
 )
-from gdrives.local import escape_formula, printable, write_text
+from gdrives.local import escape_formula, line_ending, printable, write_text
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ def format_markdown(rows: list[DriveEntry]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def format_csv(rows: list[DriveEntry]) -> str:
+def format_csv(rows: list[DriveEntry], newline: str | None = None) -> str:
     """Format as CSV, with each cell kept from running as a spreadsheet formula.
 
     Names come from whoever owns a file, so a shared item named
@@ -147,7 +147,12 @@ def format_csv(rows: list[DriveEntry]) -> str:
     LibreOffice; :func:`escape_formula` prefixes such cells with ``'``. Control
     characters are then escaped as in :func:`format_table`, so a saved CSV
     viewed with ``cat`` or ``less`` can't drive the terminal either.
+
+    ``newline`` (``"lf"`` or ``"crlf"``) is how each row ends; None is CRLF,
+    the ``csv`` module's own. A cell holds no line break, since a control
+    character is escaped, so the row endings are the file's only ones.
     """
+    ending = "\r\n" if newline is None else line_ending(newline)
     buf = io.StringIO()
     fieldnames = [
         "path",
@@ -158,7 +163,7 @@ def format_csv(rows: list[DriveEntry]) -> str:
         "shared_by",
         "url",
     ]
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator=ending)
     writer.writeheader()
     for r in rows:
         row = {
@@ -176,21 +181,33 @@ def format_csv(rows: list[DriveEntry]) -> str:
     return buf.getvalue()
 
 
-def _render(rows: list[DriveEntry], suffix: str) -> str:
+def _render(rows: list[DriveEntry], suffix: str, newline: str | None = None) -> str:
     """Render rows for a ``--save-as`` path, choosing the format by extension.
 
     ``.md`` renders nested markdown and ``.csv`` renders CSV, in any letter
     case; any other suffix is rejected rather than silently written as CSV, so
     every caller (not just the CLI, which pre-validates) gets the same guarantee.
+    ``newline`` is how the lines of either end; None is each format's own, LF
+    for the markdown and CRLF for the CSV.
     """
     if suffix.lower() == ".md":
-        return format_markdown(rows)
+        text = format_markdown(rows)
+        return text if newline is None else text.replace("\n", line_ending(newline))
     if suffix.lower() == ".csv":
-        return format_csv(rows)
+        return format_csv(rows, newline)
     raise ValueError(f"unsupported --save-as extension {suffix!r}: use .md or .csv")
 
 
 # -- Public API --
+
+
+def check_newline(newline: str | None, save_as: list[str] | None) -> None:
+    """Refuse a ``newline`` that is not one, or that has no file to apply to."""
+    if newline is None:
+        return
+    line_ending(newline)
+    if not save_as:
+        raise ValueError("newline applies to a saved listing; give save_as a path")
 
 
 def ls(
@@ -200,6 +217,7 @@ def ls(
     save_as: list[str] | None = None,
     shared_with_me: bool = False,
     service: Service | None = None,
+    newline: str | None = None,
 ):
     """List Drive folder contents.
 
@@ -208,7 +226,13 @@ def ls(
     API calls). Format is chosen per path by extension (.md vs .csv). Pass the
     ``service`` that resolved ``folder_id`` to reuse it rather than
     authenticating again.
+
+    ``newline`` (``"lf"`` or ``"crlf"``) is how the lines of each saved file
+    end, for a listing that is committed; None leaves each format its own (LF
+    for ``.md``, CRLF for ``.csv``). It is refused, before any request, for
+    any other value and with no ``save_as``.
     """
+    check_newline(newline, save_as)
     if shared_with_me and folder_id is None:
         items = list_shared_with_me(service or build_drive_service())
         logger.info("Found %d entries", len(items))
@@ -224,7 +248,7 @@ def ls(
     if save_as:
         for path in save_as:
             out = Path(path)
-            write_text(out, _render(rows, out.suffix))
+            write_text(out, _render(rows, out.suffix, newline))
             print(f"Wrote {out}", file=sys.stderr)
     else:
         print(format_table(rows), end="")
