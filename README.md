@@ -592,6 +592,7 @@ gdrives upload out.pdf "My Drive/reports/report.pdf"     # Into a folder, under 
 gdrives upload report.pdf "My Drive/reports" --dry-run   # Print the operation, make none
 gdrives upload report.pdf --dest-id <folder-id> --name q3.pdf  # Skip path resolution
 gdrives upload report.pdf --file-id <file-id>            # Replace that file's content
+gdrives upload report.pdf "My Drive/reports" --no-replace  # Refuse if the name is taken
 gdrives upload notes.md "My Drive/notes" --mime-type text/markdown  # Set the type
 ```
 
@@ -613,6 +614,15 @@ compare without regard to case, as they do when a path is resolved.
 
 A file or a folder in the trash is refused when `--file-id` or `--dest-id`
 names it; a path never resolves to one.
+
+`--no-replace` makes the first three cases one: a file of that name in the
+folder, one or several, exits 1 with each one's ID listed and writes nothing,
+and with none the file is created. It is refused with `--file-id`, which names
+the file to replace, before any request. `--dry-run` reports the same refusal.
+The check is one listing just before the write, so it narrows the window in
+which another writer can create the name and does not close it: Drive has no
+create-if-absent. From code, `plan_upload` and `upload_file` take
+`replace=False`.
 
 After the write, the file is read back and its size and MD5 checksum are
 compared with the local file's; a difference exits 1 and names the file. The
