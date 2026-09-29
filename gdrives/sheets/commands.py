@@ -849,6 +849,7 @@ def run_schema(
     config: str | None = None,
     tabs: Sequence[str] = (),
     output: str | None = None,
+    escape_formulas: bool = False,
 ) -> int:
     """Print the schemas of config target ``name`` as CSV, or write them to ``output``.
 
@@ -858,16 +859,20 @@ def run_schema(
     ``module:attribute`` is resolved, which imports that module, as a run does;
     hooks are neither imported nor checked. ``output`` is a ``.csv``, ``.tsv``,
     or ``.json`` file, written atomically with LF line endings; without it the
-    rows go to stdout as CSV. Returns 0; a config, tab, or schema problem raises.
+    rows go to stdout as CSV. ``escape_formulas`` passes every cell of that CSV
+    or delimited file through :func:`escape_formula`, as :func:`run_get` does,
+    since a ``pattern`` or a ``description`` may start with ``=``, ``+``,
+    ``-``, or ``@``; a ``.json`` output refuses it, as it does a byte-order
+    mark. Returns 0; a config, tab, or schema problem raises.
     """
     target = load_config(config).target(name)
     titles = list(dict.fromkeys(tabs)) or None
     rows = schema_rows(resolve_schemas(target, titles), titles)
     if output:
-        write_records(output, SCHEMA_COLUMNS, rows)
+        write_records(output, SCHEMA_COLUMNS, rows, escape_formulas=escape_formulas)
         print(f"Wrote {len(rows)} column(s) to {output}", file=sys.stderr)
     else:
-        print(format_schema(rows), end="")
+        print(format_schema(rows, escape_formulas=escape_formulas), end="")
     return 0
 
 

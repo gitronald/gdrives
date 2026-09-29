@@ -877,18 +877,34 @@ def sheets_schema(
             help="Write to this .csv, .tsv, or .json file (default: CSV to stdout)",
         ),
     ] = None,
+    escape_formulas: Annotated[
+        bool,
+        typer.Option(
+            "--escape-formulas",
+            help="Prefix ' to cells starting with =, +, -, @, a tab, or a carriage "
+            "return, so a spreadsheet app opening the output shows them as text",
+        ),
+    ] = False,
 ):
     """List the schema columns of a target: type, rules, and description.
 
     One row per declared column of every tab (or the --tab ones), from the
     config alone: no request to Google and no credential. A tab whose schema
-    is a module:attribute runs that module, as a sync does. Exit code 0, or
-    1 on a config error. See docs/sheets-sync.md.
+    is a module:attribute runs that module, as a sync does. Values are exact
+    unless --escape-formulas is given (for CSV or TSV a spreadsheet app will
+    open; a .json file refuses it). Exit code 0, or 1 on a config error. See
+    docs/sheets-sync.md.
     """
     from gdrives.sheets import run_schema
 
     with _cli_errors():
-        code = run_schema(target, config=config, tabs=tab or [], output=output)
+        code = run_schema(
+            target,
+            config=config,
+            tabs=tab or [],
+            output=output,
+            escape_formulas=escape_formulas,
+        )
     raise typer.Exit(code)
 
 

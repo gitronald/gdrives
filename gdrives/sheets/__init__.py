@@ -187,7 +187,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
-from gdrives.sheets.schema import format_schema, schema_rows
+from gdrives.sheets.schema import SCHEMA_COLUMNS, format_schema, schema_rows
 from gdrives.sheets.stores import FileStore, JsonEntryStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
@@ -341,6 +341,7 @@ __all__ = [
     "Records",
     "Replacement",
     "RowFlag",
+    "SCHEMA_COLUMNS",
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",

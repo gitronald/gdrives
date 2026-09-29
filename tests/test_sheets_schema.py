@@ -5,7 +5,9 @@ A read of the config alone: no request and no credential. A schema named as
 ``tmp_path`` as ``clubtools_docs_<n>`` and put on ``sys.path`` for the test.
 """
 
+import csv
 import importlib
+import io
 import itertools
 import json
 import sys
@@ -148,6 +150,18 @@ class TestFormatSchema:
         )
         assert '"A, ""quoted"""' in lines[4]
 
+    def test_values_are_exact_unless_formulas_are_escaped(self, tmp_path):
+        rows = schema_rows(target_of(tmp_path, {"Members": members()}))
+        rows[0]["description"] = "=HYPERLINK(1)"
+        rows[1]["pattern"] = "-x"
+        exact = list(csv.reader(io.StringIO(format_schema(rows))))
+        assert (exact[1][-1], exact[2][8]) == ("=HYPERLINK(1)", "-x")
+        text = format_schema(rows, escape_formulas=True)
+        escaped = list(csv.reader(io.StringIO(text)))
+        assert (escaped[1][-1], escaped[2][8]) == ("'=HYPERLINK(1)", "'-x")
+        assert escaped[0] == exact[0] and escaped[1][:9] == exact[1][:9]
+        assert rows[1]["pattern"] == "-x"
+
     def test_no_rows_is_the_header_alone(self):
         assert format_schema([]) == ",".join(SCHEMA_COLUMNS) + "\n"
 
@@ -224,6 +238,35 @@ class TestTheCommand:
         assert rows[1]["allowed"] == '["active", "closed"]'
         assert read_records(project / "schema.json").rows == rows
         assert read_records(project / "schema.csv").rows == rows
+
+    def test_escape_formulas_applies_to_stdout_and_delimited_files(self, project):
+        fields = {"status": {"pattern": "-x", "description": "=SUM(A1)"}}
+        configure(project, {"Members": members() | {"schema": fields}})
+        exact = invoke("roster")
+        assert (
+            exact.stdout.split("\n")[1]
+            == "Members,status,FALSE,str,FALSE,FALSE,FALSE,,-x,=SUM(A1)"
+        )
+        result = invoke("roster", "--escape-formulas")
+        assert result.exit_code == 0, result.output
+        assert result.stdout.split("\n")[1] == (
+            "Members,status,FALSE,str,FALSE,FALSE,FALSE,,'-x,'=SUM(A1)"
+        )
+        for name in ("schema.csv", "schema.tsv"):
+            done = invoke("roster", "-o", str(project / name), "--escape-formulas")
+            assert done.exit_code == 0, done.output
+            (row,) = read_records(project / name).rows
+            assert (row["pattern"], row["description"]) == ("'-x", "'=SUM(A1)")
+        invoke("roster", "-o", str(project / "exact.csv"))
+        (row,) = read_records(project / "exact.csv").rows
+        assert (row["pattern"], row["description"]) == ("-x", "=SUM(A1)")
+
+    def test_escape_formulas_is_refused_for_json(self, project):
+        configure(project, {"Members": members()})
+        result = invoke("roster", "-o", str(project / "s.json"), "--escape-formulas")
+        assert result.exit_code == 1
+        assert "escaping formulas applies only to .csv and .tsv" in result.output
+        assert not (project / "s.json").exists()
 
     def test_tab_and_config_options(self, project):
         tabs = {

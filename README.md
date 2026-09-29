@@ -409,7 +409,7 @@ gdrives sheets-pull <sheet-url> --all-tabs -o out/ --slug --bom --apply  # Slug 
 gdrives sheets-widths <sheet-url> --tab Members    # Column widths as JSON, for a tab's "widths"
 gdrives sheets-links <sheet-url> --color "#1155cc" # Check the links of URL cells on every tab
 gdrives sheets-links roster --tab Members --apply  # A target's tab, in its link_urls colour, fixed
-gdrives sheets-schema roster -o schema.csv         # A target's schema columns, with types, rules, and descriptions
+gdrives sheets-schema roster -o schema.csv         # A target's schema columns, with types, rules, and descriptions (--escape-formulas for a spreadsheet app)
 ```
 
 A `sync` tab is merged three ways by row key against a **base snapshot** (one
@@ -497,7 +497,9 @@ A schema column may carry a `description`, which no check reads.
 `gdrives sheets-schema roster -o schema.csv` lists a target's declared columns
 with their types, rules, and descriptions, from the config alone (no request,
 no credential; a schema named as `module:attribute` is imported), as CSV, TSV,
-or JSON by the file's extension. `schema_rows` in `gdrives.sheets` returns the
+or JSON by the file's extension; `--escape-formulas` prefixes a `'` to cells a
+spreadsheet app would run as formulas, as `sheets-get` does, for CSV and TSV.
+`schema_rows` in `gdrives.sheets` returns the
 rows for a caller's own docs. See
 [describing the columns](docs/sheets-sync.md#describing-the-columns).
 

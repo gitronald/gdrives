@@ -13,6 +13,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from gdrives.local import escape_formula
 from gdrives.sheets.cells import to_cell
 from gdrives.sheets.config import Target
 
@@ -90,10 +91,23 @@ def schema_rows(
     return rows
 
 
-def format_schema(rows: Sequence[dict[str, str]]) -> str:
-    """``rows`` of :func:`schema_rows` as CSV text with a header row and LF endings."""
+def format_schema(
+    rows: Sequence[dict[str, str]], *, escape_formulas: bool = False
+) -> str:
+    """``rows`` of :func:`schema_rows` as CSV text with a header row and LF endings.
+
+    ``escape_formulas`` passes every cell through
+    :func:`~gdrives.local.escape_formula`, for text a spreadsheet application
+    will open, since a ``pattern`` or a ``description`` may start with ``=``,
+    ``+``, ``-``, or ``@``. Off by default, so the values are exact.
+    """
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=SCHEMA_COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows(
+        {key: escape_formula(cell) for key, cell in row.items()}
+        if escape_formulas
+        else row
+        for row in rows
+    )
     return out.getvalue()

@@ -987,15 +987,26 @@ SUBMODULES = (
 )
 
 
+def _is_constant(obj):
+    """A string, a frozenset, a read-only mapping, or a tuple of strings."""
+    if isinstance(obj, tuple):
+        return all(isinstance(item, str) for item in obj)
+    return isinstance(obj, (str, frozenset, MappingProxyType))
+
+
 def _defined_public(module):
-    """Public functions and constants a submodule defines (not ones it imports)."""
+    """Public functions and constants a submodule defines (not ones it imports).
+
+    A constant is a string, a frozenset, a read-only mapping, or a tuple of
+    strings (a tuple of anything else, such as ``TAB_ERRORS``, is not one).
+    """
     return {
         name: obj
         for name, obj in vars(module).items()
         if not name.startswith("_")
         and (
             getattr(obj, "__module__", None) == module.__name__
-            or (name.isupper() and isinstance(obj, (str, frozenset, MappingProxyType)))
+            or (name.isupper() and _is_constant(obj))
         )
     }
 

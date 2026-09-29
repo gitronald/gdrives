@@ -514,13 +514,19 @@ The rows follow the config's order of tabs, and each tab's order of columns.
   as a sync does (see [a schema in code](#a-schema-in-code)), so read a
   config from somewhere else before you run it. Hooks are not imported.
 - With `-o` the file is written atomically, with LF line endings; without it
-  the CSV goes to stdout. `--tab` limits the tabs, and `--config` names the
+  the CSV goes to stdout. Values are exact. A `pattern` or a `description`
+  may start with `=`, `+`, `-`, or `@`, so `--escape-formulas`, as
+  `sheets-get` has it, prefixes a `'` to every cell of the CSV on stdout or of
+  a `.csv` or `.tsv` file that starts with one of those, a tab, or a carriage
+  return. A `.json` file refuses it, as it refuses a byte-order mark: JSON is
+  not opened as a spreadsheet, and a prefix would change its values. `--tab` limits the tabs, and `--config` names the
   config file. It exits 0, or 1 on a problem with the config, a tab, a
   schema, or the output path.
 - In code, `schema_rows(target, tabs=None)` returns the rows as dicts, in the
-  order of `gdrives.sheets.schema.SCHEMA_COLUMNS`, for a caller's own docs:
+  order of `gdrives.sheets.SCHEMA_COLUMNS`, for a caller's own docs:
   give `write_records` the columns and the rows to write a file, or
-  `format_schema(rows)` for the CSV text. A tab whose `schema` is a reference
+  `format_schema(rows)` for the CSV text. Both take `escape_formulas=True` for
+  text a spreadsheet app will open; `schema_rows` itself stays exact. A tab whose `schema` is a reference
   must be resolved first, and `resolve_schemas(target)` does that without
   the hooks that `resolve_target` also finds.
 
