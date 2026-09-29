@@ -2,7 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
-| 020 | [Publish the preview hint and the test fakes, and tighten small schema, link, and export edges](plans/020-caller-seams-and-fakes/plan.md) | active | — | — |
+| 020 | [Publish the preview hint and the test fakes, and tighten small schema, link, and export edges](plans/020-caller-seams-and-fakes/plan.md) | active | — | [#65](https://github.com/gitronald/gdrives/pull/65) |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 019 | [Remove the glue callers still write around gdrives.sheets](plans/019-caller-glue-followups/plan.md) | done | 2026-09-29 09:50 PT | [#63](https://github.com/gitronald/gdrives/pull/63) |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | done | 2026-09-27 21:45 PT | [#61](https://github.com/gitronald/gdrives/pull/61) |
