@@ -123,7 +123,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), and `pattern` (a regular expression, `str` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -398,6 +398,35 @@ also means the merge's own check, which only runs on a value about to be
 folded, never sees such a respelling; it is still reported, since nothing
 would be written for it either way, and it always refuses the tab under
 either `on_invalid` setting (there is nothing for `hold` to hold back).
+
+### A pattern for a column
+
+`pattern` is a regular expression that a `str` column's cells must match in
+full, as `re.fullmatch` does: a cell that only contains a match fails, so
+anchors are not needed. It is refused on any other type, and a string that is
+not a regular expression is a config problem naming the column and giving the
+compile error.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {
+    "member_id": {},
+    "profile": {"type": "str", "pattern": "https://example\\.com/members/[0-9]+"}
+  }
+}
+```
+
+```
+Members (local): key ('m1',), column 'profile': 'example.com/members/1' does not match the pattern 'https://example\\.com/members/[0-9]+'
+```
+
+A blank cell is never checked against the pattern: `required` is the rule for
+blanks. The check is part of `cell_problem`, run after `required`, the type,
+`strict`, and `allowed`, so a value that fails it is a schema problem like any
+other: it blocks the write, and `on_invalid: "hold"` holds a sheet value that
+fails it. In JSON the backslash is written twice, as above. The expression is
+compiled once per distinct string, not once per cell.
 
 ### Ownership
 

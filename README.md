@@ -397,9 +397,11 @@ tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
 files that hold the displayed text. A tab's `strict_schema` makes it a problem
 for a column of either side to have no `schema` entry, so a column added later
 does not silently sync as text; `"local"` checks the local side only, and leaves
-a sheet column outside the projection alone. A `schema` column's `present: true` makes it a
-problem for the header to lack it, and its `strict: true` narrows a `bool` or
-`date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`).
+a sheet column outside the projection alone. A `schema` column's `present: true`
+makes it a problem for the header to lack it, its `strict: true` narrows a
+`bool` or `date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`),
+and a `str` column's `pattern` is a regular expression a non-blank cell must
+match in full.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, a preview that `--apply` would change ends with `Preview only;
