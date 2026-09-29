@@ -55,7 +55,11 @@ LINK_DETAIL_FIELDS = (
 CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
 
 #: The format fields a link's look is written in: the link, the underline, and
-#: the text colour. ``clear_link_format`` with ``style`` clears all three.
+#: the text colour. ``clear_link_format`` with ``style`` clears all three, and
+#: the fix of a URL cell writes them and no others, so a cell keeps its bold,
+#: its fill, and its font. The runs are not among them: in the request that
+#: sets a link they take the link away, so they are cleared by a request of
+#: their own.
 CELL_STYLE_FIELDS = ",".join(
     f"userEnteredFormat.textFormat.{name}"
     for name in ("link", "underline", "foregroundColorStyle")
@@ -430,9 +434,11 @@ def clear_link_format(
     split around those cells, so a column with none is still cleared by one
     block, and the rows of a block with no ``rows`` end where the last
     skipped cell of its columns is passed (an open range, to the end of the
-    tab). The cells are found by the same grid read as the runs,
+    tab, and none when that cell is in the tab's last row). The cells are
+    found by the same grid read as the runs,
     ``linked_cells(..., detail=True)``, so ``formulas=False`` costs that
-    read even with ``runs=False``.
+    read even with ``runs=False``, and with no ``rows`` the read of the
+    tab's size when it leaves a cell, which ``sheet_id`` does not save.
 
     With ``runs``, a cell that holds a link on part of its text has its text
     format runs cleared whole, in the same request. The API cannot take a
@@ -465,11 +471,19 @@ def clear_link_format(
             detail=not formulas,
         )
     partial = found if runs else []
-    left = [] if formulas else [cell for cell in found if cell.formula]
-    if sheet_id is None:
-        sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
+    left: list[LinkedCell] = (
+        [] if formulas else [cell for cell in found if cell.formula]
+    )
+    # An open range after a cell left must start inside the grid, so the
+    # grid's size is read when there is one to send.
+    row_count: int | None = None
+    if sheet_id is None or (left and rows is None):
+        grid = tab_grid(service, spreadsheet_id, tab)
+        row_count = grid.row_count
+        if sheet_id is None:
+            sheet_id = grid.sheet_id
     field = CELL_STYLE_FIELDS if style else CELL_LINK_FIELD
-    requests = _link_clears(sheet_id, positions, rows, partial, field, left)
+    requests = _link_clears(sheet_id, positions, rows, partial, field, left, row_count)
     if requests:
         batch_update_spreadsheet(service, spreadsheet_id, requests)
 
@@ -523,12 +537,14 @@ def _blocks(
 
 
 def _row_spans(
-    rows: Sequence[int] | None, gap: frozenset[int]
+    rows: Sequence[int] | None, gap: frozenset[int], row_count: int | None = None
 ) -> list[tuple[int, int | None] | None]:
     """The row bounds of a block that leaves the 0-based rows of ``gap``.
 
     With no ``rows`` the block is every row: ``None`` when it leaves none,
-    else the stretches between the rows left, the last with no end.
+    else the stretches between the rows left, the last with no end. That
+    last one is left out when it would start at or past ``row_count``, the
+    grid's rows: a range outside the grid is refused, and with it the batch.
     """
     if rows is not None:
         return list(_adjacent([row - 1 for row in rows if row - 1 not in gap]))
@@ -540,7 +556,8 @@ def _row_spans(
         if row > start:
             spans.append((start, row))
         start = row + 1
-    spans.append((start, None))
+    if row_count is None or start < row_count:
+        spans.append((start, None))
     return spans
 
 
@@ -551,17 +568,19 @@ def _link_clears(
     partial: Sequence[LinkedCell],
     field: str = CELL_LINK_FIELD,
     left: Sequence[LinkedCell] = (),
+    row_count: int | None = None,
 ) -> list[dict[str, Any]]:
     """The requests that clear ``field`` of a block, and the runs of ``partial``.
 
     The cells of ``left`` are excluded from both: a block is split around
-    them, and their runs are kept.
+    them, and their runs are kept. ``row_count`` is the grid's rows, which
+    an open range after a cell left must start inside.
     """
     skipped = _skipped_rows(positions, rows, left)
     requests = [
         link_clear(sheet_id, field, across, down)
         for across, gap in _blocks(positions, skipped)
-        for down in _row_spans(rows, gap)
+        for down in _row_spans(rows, gap, row_count)
     ]
     kept = {(cell.column, cell.row) for cell in left}
     requests.extend(
@@ -638,11 +657,6 @@ _URL_FIELDS = (
     "sheets(data(rowData(values(hyperlink,textFormatRuns,"
     "effectiveFormat(textFormat(underline,foregroundColorStyle))))))"
 )
-
-# The properties the fix writes, and no others, so a cell keeps its bold, its
-# fill, and its font. The runs are not among them: in the request that sets a
-# link they take the link away, so they are cleared by a request of their own.
-_URL_FORMAT_FIELDS = CELL_STYLE_FIELDS
 
 _RGB = tuple[int, int, int]
 
@@ -810,7 +824,7 @@ def _url_link(
                 "endColumnIndex": column + 1,
             },
             "cell": {"userEnteredFormat": {"textFormat": text_format}},
-            "fields": _URL_FORMAT_FIELDS,
+            "fields": CELL_STYLE_FIELDS,
         }
     }
 

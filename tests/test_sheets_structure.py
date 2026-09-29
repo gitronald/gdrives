@@ -997,6 +997,41 @@ class TestClearLinkFormulas:
         ]
         assert cleared == [3]
 
+    def test_a_formula_cell_in_the_last_row_of_the_grid_ends_the_block(self):
+        # A range that starts past the grid is refused, and the batch with it.
+        grid = formula_grid()
+        del grid.tab("T").cells[9:]
+        formula_at(grid, 9, 1)
+        clear_link_format(
+            grid, "S", "T", runs=False, formulas=False, sheet_id=grid.tab("T").sheet_id
+        )
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert requests_of(grid) == [
+            clears(LINK, (0, 1)),
+            clears(LINK, (1, 2), (0, 8)),
+            clears(LINK, (2, 4)),
+        ]
+        assert grid.tab("T").formats[(8, 1)]["link"] == "https://example.com/b"
+
+    def test_a_tab_of_one_formula_row_sends_nothing_for_its_column(self):
+        grid = FakeSheetGrid({"T": [["site"]]})
+        del grid.tab("T").cells[1:]
+        formula_at(grid, 1, 0)
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert STRUCTURE not in grid.methods
+
+    def test_the_size_is_not_read_for_rows_or_with_no_cell_left(self):
+        grid = formula_grid()
+        formula_at(grid, 5, 1)
+        sheet_id = grid.tab("T").sheet_id
+        clear_link_format(
+            grid, "S", "T", rows=[4, 5, 6], formulas=False, sheet_id=sheet_id
+        )
+        assert grid.methods == [READ, GRID, STRUCTURE]
+        grid = formula_grid()
+        clear_link_format(grid, "S", "T", formulas=False, sheet_id=sheet_id)
+        assert grid.methods == [READ, GRID, STRUCTURE]
+
     def test_no_formula_cell_leaves_the_request_it_sends_by_default(self):
         grid = formula_grid()
         clear_link_format(grid, "S", "T", runs=False, formulas=False)
