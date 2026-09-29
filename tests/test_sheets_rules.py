@@ -10,7 +10,6 @@ entry points patch ``build_sheets_service`` at its source (``gdrives.auth``).
 import json
 
 import pytest
-from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
     TabGrid,
@@ -33,6 +32,7 @@ from gdrives.sheets import (
     tab_grid,
     tab_sheet_ids,
 )
+from gdrives.testing import FakeSheetsService, patch_sheets_service
 
 TABS = {"Sheet1": 0, "Q3 Budget": 42}
 

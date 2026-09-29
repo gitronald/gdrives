@@ -17,7 +17,6 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid
 from typer.testing import CliRunner
 
 from gdrives.auth import CredentialInfo
@@ -40,6 +39,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["member_id", "name", "dues"]
 ROWS = [["m1", "Ada", 10], ["m2", "Bo", 20]]

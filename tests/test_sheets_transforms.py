@@ -8,7 +8,6 @@ row given, the same columns, string values, and idempotence.
 import itertools
 
 import pytest
-from helpers import FakeSheetGrid
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -23,6 +22,7 @@ from gdrives.sheets import (
     write_values_csv,
 )
 from gdrives.sheets.transforms import trim_cells as from_module
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["id", "name", "notes"]
 NAME = "gdrives.sheets.transforms:trim_cells"

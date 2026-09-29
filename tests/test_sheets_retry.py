@@ -8,7 +8,6 @@ wrappers use the defaults, so their tests patch ``time.sleep`` instead.
 import time
 
 import pytest
-from helpers import FakeSheetsService, http_error
 
 from gdrives.sheets import (
     IDEMPOTENT_STATUSES,
@@ -27,6 +26,7 @@ from gdrives.sheets import (
     update_values,
     with_retry,
 )
+from gdrives.testing import FakeSheetsService, http_error
 
 
 class Flaky:
@@ -159,7 +159,7 @@ class TestWithRetry:
         assert delays == [12.5, 15.0, 15.0]
 
     def test_gives_up_after_attempts_and_raises_the_last_error(self):
-        errors = [http_error(500, f"fail {n}") for n in range(3)]
+        errors: list[Exception] = [http_error(500, f"fail {n}") for n in range(3)]
         last = errors[-1]
         call = Flaky(errors)
         delays: list[float] = []

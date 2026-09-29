@@ -8,18 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from helpers import (
-    FOLDER_MIME,
-    SHEET_MIME,
-    FakeDriveFiles,
-    FakeSheetsService,
-    http_error,
-    patch_drive_service,
-    patch_sheets_service,
-)
+from helpers import FOLDER_MIME, SHEET_MIME, FakeDriveFiles, patch_drive_service
 
 from gdrives.sheets import create_spreadsheet, name_tabs, run_create
 from gdrives.sheets.create import check_source, check_tabs, spreadsheet_url
+from gdrives.testing import FakeSheetsService, http_error, patch_sheets_service
 from gdrives.upload import UPLOAD_RETRIES, UploadError
 
 DRIVE_SCOPE = ["https://www.googleapis.com/auth/drive"]

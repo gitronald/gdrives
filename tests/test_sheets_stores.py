@@ -10,7 +10,6 @@ from datetime import date, datetime
 from typing import Any
 
 import pytest
-from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     ColumnSchema,
@@ -33,6 +32,7 @@ from gdrives.sheets import (
     run_target,
     sync_tab,
 )
+from gdrives.testing import FakeSheetGrid, http_error
 
 HEADER = ["id", "name", "amt"]
 ROWS = [["a", "Ada", "1"], ["b", "Bo", "2"]]

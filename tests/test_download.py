@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from helpers import http_error, make_file, make_folder, make_gdoc, make_gslides
+from helpers import make_file, make_folder, make_gdoc, make_gslides
 
 from gdrives.download import (
     DownloadError,
@@ -20,6 +20,7 @@ from gdrives.download import (
     unique_path,
 )
 from gdrives.files import WalkItem, walk_tree
+from gdrives.testing import http_error
 
 PDF_MIME = "application/pdf"
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"

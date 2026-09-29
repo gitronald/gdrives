@@ -683,7 +683,7 @@ class TestDocsCreate:
         assert rec == {"t": "Notes", "tf": "body.txt"}
 
     def test_http_error_exits_1(self, monkeypatch, capsys):
-        from helpers import http_error
+        from gdrives.testing import http_error
 
         def boom(*a, **k):
             raise http_error(403, "Forbidden")
@@ -1192,7 +1192,7 @@ class TestSheetsCreate:
         assert rec["tabs"] == ()
 
     def test_http_error_exits_1(self, monkeypatch, capsys):
-        from helpers import http_error
+        from gdrives.testing import http_error
 
         def boom(*a, **k):
             raise http_error(403, "Forbidden")

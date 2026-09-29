@@ -9,7 +9,6 @@ Runs use ``FakeSheetGrid`` and files under ``tmp_path``.
 from typing import Any
 
 import pytest
-from helpers import FakeSheetGrid
 
 from gdrives.resolve import DrivePathError
 from gdrives.sheets import (
@@ -37,6 +36,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["id", "name"]
 ROWS = [["a", "Ada"], ["b", "Bo"]]

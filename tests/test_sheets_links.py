@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid, http_error
 from typer.testing import CliRunner
 
 from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo
@@ -24,6 +23,7 @@ from gdrives.sheets import (
     sweep_url_links,
     url_link_problems,
 )
+from gdrives.testing import FakeSheetGrid, http_error
 
 BLUE = "#1155cc"
 GREEN = "#33aa55"

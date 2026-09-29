@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from helpers import http_error, make_file, mock_list_response
+from helpers import make_file, mock_list_response
 from typer.testing import CliRunner
 
 from gdrives.cli import app
 from gdrives.files import SPREADSHEET_MIME
 from gdrives.sheets import CONFIG_NAME
+from gdrives.testing import http_error
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 DRIVES = [{"id": "drive_id", "type": "personal", "name": "My Drive", "url": ""}]

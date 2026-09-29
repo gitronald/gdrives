@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from helpers import FakeSheetGrid
 from typer.testing import CliRunner
 
 import gdrives.local
@@ -45,6 +44,7 @@ from gdrives.sheets import (
     write_values_csv,
 )
 from gdrives.sheets.config import _TAB_FIELDS, _TARGET_FIELDS
+from gdrives.testing import FakeSheetGrid
 
 ROOT = Path(__file__).parent.parent
 GUIDE = ROOT / "docs" / "sheets-sync.md"

@@ -8,7 +8,6 @@ from datetime import date
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import LINK_BLUE, FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     CELL_STYLE_FIELDS,
@@ -34,6 +33,7 @@ from gdrives.sheets import (
     url_link_problems,
 )
 from gdrives.sheets.structure import _shown_rgb, _style_reasons
+from gdrives.testing import LINK_BLUE, FakeSheetGrid, http_error
 
 READ = "values.get"
 GRID = "spreadsheets.get"

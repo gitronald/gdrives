@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error, local_file
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -46,6 +46,7 @@ from gdrives.sheets import (
     run_target,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid, http_error
 
 HEADER = ["id", "name", "amt"]
 ROWS = [["a", "Ada", "1"], ["b", "Bo", "2"]]

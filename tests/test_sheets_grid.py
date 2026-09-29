@@ -1,4 +1,4 @@
-"""Tests for ``FakeSheetGrid``, the stateful Sheets fake in tests/helpers.py.
+"""Tests for ``FakeSheetGrid``, the stateful Sheets fake in gdrives.testing.
 
 The apply and structure tests trust this fake to behave like the Sheets API
 where the code depends on it: how reads truncate, what a write outside the grid
@@ -11,7 +11,8 @@ from datetime import date, datetime
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import LINK_BLUE, FakeSheetGrid, http_error
+
+from gdrives.testing import LINK_BLUE, FakeSheetGrid, http_error
 
 
 def batch(grid, *requests):
@@ -670,6 +671,22 @@ class TestLinks:
         }
         widths = grid_read(grid, "'T'!A:B", "sheets(data(columnMetadata(pixelSize)))")
         assert widths == {"columnMetadata": [{"pixelSize": 100}, {"pixelSize": 100}]}
+
+    def test_a_grid_read_returns_a_value_by_its_kind(self):
+        grid = FakeSheetGrid({"T": [["x", 3, True, date(2026, 2, 3), ""]]})
+        mask = "sheets(data(rowData(values(effectiveValue))))"
+        assert grid_read(grid, "'T'!A1:E1", mask) == {
+            "rowData": [
+                {
+                    "values": [
+                        {"effectiveValue": {"stringValue": "x"}},
+                        {"effectiveValue": {"numberValue": 3}},
+                        {"effectiveValue": {"boolValue": True}},
+                        {"effectiveValue": {"numberValue": 46056}},
+                    ]
+                }
+            ]
+        }
 
     def test_a_grid_read_with_no_mask_is_not_modelled(self):
         grid = FakeSheetGrid({"T": [["a"]]})
