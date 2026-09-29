@@ -40,6 +40,7 @@ gdrives/
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── upload.py    # Upload a local file, replacing a file of its name in place
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
+├── testing.py   # Fakes of the Sheets API for a caller's tests (FakeSheetGrid, FakeSheetsService)
 ├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
 │   ├── values.py     # spreadsheets.values.* wrappers, render options, and tab lookups
 │   ├── retry.py      # Retry with exponential backoff and jitter
@@ -178,7 +179,7 @@ Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
 `upload`, and the `sheets-*` and `docs-*` commands) resolves it against the
 cache.
-`gdrives --version` prints the installed version.
+`gdrives --version` prints the installed version, which `gdrives.__version__` holds.
 
 ### Log in
 
@@ -258,6 +259,7 @@ gdrives export <sheet-url> -o output.xlsx   # Google Sheet -> .xlsx
 gdrives export <sheet-url> -o output.csv    # Google Sheet -> .csv (first tab only)
 gdrives export <slides-url> -o output.pptx  # Google Slides -> .pptx
 gdrives export <sheet-url> -o output.csv --newline lf  # Rewrite the row endings to LF
+gdrives export <sheet-url> -o output.csv --newline lf --newline-cells  # And the line breaks inside cells
 ```
 
 Drive sends a sheet's CSV with CRLF row endings, so a file that is committed is
@@ -269,9 +271,14 @@ any other value. The rewrite works on the bytes, so an export that is not valid
 UTF-8 is neither corrupted nor refused. A line ending is CRLF, LF, or a lone CR
 (Drive sends none). In a CSV file a line break inside a quoted cell is part of
 the cell's value and is kept as the cell holds it: only the row endings change,
-and which cells are quoted, and every other byte, stay as they were. From code,
-`export_file(service, file_id, output_path, newline=None)` takes the same
-value, and `gdrives.export.set_line_endings(content, extension, newline)`
+and which cells are quoted, and every other byte, stay as they were.
+`--newline-cells` rewrites the line breaks inside the quoted cells of a `.csv`
+export as well, so the file holds one line ending throughout. That changes the
+values of those cells, so it is asked for and never the default, and it is
+refused without `--newline` and with any other format. From code,
+`export_file(service, file_id, output_path, newline=None, newline_cells=False)`
+takes the same values, and
+`gdrives.export.set_line_endings(content, extension, newline, cells=False)`
 rewrites bytes already in hand. The names are those of `newline` on the sheets
 side (`gdrives.local.NEWLINES`).
 
@@ -443,7 +450,8 @@ match in full.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, a preview that `--apply` would change ends with `Preview only;
-rerun with --apply to write.` on stderr (`to save the base.` when the base is all it would write), and the exit code is 0 when in sync or applied, 1 for an
+rerun with --apply to write.` on stderr (`to save the base.` when the base is
+all it would write; `pending_hint(report)` returns the line), and the exit code is 0 when in sync or applied, 1 for an
 error, and 2 when conflicts, row flags, or held sheet values are left for a
 person. A preview uses
 the read-only scope; `--apply` first prints the credential it will use to
@@ -805,7 +813,11 @@ uv run ruff check . && uv run pyrefly check
 ```
 
 The unit tests run against fake Drive, Sheets, and Docs services, so they need no
-credentials, and they must keep line and branch coverage at 100%.
+credentials, and they must keep line and branch coverage at 100%. The Sheets
+fakes are part of the package, as `gdrives.testing`, for the tests of code that
+calls `gdrives.sheets` (see
+[Testing a caller](docs/sheets-sync.md#testing-a-caller)); the live tests pin
+what they model against the API.
 
 ### Live integration tests
 

@@ -116,7 +116,7 @@ PROMISED = {
         "styled_cells",
     ],
     "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
-    "report and run seams": ["print_retry"],
+    "report and run seams": ["pending_hint", "print_retry"],
     "schema by reference": ["resolve_tab", "resolve_target"],
     "typed writes": [
         "DATE_FORMATS",
@@ -244,7 +244,7 @@ class TestGuideConfigs:
 
     def test_the_guide_has_the_examples_this_reads(self):
         assert len(blocks(GUIDE, "json")) == 18
-        assert len(blocks(GUIDE, "python")) == 20
+        assert len(blocks(GUIDE, "python")) == 21
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -340,6 +340,9 @@ class TestGuidePython:
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
         # The pull_records example read the Summary tab the typed writes made.
         assert namespace["typed"] == [{"id": 1, "total": 2.5, "paid": True}]
+        # The testing example defines a caller's tests, which pass.
+        namespace["test_a_preview_writes_nothing_and_an_apply_writes_the_row"]()
+        namespace["test_a_refused_read_is_raised"]()
         # The audit example sorts cells of each kind, on a tab that holds them.
         assert namespace["kinds"] == {}
         formats = grid.tab("Members").formats

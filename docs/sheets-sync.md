@@ -360,6 +360,15 @@ which is refused otherwise: a carried or excluded column has to be declared
 somewhere. `"local"` gets the same allowance, since a carried local column is
 one it checks.
 
+The problem names the setting that refused the column and the way out, a
+schema entry. For a sheet column the run does not read, it names the second
+way, `"local"`:
+
+```
+Members (local): column 'phone' has no schema entry, and strict_schema is true: declare it in the tab's schema
+Members (sheet): column 'note' has no schema entry, and strict_schema is true: declare it in the tab's schema, or set strict_schema to 'local' to leave the sheet's own columns alone
+```
+
 #### Only the local side
 
 On a shared sheet, collaborators may keep columns of their own outside the
@@ -450,7 +459,8 @@ either `on_invalid` setting (there is nothing for `hold` to hold back).
 full, as `re.fullmatch` does: a cell that only contains a match fails, so
 anchors are not needed. It is refused on any other type, and a string that is
 not a regular expression is a config problem naming the column and giving the
-compile error.
+compile error. An empty string is a config problem too: it would match no
+cell that is checked, and read as no pattern in a schema export.
 
 ```json
 "Members": {
@@ -573,7 +583,9 @@ differs. A preview whose only change is a column is pending. A tab that
 stopped on an error or found problems is not, and neither is the report of a
 run that applied. `TabReport.base_only` (and `SyncReport.base_only`, for the
 pending tabs of a run) is True when the base is all that is pending; it is
-what picks the wording of the hint.
+what picks the wording of the hint. `pending_hint(report)` returns the hint
+as a string, or None when nothing is pending, for a caller that prints a
+report itself.
 
 ### Where new rows go
 
@@ -1924,7 +1936,7 @@ is the code a run of only that tab exits with, so a caller of `pull_tab` or
 ```python
 import sys
 
-from gdrives.sheets import format_report, push_rows
+from gdrives.sheets import format_report, pending_hint, push_rows
 
 one = push_rows(
     service,
@@ -1935,9 +1947,16 @@ one = push_rows(
     key=["member_id"],
 )
 print(format_report(one))
-if one.pending:
-    print("Preview only; rerun with apply=True to write.", file=sys.stderr)
+hint = pending_hint(one)
+if hint is not None:
+    print(hint, file=sys.stderr)
 ```
+
+`pending_hint` takes a `SyncReport`, a `TabReport`, or the `LinkSweep` and
+`TabLinks` of a link sweep, and returns the line the commands print to stderr
+after a preview, with no line ending: `Preview only; rerun with --apply to
+write.`, or `... to save the base.` when the base is all an apply would
+write. It returns None when nothing is pending.
 
 `plan_tab` and `apply_tab` split a sync of one tab into its read-and-merge and
 its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
@@ -2584,3 +2603,65 @@ not both. Until it is resolved, a tab has no types: its `types` and
 file untyped. Its `schema` is empty until then, and `tab.resolved` is False,
 so code that reads `schema` for checks of its own looks at `resolved` first,
 or resolves the tab.
+
+### Testing a caller
+
+`gdrives.testing` holds the fakes the library's own tests run on, so a
+caller's tests can follow a run past its first request with no network and no
+credential. Both stand in for the service `build_sheets_service` returns, and
+both record every call:
+
+- `FakeSheetGrid` holds each tab's cells and applies the writes it is sent.
+  A test seeds it, runs the code, and reads the sheet the run left
+  (`values(title)`, `format(title, row, column)`, `links(title)`), or the
+  requests it sent (`calls`, `methods`). `fail(method, error)` makes a call
+  raise, and `edit_externally(edit, before=method)` changes the sheet between
+  two of the code's calls, as a collaborator would.
+- `FakeSheetsService` replays the responses it is given, for a test of one
+  request's shape or of one response.
+
+`http_error(status, reason)` builds the `HttpError` the client raises, and
+`patch_sheets_service(monkeypatch, fake)` makes the `run_*` entry points and
+the commands use a fake. The module imports no test framework.
+
+```python
+from googleapiclient.errors import HttpError
+
+from gdrives.sheets import pending_hint, pull_records, push_rows
+from gdrives.testing import FakeSheetGrid, http_error
+
+COLUMNS = ["member_id", "name"]
+
+
+def test_a_preview_writes_nothing_and_an_apply_writes_the_row():
+    grid = FakeSheetGrid({"Members": [COLUMNS, ["m1", "Ada"]]})
+    rows = [{"member_id": "m1", "name": "Ada L."}]
+
+    report = push_rows(grid, "S", "Members", COLUMNS, rows, key=["member_id"])
+    assert pending_hint(report) == "Preview only; rerun with --apply to write."
+    assert grid.values("Members") == [COLUMNS, ["m1", "Ada"]]
+
+    push_rows(grid, "S", "Members", COLUMNS, rows, key=["member_id"], apply=True)
+    assert grid.values("Members") == [COLUMNS, ["m1", "Ada L."]]
+    assert "values.update" in grid.methods
+
+
+def test_a_refused_read_is_raised():
+    grid = FakeSheetGrid({"Members": [COLUMNS, ["m1", "Ada"]]})
+    grid.fail(
+        "spreadsheets.get", http_error(403, "The caller does not have permission")
+    )
+    try:
+        pull_records(grid, "S", "Members")
+    except HttpError as e:
+        assert e.resp.status == 403
+    else:
+        raise AssertionError("the read was not refused")
+```
+
+The fakes model the API where the library depends on it, and no further: a
+request the library never sends may be refused, or answered more simply than
+the API answers it, and `USER_ENTERED` parsing is not modelled. What they
+model is pinned against the API by the library's live tests. A test that
+passes against a fake says the code agrees with the fake, so a caller that
+sends requests of its own checks those against the API.
