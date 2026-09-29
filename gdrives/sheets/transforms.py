@@ -3,7 +3,8 @@
 A config names one in a tab's (or a target's) ``hooks``, as
 ``"transform": "gdrives.sheets.transforms:trim_cells"``, or code passes it as
 ``transform=``. Each takes the rows and returns them cleaned, as
-:data:`~gdrives.sheets.sync.Transform` requires.
+:data:`~gdrives.sheets.sync.Transform` requires. :func:`trim_cell` is what
+:func:`trim_cells` does to one cell.
 """
 
 from collections.abc import Mapping, Sequence
@@ -11,8 +12,14 @@ from collections.abc import Mapping, Sequence
 from gdrives.sheets.cells import normalize_key
 
 
-def _trimmed(text: str) -> str:
-    """``text`` stripped, each line normalized as a key is, line breaks kept."""
+def trim_cell(text: str) -> str:
+    """One cell as :func:`trim_cells` leaves it, for a value outside a run.
+
+    ``text`` stripped, each line normalized as a key is, line breaks kept: a
+    header, or a cell read with :func:`~gdrives.sheets.values.pull_values`,
+    cleaned as the rows of a tab are. Applied to its own result it changes
+    nothing.
+    """
     return "\n".join(normalize_key(line) for line in text.strip().split("\n"))
 
 
@@ -34,4 +41,4 @@ def trim_cells(
     gives a transform as a second argument so one function serves every tab; it
     is not used, and a call with the rows alone works.
     """
-    return [{column: _trimmed(text) for column, text in row.items()} for row in rows]
+    return [{column: trim_cell(text) for column, text in row.items()} for row in rows]

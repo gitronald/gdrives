@@ -9,6 +9,7 @@ import itertools
 
 import pytest
 
+import gdrives.sheets
 from gdrives.sheets import (
     CONFIG_NAME,
     parse_config,
@@ -18,6 +19,7 @@ from gdrives.sheets import (
     row_key,
     run_target,
     sync_tab,
+    trim_cell,
     trim_cells,
     write_values_csv,
 )
@@ -30,6 +32,25 @@ NAME = "gdrives.sheets.transforms:trim_cells"
 
 def trimmed(text):
     return trim_cells([{"c": text}])[0]["c"]
+
+
+class TestTrimCell:
+    def test_it_is_reexported(self):
+        assert gdrives.sheets.trim_cell is trim_cell
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("  Member   ID ", "Member ID"),
+            ("a \r\n  b\tc \n", "a\nb c"),
+            ("", ""),
+            ("plain", "plain"),
+        ],
+    )
+    def test_one_cell_is_cleaned_as_a_row_s_cells_are(self, text, expected):
+        assert trim_cell(text) == expected
+        assert trim_cells([{"c": text}]) == [{"c": expected}]
+        assert trim_cell(expected) == expected
 
 
 class TestTrimCells:
