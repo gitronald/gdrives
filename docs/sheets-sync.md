@@ -21,6 +21,7 @@ would change, and writes nothing. Add `--apply` to write.
 - [Pull and push](#pull-and-push)
 - [Links](#links)
 - [Keeping a tab in order](#keeping-a-tab-in-order)
+- [Look before tidying a shared sheet](#look-before-tidying-a-shared-sheet)
 - [How cells are read and written](#how-cells-are-read-and-written)
 - [What is never done](#what-is-never-done)
 - [A usage rule: no defaults in sheet-owned columns](#a-usage-rule-no-defaults-in-sheet-owned-columns)
@@ -800,16 +801,59 @@ rows, and nothing is written:
 Rewrite the column in the file before declaring it. A column left undeclared
 reads as the text the sheet displays, as it did before, and changes nothing.
 
-**Blank keys.** A blank key cell is refused on every side, the base included
-(`base: blank key ['member_id'] in rows [2]`), where code that refused only
-repeated keys let such rows through. For a one-column key the refusal is
-right, and the rows have to be fixed or removed, in the base too. For a
-composite key of which a component can be absent, set
-[`blank_keys: "partial"`](#keys-with-a-blank-component).
+**Blank keys.** The default is `blank_keys: "refuse"`: a row with data and a
+blank key cell is refused on every side, the base included
+(`base: blank key ['member_id'] in rows [2]`), where code that folded such a
+row in, or let it through because it checked only repeated keys, gets a
+refusal here. For a one-column key the refusal is right, and the rows have to
+be fixed or removed, in the base too. For a composite key of which a component
+can be absent, set [`blank_keys: "partial"`](#keys-with-a-blank-component).
+Then a row is refused only when every key cell is blank, and a row that
+leaves one component blank is matched by the components it has. A row whose
+cells are all blank, key included, is skipped on either setting, as on a tab.
+Whitespace alone counts as blank.
 
 **Line endings.** A `.csv` or `.tsv` file is written with LF unless the tab
 sets `newline: "crlf"`. A file is rewritten only when its records change, so
 one with CRLF keeps it until a run changes the file, and changes once then.
+
+**A header's surrounding whitespace.** A header cell is stripped on read,
+leading and trailing whitespace only, on the sheet and in the local file
+alike (and in a base, which is read as a local file is). Whitespace inside a
+name stays: `First name` and `First  name` are two columns. So a sheet header
+typed as `name ` matches a file column `name`, and no cell is reported for it.
+What shows instead:
+
+- A config that names the padded spelling (`"columns": ["name "]`) finds no
+  such column, and the run stops with `has no column(s) ['name ']` and the
+  header as read. Name the column without the padding.
+- Two headers that differ only in padding read as one name, and the tab is
+  refused with `header repeats ['name']`. Rename one on the sheet.
+- A file whose header is padded is rewritten with a stripped header, the next
+  time a run writes it (see the next cause for when that is).
+
+**Quoting.** A file is written by the `csv` module's default rules: a field
+is quoted only when it holds the delimiter, a quote, or a line break, and an
+empty cell is written bare. A file from a writer that quotes every field, or
+quotes the empty ones (`m2,""`), holds the same cells and different bytes.
+Reading gives the same records, so a preview compares the cells and reports
+nothing for it. The bytes change when a run writes the file: a
+`sheets-sync --apply` that folds something into it, or a `sheets-pull --apply`
+that finds the records changed (a pull leaves an unchanged file alone). It
+then loses every quote it did not need, all at once, and a diff of the commit
+shows every line changed. Rewrite the files once in a commit of their own,
+before the first applied run, so that later diffs show only real edits. The
+[steps below](#a-way-to-move-over) read each file through its store and write
+it back, to show which files change.
+
+**Typed columns.** A column with a declared type in the `schema` is
+[compared by value](#typed-columns-compare-by-value): `3.0` and `3` in a
+`float` column, `true` and `TRUE` in a `bool` column, are one cell. Code that
+compared the text reports those cells as edits and folds or pushes them; this
+one reports nothing, and rewrites neither side. The reverse holds for a column
+the `schema` leaves undeclared: it is compared as text, so `3.0` against `3`
+is an edit here, and code that compared numbers by value did not report it. If
+a preview lists such cells, declare the column's type in the `schema`.
 
 **Cleaning done in code.** Code that cleaned the cells it read (collapsing
 spaces, rewriting links to one form) and kept the cleaned text in its files
@@ -822,6 +866,129 @@ text, and a pull writes the cleaned text.
 target's `base` field names the directory of its base snapshots. A base is one
 CSV per tab, `<base>/<tab title>.csv`, holding the projection columns, so a
 base kept in another shape is converted to that, or deleted for a first sync.
+
+### A way to move over
+
+Four steps, each of which can be run before anything of the old code is
+removed and before anything is written to the sheet.
+
+**1. Run the old merge's test cases against `merge`.** The three-way merge is
+a pure function: `merge(base, local, sheet, key, columns)` takes three lists of
+records (dicts of cell strings) and returns a `MergePlan`, with no request
+made and no file touched. A test table of the old code, with a base, a local
+side, a sheet, and the expected result in each row, ports to calls of it:
+
+```python
+from gdrives.sheets import merge
+
+case_key = ["id"]
+case_columns = ["id", "name", "dues"]
+case_base = [
+    {"id": "m1", "name": "Ada", "dues": "10"},
+    {"id": "m2", "name": "Bea", "dues": "10"},
+    {"id": "m4", "name": "Dee", "dues": "10"},
+]
+case_local = [
+    {"id": "m1", "name": "Ada", "dues": "15"},
+    {"id": "m2", "name": "Bea", "dues": "12"},
+    {"id": "m5", "name": "Eve", "dues": "10"},
+]
+case_sheet = [
+    {"id": "m1", "name": "Ada L.", "dues": "10"},
+    {"id": "m2", "name": "Bea", "dues": "20"},
+    {"id": "m3", "name": "Cy", "dues": "10"},
+    {"id": "m4", "name": "Dee", "dues": "10"},
+]
+case_plan = merge(case_base, case_local, case_sheet, case_key, case_columns)
+print("push to the sheet:", [(c.key, c.column, c.local) for c in case_plan.pushes])
+print("append to the sheet:", [row.key for row in case_plan.appends])
+print("fold into the local side:", [(c.key, c.column) for c in case_plan.fold_cells])
+print("new rows for the local side:", [row.key for row in case_plan.fold_rows])
+print("conflicts:", [(c.key, c.column) for c in case_plan.conflicts])
+print("row flags:", [(flag.key, flag.flag) for flag in case_plan.row_flags])
+```
+
+Read the plan as the [merge tables](#how-a-sync-merges) do. Here `m1` has a
+local edit of `dues` (a push) and a sheet edit of `name` (a fold), `m2` has
+both sides changing `dues` (a conflict, which neither side takes), `m5` is new
+locally (an append), `m3` is new on the sheet (a new local row), and `m4` is
+gone locally while the base has it (the flag `local_deleted`).
+`case_plan.new_local` and `case_plan.new_base` are the two sides after the merge. The keyword arguments
+are the tab's settings: `local_owned`, `sheet_owned`, `owns_rows`, `prefer`,
+`blank_keys`, `types`, `schema`, and `carry`. A case that the old code merged
+differently is a difference to look at before any file is touched.
+
+**2. Read each committed file through its store, and write it back.** The
+bytes should not change. A file that does changes when a run first writes it,
+and it is better to see that now:
+
+```python
+from pathlib import Path
+
+from gdrives.sheets import FileStore
+
+scratch = Path("data/dues-check")
+scratch.mkdir(parents=True, exist_ok=True)
+
+
+def rewritten(store):
+    """Whether reading a file through `store` and writing it back changes its bytes."""
+    before = store.path.read_bytes()
+    store.write(*store.read())
+    changed = store.path.read_bytes() != before
+    store.path.write_bytes(before)
+    return changed
+
+
+ours = FileStore(scratch / "ours.csv")
+ours.write(["id", "name"], [{"id": "m1", "name": "Ada"}, {"id": "m2", "name": ""}])
+other = FileStore(scratch / "other.csv")
+other.path.write_bytes(b'"id","name"\r\n"m1","Ada"\r\n"m2",""\r\n')
+rewrites = [
+    rewritten(ours),
+    rewritten(other),
+    rewritten(FileStore(other.path, newline="crlf")),
+]
+print(rewrites)  # [False, True, True]
+```
+
+The first is `False`: a file the library wrote is stable. The second and third
+are `True`: the other file is quoted throughout, and setting `newline="crlf"`
+(the tab's `newline`) does not make the quotes unnecessary. What a difference
+means:
+
+- **Quotes** the writer did not need, or a bare empty cell where the file had
+  `""`: see the quoting cause above. Rewrite the files in a commit of their own.
+- **Line endings**: the file is CRLF and the store writes LF. Set the tab's
+  `newline: "crlf"` (`FileStore(path, newline="crlf")` in code), or accept
+  one rewrite.
+- **A byte-order mark**: reading drops it, and the store writes one only with
+  `bom=True` on the tab (`FileStore(path, bom=True)`). A file that starts with
+  one and is written without it changes on its first write.
+- **A padded header** is written stripped.
+
+A `.json` file is rewritten in the library's own format, two-space indent and a
+final newline, so a file formatted another way shows a difference there too,
+with every value kept.
+
+**3. Preview every target with both engines, and compare.** Run the old code
+in the way it previews, and `gdrives sheets-sync TARGET` (no `--apply`) for
+each target, against the same sheet and the same committed files. Every
+difference between the two should have one of the causes above. The preview
+writes nothing, to the sheet, the files, or the base.
+
+```bash
+gdrives sheets-sync roster              # every sync tab of the target, preview only
+gdrives sheets-sync roster --tab Dues   # one tab
+```
+
+**4. Apply one small edit, and revert it.** Change one cell of one row on the
+sheet, run `gdrives sheets-sync roster --tab Dues --apply`, and see it land
+in the local file and the base and nowhere else. Then change the cell back on
+the sheet and apply again: the file and the base return to what was committed
+(`git diff` shows nothing). Do the same for a cell edited in the local file,
+which pushes. A tab that survives both moves as the old code did is ready to
+move over.
 
 ## Pull and push
 
@@ -1272,6 +1439,53 @@ conditional format ranges, and named ranges are adjusted, so a formula that
 refers to another row by position follows that row to its new place. A
 filter view or a sort someone applied on the sheet is not applied again: the
 tab is left in the order given.
+
+## Look before tidying a shared sheet
+
+A sheet that people edit is rarely in the order, or of the columns, that the
+local side expects. Someone adds a row in the middle, and a collaborator keeps
+a column of notes that no config knows. Both
+[`reorder_rows`](#keeping-a-tab-in-order) and
+[`strict_schema`](#requiring-every-column-to-be-declared) act on the sheet as
+it is, so preview each against the live sheet before adopting either.
+
+`reorder_rows` previews by default. Without `apply=True` it reads the tab,
+writes nothing, and returns a `ReorderResult` that says what an apply would do:
+
+```python
+from gdrives.sheets import reorder_rows
+
+dues_order = ["m1", "m2", "m3"]
+dues_preview = reorder_rows(service, "<spreadsheet-id>", "Dues", ["id"], dues_order)
+print(f"{dues_preview.moves} row(s) would move: {dues_preview.moved}")
+print("already in order:", dues_preview.unchanged, "; written:", dues_preview.applied)
+```
+
+`moves` is the number of rows the order would move, `moved` their keys, and
+`unchanged` is True when nothing would. A count near the number of rows means
+the order is not the one the sheet is kept in, and moving that many rows on a
+sheet others are editing is a decision to make with them. A count of one or two
+is a row typed out of place.
+
+`strict_schema` is previewed by the sync itself. With the setting in the
+config, a `sheets-sync` without `--apply` reads the sheet and lists every
+column the `schema` leaves undeclared, and writes nothing:
+
+```bash
+gdrives sheets-sync roster --tab Dues    # preview: the problems list the undeclared columns
+```
+
+```
+  problems (1), so nothing is written:
+    Dues (sheet): column 'note' has no schema entry, and the tab is strict_schema
+```
+
+The run exits 1 while there are problems. For a sheet where collaborators keep
+columns of their own, `strict_schema: "local"` checks the local file's columns
+only, and leaves the sheet's extra columns alone (see
+[only the local side](#only-the-local-side)). Decide between `true` and
+`"local"` by what that preview lists: columns the config should declare, or
+columns that belong to other people.
 
 ## How cells are read and written
 
@@ -1838,6 +2052,149 @@ What a store has to keep to:
   of one. It checks the stores a config builds (`FileStore` and
   `JsonEntryStore`) only, so a caller that gives tabs stores of its own owns
   that check.
+
+### Two store recipes
+
+Each is a small class with `label`, `exists()`, `read()`, and `write(columns,
+rows)`, used as a tab's `store`. A store may wrap another one, since it is
+only asked for those four things.
+
+**A store that sorts its rows on write.** It passes reads through, and sorts
+the rows before handing them on. The sort key is the caller's, so an order
+that no alphabetical sort gives (ranks, enumerations) is a function:
+
+```python
+from pathlib import Path
+
+from gdrives.sheets import MemoryStore, TabConfig, Target, pull_tab, sync_tab
+
+
+class SortedStore:
+    """Keeps the rows of another store sorted by `sort_key`, whatever order they arrive in."""
+
+    def __init__(self, inner, sort_key):
+        self.inner, self.sort_key = inner, sort_key
+        self.label = f"{inner.label} (sorted)"
+
+    def exists(self):
+        return self.inner.exists()
+
+    def read(self):
+        return self.inner.read()
+
+    def write(self, columns, rows):
+        self.inner.write(columns, sorted(rows, key=self.sort_key))
+
+
+def by_id(row):
+    return row["id"]
+
+
+dues_held = MemoryStore(
+    ["id", "dues", "paid"],
+    [
+        {"id": "m3", "dues": "30", "paid": "TRUE"},
+        {"id": "m1", "dues": "10", "paid": "FALSE"},
+    ],
+)
+dues_tab = TabConfig(title="Dues", key=("id",), store=SortedStore(dues_held, by_id))
+dues_target = Target(
+    name="roster",
+    spreadsheet="<spreadsheet-id>",
+    tabs=(dues_tab,),
+    base_stores={"Dues": SortedStore(MemoryStore(), by_id)},
+)
+dues_first = sync_tab(service, "<spreadsheet-id>", dues_target, dues_tab, apply=True)
+dues_second = sync_tab(service, "<spreadsheet-id>", dues_target, dues_tab, apply=True)
+print([row["id"] for row in dues_held.read().rows])  # ['m1', 'm2', 'm3']
+print(dues_first.wrote_local, dues_second.wrote_local)  # True False
+dues_pulled = pull_tab(service, "<spreadsheet-id>", dues_tab, apply=True)
+print(dues_pulled.wrote_local)  # True: the sheet's order is not the sorted one
+```
+
+The sheet's `m2` row folds in after the local rows, and the store puts it in
+its place. What this costs, and what it does not:
+
+- **A sync ignores row order.** Rows are matched by key, so a sorted local
+  side stays in sync, and two rows in another order are not a change in the
+  report. A sync writes the local side only when a run changes a cell or
+  adds a row, so the sort happens on those runs. A file whose rows are out of
+  order is left alone by a sync that has nothing to fold.
+- **The base is compared in order.** A run saves the base again when its rows
+  are in another order than the saved ones. Give the base the same wrapper, as
+  above, or the run after a sort saves the base once for the new order.
+- **A pull compares the lists of rows in order.** A tab in the sheet's order
+  differs from a sorted local side, so an applied `pull_tab` writes the store
+  on every run, and reports `the local store holds 3 rows (9 non-blank
+  cells); it now holds 3`, with no row added, removed, or changed. The
+  rewrite is harmless and leaves the same file. A pull that should be quiet
+  wants a sort on the sheet (see [Keeping a tab in order](#keeping-a-tab-in-order)),
+  or a store that does not sort.
+
+**A store whose local side is computed, and written to two files.** Club
+members are kept in a file of `id` and `name`, and their dues in a file of
+`id`, `dues`, and `paid`. The tab shows one table of the four columns:
+`read` joins the files on `id`, and `write` sends each column back to the file
+it belongs to:
+
+```python
+from gdrives.sheets import FileStore, Records
+
+
+class SplitStore:
+    """A local side joined from two files on `id`, and written back to the two."""
+
+    def __init__(self, people, dues):
+        self.people, self.dues = people, dues
+        self.label = f"{people.label} + {dues.label}"
+
+    def exists(self):
+        return self.people.exists() and self.dues.exists()
+
+    def read(self):
+        people, dues = self.people.read(), self.dues.read()
+        owed = {row["id"]: row for row in dues.rows}
+        extra = [name for name in dues.columns if name != "id"]
+        rows = [
+            {**row, **{name: owed.get(row["id"], {}).get(name, "") for name in extra}}
+            for row in people.rows
+        ]
+        return Records([*people.columns, *extra], rows)
+
+    def write(self, columns, rows):
+        parts = ((self.people, ("id", "name")), (self.dues, ("id", "dues", "paid")))
+        for store, belongs in parts:
+            names = [name for name in columns if name in belongs]
+            store.write(names, [{name: row[name] for name in names} for row in rows])
+
+
+people = FileStore(Path("data/people.csv"))
+owing = FileStore(Path("data/dues.csv"))
+people.write(["id", "name"], [{"id": "m1", "name": "Ada"}, {"id": "m2", "name": "Bea"}])
+owing.write(
+    ["id", "dues", "paid"],
+    [
+        {"id": "m1", "dues": "10", "paid": "FALSE"},
+        {"id": "m2", "dues": "20", "paid": "FALSE"},
+    ],
+)
+standing = TabConfig(title="Standing", key=("id",), store=SplitStore(people, owing))
+standing_target = Target(
+    name="roster",
+    spreadsheet="<spreadsheet-id>",
+    tabs=(standing,),
+    base_stores={"Standing": MemoryStore()},
+)
+joined = sync_tab(service, "<spreadsheet-id>", standing_target, standing, apply=True)
+print(owing.path.read_text())  # id,dues,paid / m1,12,TRUE / m2,20,FALSE / m3,30,TRUE
+```
+
+The sheet's edit of `m1` and its new member `m3` fold into the local side:
+`name` lands in `data/people.csv`, and `dues` and `paid` in `data/dues.csv`.
+The store keeps to the rules above: `read` returns the same records each time,
+and a file that cannot be written raises `OSError`, which the run reports for
+the tab. A dues row with no member is not part of the local side, so a write
+does not keep it.
 
 ### A retry of your own
 
