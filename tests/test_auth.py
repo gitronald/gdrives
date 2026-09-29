@@ -1,5 +1,6 @@
 """Tests for gdrives.auth — credential discovery and the fallback chain."""
 
+import dataclasses
 import json
 import os
 import stat
@@ -1295,6 +1296,72 @@ class TestAnnounceCredentials:
         auth.announce_credentials(always=True, force=True)
         assert capsys.readouterr() == ("", f"Credential: {info}\n")
         assert described.asked == [(None, True)]
+
+    @pytest.mark.parametrize(
+        "info",
+        [
+            auth.CredentialInfo(
+                kind="service_account",
+                identity="sa@example.com",
+                source=Path("key.json"),
+                consent_skipped=True,
+            ),
+            auth.CredentialInfo(kind="adc", consent_skipped=True),
+        ],
+    )
+    def test_a_skipped_consent_is_said_with_the_reason(self, described, capsys, info):
+        described.info = info
+        line = f"Credential: {info}, since {auth._FALLBACK_REASON}\n"
+        auth.announce_credentials()
+        assert capsys.readouterr() == ("", line)
+        auth.announce_credentials(always=True)
+        assert capsys.readouterr() == ("", line)
+        assert str(info) == str(dataclasses.replace(info, consent_skipped=False))
+
+    def test_the_reason_reads_as_the_plan_words_it(self):
+        info = auth.CredentialInfo(
+            kind="service_account", identity="sa@example.com", consent_skipped=True
+        )
+        assert auth.credential_line(info) == (
+            f"Credential: {info}, since OAuth is "
+            "configured, but no cached token serves these scopes and there is "
+            "no terminal for a consent; run gdrives login"
+        )
+
+    def test_a_key_path_and_the_reason_are_not_two_parentheses(self):
+        info = auth.CredentialInfo(
+            kind="service_account",
+            identity="sa@example.com",
+            source=Path("key.json"),
+            consent_skipped=True,
+        )
+        line = auth.credential_line(info)
+        assert line.count("(") == line.count(")") == 1
+        assert line.endswith("run gdrives login")
+
+    def test_a_skipped_consent_is_said_once_inside_the_block(self, described, capsys):
+        described.info = info = auth.CredentialInfo(kind="adc", consent_skipped=True)
+        with auth.announcing_credentials():
+            auth.build_drive_service()
+            auth.build_sheets_service()
+        assert capsys.readouterr().err == auth.credential_line(info) + "\n"
+
+    def test_no_oauth_client_stays_quiet(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "service_account.json").write_text('{"client_email": "a@b.c"}')
+        auth.announce_credentials()
+        assert capsys.readouterr() == ("", "")
+
+    def test_an_oauth_client_without_a_terminal_says_why(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        (tmp_path / "service_account.json").write_text('{"client_email": "a@b.c"}')
+        auth.announce_credentials()
+        err = capsys.readouterr().err
+        assert err.startswith("Credential: service account a@b.c (key ")
+        assert err.endswith(f"), since {auth._FALLBACK_REASON}\n")
 
     def test_a_library_caller_hears_nothing_from_a_builder(self, described, capsys):
         described.info = auth.CredentialInfo(kind="oauth", consent=True)

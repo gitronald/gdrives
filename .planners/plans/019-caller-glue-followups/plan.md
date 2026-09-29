@@ -1,11 +1,11 @@
 ---
 id: 19
 slug: caller-glue-followups
-status: active
+status: done
 branch: feature/caller-glue-followups
 created: 2026-09-29T01:19:50-07:00
-concluded:
-pr:
+concluded: 2026-09-29T09:50:50-07:00
+pr: https://github.com/gitronald/gdrives/pull/63
 ---
 
 # Remove the glue callers still write around gdrives.sheets
@@ -342,3 +342,188 @@ the interface for each.
 - Draft plan 004, beyond the note of step 10.
 - Rebuilding a caller's commands as `gdrives` commands. The CLI grows where a
   command is general (`sheets-links`), and not to mirror one caller's.
+
+## Log
+
+### 2026-09-29: how the steps were run
+
+Written at 2026-09-29T03:04:34-07:00. One branch and one draft PR,
+[#63](https://github.com/gitronald/gdrives/pull/63). The steps ran in order, each
+implemented by a subagent in the branch's worktree (step 4 on the larger model, for
+its design question, the others on the smaller), then read, rerun, and pushed by the
+orchestrating session before the next began. The subagents ran the unit tests only.
+Every live call was made by the orchestrating session, with the owner's word for the
+test spreadsheet and the test folder. What the APIs returned is in
+[live-findings.md](live-findings.md).
+
+At the branch's tip the full suite, live tests included, gives 3671 passed and 1
+skipped (the revision test that needs `GDRIVES_TEST_FILE_ID`), at 100% line and
+branch coverage, with ruff and pyrefly clean.
+
+### 2026-09-29: what landed, step by step
+
+| # | Commits | What landed, and where it departs from the plan |
+|---|---|---|
+| 1 | `4717471`, `ea99514` | `pending`, `format_report` for a `TabReport`, `print_retry`, `Target.spreadsheet_id`, and `run_target(None)`. `TabReport.exit_code` was there already, so a test now holds the two to one answer. `resolve.direct_file_id` is new, the one place that tells a URL, an ID, and a path apart. |
+| 2 | `2f99ad7`, `44b6720` | `pull_records` and `PullError`. It takes `report=` and `listing=` beyond the plan's list: `report=` is how a caller reads what `warn` said. |
+| 3 | `13e82d7`, `8d4b5e0`, `c5edbb5` | The fallback line, built by the public `credential_line`. `str(CredentialInfo)` is unchanged, so the reason follows the key path in a second pair of parentheses. |
+| 4 | `4d100d2`, `f916bd5` | `TabConfig.schema_ref`, `resolve_tab`, and `resolve_target`. The load and the resolution call the same checks. A key column's type, `typed_writes`, and `widths` turned out not to read the schema at load, so nothing moved for them. `Target.base_file` is new: a referenced tab's base store is built when it is asked for. |
+| 5 | `36da0e9`, `f879b6d`, `5cdaf0c` | `strict_schema: "local"`. `f879b6d` fails the guide test on its own: the count it needed is in `5cdaf0c`. |
+| 6 | `a68e6a6`, `7a07a11`, `8cf815a` | `ColumnSchema.pattern`, checked last in `cell_problem`, and `PATTERN_TYPES`. |
+| 7 | `ecd9efa`, `6c6243f` | `sheets-links`, and `sweep_url_links` in a new `sheets/links.py`. A tab with no named column in its first row is skipped, not an error. |
+| 8 | `d59261f`, `157ede5`, `168763c` | `linked_cells(detail=True)` fills `text` and `formula`, so a 0.14 call reads what it read. `styled_cells`, and `clear_link_format(style=True)`. Built from the live findings, and pinned by one live test. |
+| 9 | `9121f0d`, `d6182d8`, `62ee4e4` | `sheets-create --from`. `upload._send` became the public `send_upload`, beside `resumable_media`. The read-back checks the created file's type. |
+| 10 | `4fb4547`, `2d21950` | `upload --no-replace`, which refuses on any file of the name, a Google-native one included. |
+| 11 | `b192b4c`, `6173557` | The type check, at no request: the listing that found the file already carries its type. The message says to download the workbook and convert the local copy, since `--from` takes a local file. |
+| 12 | `dc9d1b4`, `132cc84`, `f21cfe4` | `export --newline`. The CSV rewrite walks the bytes and never requotes. `NEWLINES` moved to `gdrives/local.py`. |
+| 13 | `f00380d` to `36b37ee` | All three were built. `trim_cells` runs the key's normalization on each line of a cell, since on a whole cell it would fold the line breaks the plan says to keep. `sheets-schema` resolves the schemas alone (`resolve_schemas`), so a hook that does not import cannot stop an export. |
+| 14 | `3fc50bc` | The guide's additions, each claim pinned by a test in `tests/test_sheets_guide.py`. |
+
+### 2026-09-29: the review's own changes
+
+- `8cf815a` put `PATTERN_TYPES` in its sorted place in `__all__`.
+- `62ee4e4` wrote what a conversion keeps into the README and the changelog, from
+  the live run.
+- `f21cfe4` passes `newline` straight through `export`. The subagent had passed it
+  only when set, so that test fakes written for two arguments kept working; four
+  fakes now take it.
+- `2179802` strips the colour from a usage error before a test reads it. CI renders
+  Typer's usage errors in colour, which split `--title` and failed the test on all
+  four Python versions, while the same test passed locally.
+
+### 2026-09-29: step 10's scope, written up
+
+Under the narrow `drive.file` scope a listing holds only the files the app created
+or opened. A replace would then miss a file of the name that someone else made and
+create a second one, and `--no-replace` would report the name as free exactly when
+it should refuse. The options:
+
+1. Keep the full `drive` scope for `upload`, the only one under which the listing
+   is whole.
+2. Offer a `drive.file` mode for a caller that only ever touches its own files, and
+   refuse `--no-replace` there, or warn, since it cannot keep its promise.
+3. Leave the narrow scope to the caller: a `drive.file` token of its own, and
+   `--file-id` to replace, which needs no listing and gives up `--no-replace`.
+
+Draft plan 004 asks the same of `mv` and `drive.metadata`, and its questions about
+the token file's name apply here too. No scope option was added.
+
+### 2026-09-29: left for the owner, at the close
+
+- **Step 1.** A first sync's preview is `pending`, since an apply saves a base,
+  though its report can end `in sync: nothing to write`. A run that would only save
+  the base again is not counted, since the report's fields cannot show it.
+- **Step 2.** `pull_records` raises `PullError` for an API error too, with the
+  `HttpError` as its cause.
+- **Step 3.** The two pairs of parentheses on a service account's fallback line, and
+  a reason that also covers a cached token that is invalid or unreadable.
+- **Step 4.** A referenced schema's `allowed` holds scalars, as JSON does, so a
+  Python `date` there is refused. `tab.schema` read on an unresolved tab is empty,
+  where `types` and `local_store` raise.
+- **Step 5.** `strict_schema: "local"` on a push checks what `true` checks, and is
+  accepted.
+- **Step 8.** Clearing the link format of a `HYPERLINK` formula's cell removes its
+  link and leaves the formula. It did so before this plan, and is now documented.
+  An option to skip such cells was not built.
+- **Step 9.** A service account cannot create from a workbook in a folder of My
+  Drive. Two scratch spreadsheets from the live run are in the test folder, for the
+  owner to remove.
+- **Step 13.** `sheets-schema` does not escape a cell that starts with `=`, which a
+  `pattern` may. `SCHEMA_COLUMNS` is not among the names `gdrives.sheets` exports.
+- **Names made public beyond the plan's list:** `direct_file_id`,
+  `credential_line`, `FALLBACK_REASON`, `PATTERN_TYPES`, `send_upload`,
+  `resumable_media`, `resolve_spreadsheet_id`, `check_spreadsheet`,
+  `resolve_schemas`, and `TARGET_DEFAULTS`.
+- **The project's `.claude/CLAUDE.md`** is not tracked, so the branch does not carry
+  its update: the package tree, the command list, and a paragraph for each step.
+
+### 2026-09-29: the owner's questions, decided
+
+Written at 2026-09-29T03:45:13-07:00. The owner read the list above and left the choices to the
+orchestrating session, to be researched in the code. This entry takes the place of
+that list. At the branch's tip the full suite, live tests included, gives 3732
+passed and 1 skipped, at 100% coverage, with ruff and pyrefly clean.
+
+| Question | Decision | Commit |
+|---|---|---|
+| Is a first sync's preview `pending`, and a run that only saves the base? | `pending` is exact: True when an apply of the same run would write the sheet, the local side, or the base. `TabReport.stale_base` and `stale_local` are set at plan time by the helpers `apply_tab` uses, and a test previews and applies eleven cases and holds the two to one answer. The report's text cannot change, so the hint carries it: `Preview only; rerun with --apply to save the base.` | `623d020` |
+| Does `pull_records` wrap an API error? | No. `PullError` is for a refusal and for problems, as the plan words it. An `HttpError` or an `OSError` is raised as it was. | `00a1946` |
+| Two pairs of parentheses on the fallback line | One sentence: `Credential: <credential>, since OAuth is configured, but ...`. The reason constant is private, and `credential_line` is the interface. | `96dc4bf` |
+| `allowed` in a referenced schema | It takes `date` and `datetime` values, as a schema built in code does. | `65e047c` |
+| `strict_schema: "local"` on a push | Accepted, as it was. A target's `defaults` gives the field to every tab, so a refusal on a push would make a default break a tab. | none |
+| A `HYPERLINK` formula's cell under `clear_link_format` | `formulas=False` leaves such cells as they are. The default, and its requests, are unchanged. A second live test pins it. | `e7393ee` |
+| The scope of `upload` | The full `drive` scope stays, option 1 of the write-up. Narrowing is draft plan 004's. | none |
+| Formula escaping in `sheets-schema` | `--escape-formulas`, as `sheets-get` has it, off by default, and refused for a `.json` output. `SCHEMA_COLUMNS` is exported. | `9b11fb9` |
+| The names made public | Kept, except the reason constant. Each stands beside a public name of its kind, or is used across modules. | none |
+
+**One change goes past the plan's rule** that a 0.14 config reports the same. The
+question about `allowed` showed a fault that was there before: a `datetime` cell
+read from its serial number arrives as `2026-01-01 09:00:00.000`, so an allowed
+`2026-01-01 09:00:00` never matched it. In a `date` or `datetime` column a cell and
+the allowed values are now compared as the same moment. What matched still matches,
+so the change only accepts more, and it is under `### Changed` in the changelog
+(`373d1c5`).
+
+### 2026-09-29: not closed in this session
+
+The owner closes the plan in a later session. The PR stays a draft. What the close
+has to do beyond the usual:
+
+- **Copy the project's `.claude/CLAUDE.md`** from the worktree to the main checkout,
+  before the worktree is removed. The file is not tracked, the worktree's copy holds
+  the update for this plan, and the owner has said to copy it over.
+- **Remove the two scratch spreadsheets** the live run of step 9 left in the test
+  folder, `plan019-scratch-book` and `plan019-book`, or ask the owner to.
+- **Still open, for the owner:** whether `tab.schema` read on an unresolved tab
+  should raise, where it is empty now (`types` and `local_store` raise), and
+  whether a tab with `clear_links` and nothing to push counts as `pending`, which
+  it does not.
+
+### 2026-09-29: the close
+
+Written at 2026-09-29T09:51:12-07:00. The review gate ran on the branch at `d5656d2`,
+and what it read, found, and rejected is in [review.md](review.md). It was posted to
+the PR.
+
+**Review follow-up.** Six findings, each fixed at the source with a test:
+
+- `0510b24`: `sheets-links` finds a target's tab by its `sheet_id`, as a sync does.
+- `1e233bb`: the CSV scan of `export --newline` starts after a byte-order mark.
+- `5fc376c`: `clear_link_format(formulas=False)` sends no range past the tab's last
+  row, and `_URL_FORMAT_FIELDS` is gone.
+- `a476890`: the hint to convert a workbook is decided by `SOURCE_MIMES`.
+- `b994b82`: the guide's fallback line lost a stray parenthesis, and a test holds it
+  to `credential_line`.
+
+Conscious no-ops, each with its measurement in the review: two per-cell costs that
+stay under a second on a large tab, and two checks written twice on purpose.
+
+At the branch's tip the full suite, live tests included, gives 3741 passed and 1
+skipped, at 100% coverage, with ruff and pyrefly clean.
+
+**Of the two questions left open:** a tab with `clear_links` and nothing to push is
+not `pending`, and that is right, since an apply of it returns before it clears
+anything. Whether `tab.schema` read on an unresolved tab should raise is still the
+owner's.
+
+## Retrospective
+
+- **The plan's order held, and its one design question was the right one to name.**
+  Step 4 was the only step that changed a type callers hold, and deciding at the
+  start that a tab has either `schema` or `schema_ref` kept every later step free
+  of it.
+- **Reading the API before writing the code paid for itself in step 8.** The field
+  that seemed to tell a formula's link from a format link does not, and the code
+  would have been built on it.
+- **Wording changed late is where the docs slipped.** The one docs finding was a line
+  reworded after its step, in a file no test read that line of. A guide example that
+  shows output needs a test as much as one that shows input.
+- **A fake that refuses what the API refuses found a bug no test asked about.** The
+  range past the grid was reproduced offline because the fake grid checks bounds.
+  The unit tests of the split had all used a tab of 1000 rows.
+- **A new command should be read against every field of the config it takes.**
+  `sheets-links` took a target's tabs and missed `sheet_id`, which no step's scope
+  named. A list of the tab fields a command honours would have shown the gap.
+- **Next time:** leave the list of open questions shorter by deciding as the step is
+  built, and size a plan of fourteen steps as an umbrella with subplans, since this
+  one ends at the length where a plan should split.

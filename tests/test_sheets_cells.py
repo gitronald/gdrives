@@ -263,6 +263,28 @@ class TestCellProblem:
         assert cell_problem("", ColumnSchema(type="int")) is None
         assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
 
+    def test_an_allowed_date_is_its_iso_form(self):
+        schema = ColumnSchema(type="date", allowed=[date(2026, 1, 1), "2026-02-01"])
+        assert cell_problem("2026-01-01", schema) is None
+        assert cell_problem("2026-02-01", schema) is None
+        assert cell_problem("2026-03-01", schema) == (
+            "'2026-03-01' is not one of ['2026-01-01', '2026-02-01']"
+        )
+
+    @pytest.mark.parametrize(
+        "text", ["2026-01-01 09:00:00", "2026-01-01 09:00:00.000", "2026-01-01T09:00"]
+    )
+    def test_an_allowed_datetime_matches_every_spelling_of_the_moment(self, text):
+        # A serial read spells the moment with milliseconds; to_cell without.
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        assert cell_problem(text, schema) is None
+
+    def test_an_allowed_datetime_rejects_another_moment(self):
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        assert cell_problem("2026-01-01 09:00:00.500", schema) == (
+            "'2026-01-01 09:00:00.500' is not one of ['2026-01-01 09:00:00']"
+        )
+
     @pytest.mark.parametrize("text", ["true", "True"])
     def test_a_respelled_bool_is_a_problem_only_under_strict(self, text):
         assert cell_problem(text, ColumnSchema(type="bool")) is None
@@ -692,6 +714,91 @@ class TestColumnSchema:
             match=r"strict is only for a column of \['bool', 'date'\]",
         ):
             ColumnSchema(type=type_, strict=True)
+
+
+class TestColumnPattern:
+    SCHEMA = ColumnSchema(pattern="https://example\\.com/members/[0-9]+")
+
+    def test_a_cell_that_matches_in_full_passes(self):
+        assert cell_problem("https://example.com/members/42", self.SCHEMA) is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "https://example.com/members/42/edit",
+            "see https://example.com/members/42",
+            "https://exampleXcom/members/42",
+        ],
+    )
+    def test_a_cell_that_matches_only_in_part_is_a_problem(self, text):
+        assert cell_problem(text, self.SCHEMA) == (
+            f"{text!r} does not match the pattern {self.SCHEMA.pattern!r}"
+        )
+
+    def test_a_blank_cell_is_checked_by_required_only(self):
+        assert cell_problem("", self.SCHEMA) is None
+        required = ColumnSchema(pattern="[0-9]+", required=True)
+        assert cell_problem("", required) == "is required"
+
+    def test_it_is_checked_after_allowed(self):
+        schema = ColumnSchema(pattern="[a-z]+", allowed=["ab", "c1"])
+        assert cell_problem("zz", schema) == "'zz' is not one of ['ab', 'c1']"
+        assert cell_problem("c1", schema) == "'c1' does not match the pattern '[a-z]+'"
+        assert cell_problem("ab", schema) is None
+
+    def test_it_is_compiled_once_per_string(self):
+        from gdrives.sheets.cells import _compiled
+
+        _compiled.cache_clear()
+        schema = ColumnSchema(pattern="[0-9]+")
+        for _ in range(3):
+            cell_problem("12", schema)
+        info = _compiled.cache_info()
+        assert info.misses == 1 and info.hits >= 2
+
+    def test_it_is_part_of_equality_and_hashing(self):
+        assert ColumnSchema(pattern="a") == ColumnSchema(pattern="a")
+        assert ColumnSchema(pattern="a") != ColumnSchema()
+        assert hash(ColumnSchema(pattern="a")) == hash(ColumnSchema(pattern="a"))
+
+    @pytest.mark.parametrize("type_", ["int", "float", "bool", "date", "datetime"])
+    def test_it_is_refused_for_any_other_type(self, type_):
+        with pytest.raises(
+            ValueError, match=r"pattern is only for a column of \['str'\]"
+        ):
+            ColumnSchema(type=type_, pattern="x")
+
+    @pytest.mark.parametrize("pattern", ["[0-9", 5])
+    def test_it_must_compile(self, pattern):
+        with pytest.raises(ValueError, match="pattern is not a regular expression"):
+            ColumnSchema(pattern=pattern)
+
+    def test_of_takes_it(self):
+        assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
+
+
+class TestColumnDescription:
+    def test_it_defaults_to_none_and_is_read_by_no_check(self):
+        assert ColumnSchema().description is None
+        described = ColumnSchema("int", description="Whole dollars.")
+        assert cell_problem("12", described) is None
+        assert cell_problem("x", described) == cell_problem("x", ColumnSchema("int"))
+
+    def test_it_is_part_of_equality_and_hashing(self):
+        assert ColumnSchema(description="a") == ColumnSchema(description="a")
+        assert ColumnSchema(description="a") != ColumnSchema()
+        assert hash(ColumnSchema(description="a")) == hash(
+            ColumnSchema(description="a")
+        )
+
+    def test_it_must_be_a_string(self):
+        with pytest.raises(ValueError, match="description must be a string, not int"):
+            ColumnSchema(description=5)  # pyrefly: ignore[bad-argument-type]
+
+    def test_of_takes_it(self):
+        assert ColumnSchema.of(int, description="x") == ColumnSchema(
+            "int", description="x"
+        )
 
 
 class TestColumnSchemaOf:

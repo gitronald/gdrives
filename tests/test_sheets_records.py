@@ -261,6 +261,26 @@ class TestJson:
         with pytest.raises(ValueError, match="newline applies only to .csv and .tsv"):
             write_records(tmp_path / "m.json", ["id"], [], newline="crlf")
 
+    def test_escaping_formulas_is_refused(self, tmp_path):
+        path = tmp_path / "m.json"
+        with pytest.raises(ValueError, match="escaping formulas applies only to"):
+            write_records(path, ["id"], [], escape_formulas=True)
+        assert not path.exists()
+
+    def test_escaping_formulas_prefixes_every_cell_of_a_delimited_file(self, tmp_path):
+        rows = [{"=id": "=1+1", "b": "-5"}, {"=id": "ok", "b": "@x"}]
+        for name, delimiter in (("m.csv", ","), ("m.tsv", "\t")):
+            path = tmp_path / name
+            write_records(path, ["=id", "b"], rows, escape_formulas=True)
+            assert path.read_text().split("\n") == [
+                delimiter.join(["'=id", "b"]),
+                delimiter.join(["'=1+1", "'-5"]),
+                delimiter.join(["ok", "'@x"]),
+                "",
+            ]
+        write_records(tmp_path / "exact.csv", ["=id", "b"], rows)
+        assert (tmp_path / "exact.csv").read_text().split("\n")[1] == "=1+1,-5"
+
     def test_the_columns_are_checked_before_bom_and_newline(self, tmp_path):
         # The order of 0.13.0: a row's unknown column is what a call hears of.
         path, rows = tmp_path / "m.json", [{"id": "1", "zz": "2"}]

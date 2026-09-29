@@ -18,6 +18,7 @@ import pytest
 from helpers import FakeSheetGrid
 from typer.testing import CliRunner
 
+from gdrives.auth import CredentialInfo
 from gdrives.cli import app
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -481,7 +482,8 @@ def project(tmp_path, monkeypatch):
 
     monkeypatch.setattr("gdrives.auth.build_sheets_service", build)
     monkeypatch.setattr(
-        "gdrives.auth.describe_credentials", lambda scopes=None, *, force=False: None
+        "gdrives.auth.describe_credentials",
+        lambda scopes=None, *, force=False: CredentialInfo(kind="adc"),
     )
     return made
 

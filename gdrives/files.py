@@ -88,6 +88,10 @@ def is_folder(f: DriveFile) -> bool:
     return f.get("mimeType") == "application/vnd.google-apps.folder"
 
 
+# The MIME type of a native Google spreadsheet.
+SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
 def is_native(f: DriveFile) -> bool:
     """Return True for Google-native files (Docs, Sheets, Slides, Forms, etc.)."""
     return f.get("mimeType", "").startswith("application/vnd.google-apps.")

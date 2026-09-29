@@ -25,14 +25,21 @@ each naming its target and tab, so a single run shows everything to fix. The
 
 import json
 import os
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from gdrives.local import safe_filename
-from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, STRICT_TYPES, ColumnSchema
-from gdrives.sheets.files import NEWLINES
+from gdrives.local import NEWLINES, safe_filename
+from gdrives.sheets.cells import (
+    BLANK_KEYS,
+    COLUMN_TYPES,
+    PATTERN_TYPES,
+    STRICT_TYPES,
+    ColumnSchema,
+)
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
 from gdrives.sheets.structure import _rgb
 from gdrives.sheets.values import RAW, RENDERS, USER_ENTERED
@@ -65,7 +72,11 @@ HOOKS = frozenset({"validate", "check", "warn", "transform"})
 _CACHE_DIR = ".gdrives"
 
 _TARGET_FIELDS = frozenset(
-    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks"}
+    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks", "defaults"}
+)
+#: The tab fields a target's ``defaults`` may give.
+TARGET_DEFAULTS = frozenset(
+    {"link_urls", "strict_schema", "newline", "render", "blank_keys"}
 )
 _TAB_FIELDS = frozenset(
     {
@@ -95,7 +106,10 @@ _TAB_FIELDS = frozenset(
         "typed_writes",
     }
 )
-_SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
+_STRICT_LOCAL = "local"
+_SCHEMA_FIELDS = frozenset(
+    {"type", "required", "allowed", "present", "strict", "pattern", "description"}
+)
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
     "local_owned",
@@ -158,8 +172,13 @@ class TabConfig:
     ``strict_schema`` makes it a problem for a column of either side, less one
     a run is dropping, to have no ``schema`` entry: a carried local column and
     a sheet column outside the projection are checked too, not just the
-    projection. With it, ``schema`` may also name a column outside
-    ``columns``, which is refused otherwise.
+    projection. With ``"local"`` only the local side is checked: every local
+    column must be declared, and a sheet column outside the projection is left
+    alone. A pull checks the columns it reads, which become the local file's,
+    and leaves the other header columns alone; a push has only a local side,
+    so ``"local"`` and true check the same there. With either, ``schema`` may
+    also name a column outside ``columns``, which is refused otherwise: a
+    carried local column is one, and ``"local"`` checks it.
     ``hooks`` maps a hook (:data:`HOOKS`) to the ``module:function`` that
     runs as it, only named here: nothing is imported until a run starts
     (:func:`~gdrives.sheets.hooks.resolve_hooks`). A push tab takes no
@@ -168,6 +187,13 @@ class TabConfig:
     ``float``, ``bool``, ``date``, or ``datetime``, less the key, as a value
     of that type rather than as text, on a sync or a push
     (:mod:`~gdrives.sheets.typed`). It needs ``render`` ``unformatted``.
+    ``schema_ref`` names the schema as ``module:attribute`` instead of giving
+    it, and contradicts a non-empty ``schema``. The attribute is a mapping of
+    column name to :class:`~gdrives.sheets.cells.ColumnSchema`, or a function
+    given the tab's title that returns one. Nothing is imported until a run
+    starts (:func:`~gdrives.sheets.hooks.resolve_tab`), which gives the run a
+    tab with ``schema`` filled and ``schema_ref`` None. Until then the tab has
+    no schema to read: :attr:`types` and :attr:`local_store` raise ValueError.
     """
 
     title: str
@@ -190,12 +216,13 @@ class TabConfig:
     render: str = "unformatted"
     clear_links: bool = False
     sheet_id: int | None = None
-    strict_schema: bool = False
+    strict_schema: bool | str = False
     store: Store | None = None
     entry: str | None = None
     link_urls: str | None = None
     hooks: Mapping[str, str] = field(default_factory=dict)
     typed_writes: bool = False
+    schema_ref: str | None = None
 
     def __post_init__(self) -> None:
         if self.local is None and self.store is None:
@@ -221,13 +248,38 @@ class TabConfig:
             raise ValueError(
                 f"tab {self.title!r}: 'typed_writes' needs 'render' unformatted"
             )
+        if not _is_strict_schema(self.strict_schema):
+            raise ValueError(
+                f"tab {self.title!r}: 'strict_schema' must be true, false, or "
+                f"{_STRICT_LOCAL!r}, not {self.strict_schema!r}"
+            )
         hook_problems = _hook_problems(self.hooks, self.mode)
         if hook_problems:
             raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
+        if self.schema_ref is not None:
+            if not _is_hook_name(self.schema_ref):
+                raise ValueError(
+                    f"tab {self.title!r}: 'schema_ref' must be 'module:attribute', "
+                    f"not {self.schema_ref!r}"
+                )
+            if self.schema:
+                raise ValueError(
+                    f"tab {self.title!r}: 'schema' and 'schema_ref' contradict "
+                    "each other"
+                )
 
     @property
     def types(self) -> dict[str, str]:
-        """Each schema column's declared type, for writing a JSON file."""
+        """Each schema column's declared type, for writing a JSON file.
+
+        Raises ValueError while ``schema_ref`` is unresolved, since the
+        schema is not known yet.
+        """
+        if self.schema_ref is not None:
+            raise ValueError(
+                f"tab {self.title!r}: schema {self.schema_ref!r} is not resolved; "
+                "a run resolves it before its first request (resolve_tab)"
+            )
         return {column: spec.type for column, spec in self.schema.items()}
 
     @property
@@ -236,7 +288,9 @@ class TabConfig:
 
         The file is read and written with the tab's ``types``, ``bom``, and
         ``newline``; with an ``entry``, it is that entry of the file, typed by
-        ``types``.
+        ``types``. Built anew on each access, so a tab whose ``schema_ref``
+        was resolved gets a store typed by the resolved schema; on a tab
+        still unresolved, raises ValueError as :attr:`types` does.
         """
         if self.store is not None:
             return self.store
@@ -261,8 +315,12 @@ class Target:
     instead, for a base kept somewhere else; ``base`` is unused for a tab it
     names. A config's ``base_file`` becomes one
     :class:`~gdrives.sheets.stores.JsonEntryStore` here for each sync tab,
-    the entry named by the tab's title and typed by its schema. A config
-    always sets ``base``, to a default directory when none is given.
+    the entry named by the tab's title and typed by its schema, except for a
+    tab whose schema is a ``schema_ref``: its store is built when the base is
+    asked for (:meth:`base_store`), from ``base_file``, typed by the tab it is
+    asked for, which a run has resolved. ``base_file`` is that file, used for
+    a tab with no entry in ``base_stores``. A config always sets ``base``, to
+    a default directory when none is given.
     """
 
     name: str
@@ -271,6 +329,26 @@ class Target:
     tabs: tuple[TabConfig, ...] = ()
     input_option: str = RAW
     base_stores: Mapping[str, Store] = field(default_factory=dict)
+    base_file: Path | None = None
+
+    @property
+    def spreadsheet_id(self) -> str:
+        """The spreadsheet's file ID, when ``spreadsheet`` is a URL or an ID.
+
+        Raises ValueError for a Drive path: resolving one needs a Drive
+        service and the drive cache, so a caller passes
+        :func:`~gdrives.resolve.resolve_file_id` the path and uses its result.
+        """
+        from gdrives.resolve import direct_file_id
+
+        file_id = direct_file_id(self.spreadsheet)
+        if file_id is None:
+            raise ValueError(
+                f"target {self.name!r}: spreadsheet {self.spreadsheet!r} is a "
+                "Drive path, which needs a Drive service to resolve; resolve it "
+                "with gdrives.resolve.resolve_file_id and pass the ID"
+            )
+        return file_id
 
     def tab(self, title: str) -> TabConfig:
         """The tab titled ``title``, raising ValueError naming the others."""
@@ -298,12 +376,16 @@ class Target:
     def base_store(self, tab: TabConfig) -> Store:
         """The store of ``tab``'s base: its entry in ``base_stores``, or the file.
 
-        The file is the one at :meth:`base_path`, written with the tab's
-        ``newline``; :meth:`base_path` is reached, and can raise, only for a
-        tab with no entry in ``base_stores``.
+        With no entry, the base is the entry named by ``tab``'s title in
+        ``base_file``, typed by ``tab``'s ``types``, when there is a
+        ``base_file``; else the file at :meth:`base_path`, written with the
+        tab's ``newline``. :meth:`base_path` is reached, and can raise, only
+        for a tab with neither.
         """
         if tab.title in self.base_stores:
             return self.base_stores[tab.title]
+        if self.base_file is not None:
+            return JsonEntryStore(self.base_file, tab.title, types=tab.types)
         return FileStore(self.base_path(tab), newline=tab.newline)
 
 
@@ -392,6 +474,29 @@ def _with_defaults(tab: TabConfig, defaults: Mapping[str, str]) -> TabConfig:
     return replace(tab, hooks={**given, **tab.hooks})
 
 
+def _applicable(raw: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """``raw`` with the ``defaults`` that apply to it under its own fields.
+
+    A field the tab's object names is its own, whatever its value. A default
+    is skipped for a tab it would contradict, so a default never makes a
+    valid tab invalid: ``link_urls`` is not given to a pull tab or one that
+    sets ``clear_links``, ``newline`` not to a tab whose ``local`` is a
+    ``.json`` file, and ``render`` ``formatted`` not to one that sets
+    ``typed_writes``.
+    """
+    local = raw.get("local")
+    skipped = {
+        "link_urls": raw.get("mode") == "pull" or raw.get("clear_links") is True,
+        "newline": isinstance(local, str) and Path(local).suffix.lower() == ".json",
+        "render": defaults.get("render") == "formatted"
+        and raw.get("typed_writes") is True,
+    }
+    return {
+        **{name: value for name, value in defaults.items() if not skipped.get(name)},
+        **raw,
+    }
+
+
 def _is_names(value: Any) -> bool:
     """True for a list of non-blank strings."""
     return isinstance(value, list) and all(
@@ -402,6 +507,15 @@ def _is_names(value: Any) -> bool:
 def _is_scalar(value: Any) -> bool:
     """True for a value that can be one cell: a string, number, or boolean."""
     return isinstance(value, (str, int, float, bool))
+
+
+def _is_allowed_value(value: Any) -> bool:
+    """True for a value ``allowed`` may hold: a scalar, or a date or datetime.
+
+    JSON holds no dates, so a config's inline schema only ever has scalars; a
+    ``ColumnSchema`` built in code and named by ``schema`` may hold dates.
+    """
+    return _is_scalar(value) or isinstance(value, date)
 
 
 def _is_hook_name(value: Any) -> bool:
@@ -426,6 +540,143 @@ def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
     if mode == "push" and "transform" in hooks:
         found.append("hook 'transform' applies only to pull and sync tabs")
     return found
+
+
+def _is_strict_schema(value: object) -> bool:
+    """Whether ``value`` is a ``strict_schema``: true, false, or ``"local"``."""
+    return isinstance(value, bool) or value == _STRICT_LOCAL
+
+
+def _column_problems(
+    at: str,
+    type_: Any,
+    required: Any,
+    allowed: Any,
+    present: Any,
+    strict: Any,
+    pattern: Any = None,
+    description: Any = None,
+) -> list[str]:
+    """What is wrong with one schema column's fields; ``at`` names the column.
+
+    The one check of a column, for a config's ``schema`` object at load and
+    for a schema a ``schema_ref`` names when a run resolves it, so the two
+    refuse the same things in the same words. ``allowed`` may be any list,
+    tuple, or set: a config's is a list, and a ``ColumnSchema`` built in
+    Python may hold the others.
+    """
+    found: list[str] = []
+    if type_ not in COLUMN_TYPES:
+        found.append(
+            f"{at}: 'type' must be one of {sorted(COLUMN_TYPES)}, not {type_!r}"
+        )
+    if not isinstance(required, bool):
+        found.append(f"{at}: 'required' must be true or false")
+    if allowed is not None and not (
+        isinstance(allowed, (list, tuple, set, frozenset))
+        and allowed
+        and all(_is_allowed_value(value) for value in allowed)
+    ):
+        found.append(f"{at}: 'allowed' must be a list of one or more values")
+    if not isinstance(present, bool):
+        found.append(f"{at}: 'present' must be true or false")
+    if not isinstance(strict, bool):
+        found.append(f"{at}: 'strict' must be true or false")
+    elif strict and type_ in COLUMN_TYPES and type_ not in STRICT_TYPES:
+        found.append(
+            f"{at}: 'strict' is only for a column of "
+            f"{sorted(STRICT_TYPES)}, not {type_!r}"
+        )
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            found.append(f"{at}: 'pattern' must be a string")
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                found.append(f"{at}: 'pattern' is not a regular expression: {e}")
+        if type_ in COLUMN_TYPES and type_ not in PATTERN_TYPES:
+            found.append(
+                f"{at}: 'pattern' is only for a column of "
+                f"{sorted(PATTERN_TYPES)}, not {type_!r}"
+            )
+    if description is not None and not isinstance(description, str):
+        found.append(f"{at}: 'description' must be a string")
+    return found
+
+
+def _outside_problems(
+    where: str, what: str, names: Sequence[str], columns: Sequence[str] | None
+) -> list[str]:
+    """The ``what`` columns of ``names`` outside the projection ``columns``."""
+    if columns is None:
+        return []
+    outside = [c for c in names if c not in columns]
+    return [f"{where}: {what} column(s) {outside} not in 'columns'"] if outside else []
+
+
+def _excluded_problems(
+    where: str, what: str, names: Iterable[str], exclude: Iterable[str]
+) -> list[str]:
+    """The ``what`` columns of ``names`` that ``exclude`` names, which a pull reads."""
+    excluded = sorted(set(names) & set(exclude))
+    if not excluded:
+        return []
+    return [
+        f"{where}: 'exclude' names {what} column(s) {excluded}, which would be "
+        "read anyway"
+    ]
+
+
+def _checked_schema(
+    where: str, value: Mapping[Any, Any], tab: TabConfig
+) -> tuple[dict[str, ColumnSchema], list[str]]:
+    """A schema found in code, checked as a config's ``schema`` is at load.
+
+    ``value`` is the mapping a ``schema_ref`` names (or its function
+    returned) for ``tab``, and ``where`` starts each problem. Each column
+    name must be a non-blank string and each value a
+    :class:`~gdrives.sheets.cells.ColumnSchema`, whose fields go through the
+    config's own column check, so a ``ColumnSchema`` built in Python cannot
+    hold what the JSON form refuses. The columns are then checked against
+    ``tab`` as a config's are: inside ``columns`` unless ``strict_schema``,
+    and none named by ``exclude``. Returns the schema and every problem;
+    imports nothing.
+    """
+    found: list[str] = []
+    schema: dict[str, ColumnSchema] = {}
+    names: list[str] = []
+    for column, spec in value.items():
+        if not isinstance(column, str):
+            found.append(
+                f"{where}: 'schema' names a column that is not a string: {column!r}"
+            )
+            continue
+        names.append(column)
+        if not column.strip():
+            found.append(f"{where}: 'schema' names a blank column")
+            continue
+        at = f"{where}: schema {column!r}"
+        if not isinstance(spec, ColumnSchema):
+            found.append(f"{at}: expected a ColumnSchema, not a {type(spec).__name__}")
+            continue
+        problems = _column_problems(
+            at,
+            spec.type,
+            spec.required,
+            spec.allowed,
+            spec.present,
+            spec.strict,
+            spec.pattern,
+            spec.description,
+        )
+        found.extend(problems)
+        if not problems:
+            schema[column] = spec
+    if not tab.strict_schema:
+        found.extend(_outside_problems(where, "schema", names, tab.columns))
+    found.extend(_excluded_problems(where, "schema", list(schema), tab.exclude))
+    return schema, found
 
 
 def _repeated(names: Sequence[str]) -> list[str]:
@@ -478,6 +729,7 @@ class _Checker:
                 )
         base_file = self._base_file(where, raw)
         defaults = self._hooks(where, raw, "sync")
+        tab_defaults = self._defaults(where, raw)
 
         input_option = raw.get("input_option", RAW)
         if input_option not in INPUT_OPTIONS:
@@ -494,7 +746,7 @@ class _Checker:
             )
         else:
             for title, raw_tab in raw_tabs.items():
-                tab = self.tab(where, title, raw_tab)
+                tab = self.tab(where, title, raw_tab, tab_defaults)
                 if tab is None:
                     continue
                 if defaults:
@@ -521,10 +773,13 @@ class _Checker:
             return None
         base_stores: dict[str, Store] = {}
         if base_file is not None:
+            # A tab whose schema is a reference has no types yet: its store is
+            # built from base_file when a run asks for it, typed by the
+            # resolved tab (Target.base_store).
             base_stores = {
                 tab.title: JsonEntryStore(base_file, tab.title, types=tab.types)
                 for tab in tabs
-                if tab.mode == "sync"
+                if tab.mode == "sync" and tab.schema_ref is None
             }
         return Target(
             name=name,
@@ -533,6 +788,7 @@ class _Checker:
             tabs=tuple(tabs),
             input_option=str(input_option),
             base_stores=base_stores,
+            base_file=base_file,
         )
 
     def _base_file(self, where: str, raw: Mapping[str, Any]) -> Path | None:
@@ -577,12 +833,20 @@ class _Checker:
         for target in targets:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
+                if tab.schema_ref is not None:
+                    # Only where the stores are is compared, not how they are
+                    # typed, and a reference is not resolved at load.
+                    tab = replace(tab, schema_ref=None)
                 stores: list[tuple[Store, str]] = []
                 if tab.mode != "push":
                     stores.append((tab.local_store, f"{where} (local file)"))
                 # A target built in code may have no base for the tab: that is
                 # the run's to refuse, and there is no file to collide here.
-                based = target.base is not None or tab.title in target.base_stores
+                based = (
+                    target.base is not None
+                    or target.base_file is not None
+                    or tab.title in target.base_stores
+                )
                 if tab.mode == "sync" and based:
                     stores.append((target.base_store(tab), f"{where} (base)"))
                 for store, role in stores:
@@ -616,7 +880,13 @@ class _Checker:
                         "one tab: " + "; ".join(roles)
                     )
 
-    def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:
+    def tab(
+        self,
+        target: str,
+        title: str,
+        raw: Any,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> TabConfig | None:
         where = f"{target}, tab {title!r}"
         problems = self.problems
         start = len(problems)
@@ -625,6 +895,8 @@ class _Checker:
         if not isinstance(raw, dict):
             problems.append(f"{where}: expected an object")
             return None
+        if defaults:
+            raw = _applicable(raw, defaults)
         unknown = sorted(set(raw) - _TAB_FIELDS)
         if unknown:
             problems.append(f"{where}: unknown field(s) {unknown}")
@@ -656,23 +928,12 @@ class _Checker:
             problems.append(f"{where}: 'bom' must be true or false")
         elif bom and local is not None and local.suffix.lower() == ".json":
             problems.append(f"{where}: 'bom' applies only to a .csv or .tsv file")
-        newline = raw.get("newline", "lf")
-        if not isinstance(newline, str) or newline not in NEWLINES:
-            problems.append(
-                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
-            )
-        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
-            problems.append(f"{where}: 'newline' applies only to a .csv or .tsv file")
+        newline = self._newline(where, raw, local)
 
         key = self._names(where, raw, "key")
         if mode == "sync" and not key:
             problems.append(f"{where}: a sync tab needs a 'key' of one or more columns")
-        blank_keys = raw.get("blank_keys", "refuse")
-        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
-            problems.append(
-                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
-                f"not {blank_keys!r}"
-            )
+        blank_keys = self._blank_keys(where, raw)
         columns = self._columns(where, raw)
         exclude = self._names(where, raw, "exclude")
         if exclude and columns is not None:
@@ -714,15 +975,8 @@ class _Checker:
                 f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
                 f"not {on_invalid!r}"
             )
-        render = raw.get("render", "unformatted")
-        if not isinstance(render, str) or render not in RENDERS:
-            problems.append(
-                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
-            )
-        strict_schema = raw.get("strict_schema", False)
-        if not isinstance(strict_schema, bool):
-            problems.append(f"{where}: 'strict_schema' must be true or false")
-            strict_schema = False
+        render = self._render(where, raw)
+        strict_schema = self._strict_schema(where, raw)
         typed_writes = raw.get("typed_writes", False)
         if not isinstance(typed_writes, bool):
             problems.append(f"{where}: 'typed_writes' must be true or false")
@@ -731,7 +985,21 @@ class _Checker:
                 f"{where}: 'typed_writes' needs 'render' unformatted: a formatted "
                 "read returns what a number format shows, not the value written"
             )
-        schema = self._schema(where, raw.get("schema", {}), columns, strict_schema)
+        raw_schema = raw.get("schema", {})
+        schema_ref: str | None = None
+        schema: dict[str, ColumnSchema] = {}
+        if isinstance(raw_schema, str):
+            # A reference is checked by form only; the checks that need its
+            # columns run when a run resolves it (hooks.resolve_tab).
+            if _is_hook_name(raw_schema):
+                schema_ref = raw_schema
+            else:
+                problems.append(
+                    f"{where}: 'schema' must be an object of columns or "
+                    f"'module:attribute', not {raw_schema!r}"
+                )
+        else:
+            schema = self._schema(where, raw_schema, columns, strict_schema)
         insert_above = self._insert_above(where, raw.get("insert_above"), columns)
         widths = self._widths(where, raw.get("widths", {}), columns)
         for what, names in (
@@ -739,12 +1007,7 @@ class _Checker:
             ("schema", list(schema)),
             ("widths", list(widths)),
         ):
-            excluded = sorted(set(names) & set(exclude))
-            if excluded:
-                problems.append(
-                    f"{where}: 'exclude' names {what} column(s) {excluded}, which "
-                    "would be read anyway"
-                )
+            problems.extend(_excluded_problems(where, what, names, exclude))
 
         if len(problems) > start or local is None:
             return None
@@ -771,10 +1034,87 @@ class _Checker:
             sheet_id=sheet_id,
             entry=entry,
             link_urls=link_urls,
-            strict_schema=bool(strict_schema),
+            strict_schema=strict_schema,
             hooks=hooks,
             typed_writes=bool(typed_writes),
+            schema_ref=schema_ref,
         )
+
+    def _defaults(self, where: str, raw: Mapping[str, Any]) -> dict[str, Any]:
+        """The target's ``defaults``, each checked as the tab field is.
+
+        Problems name the target's ``defaults``; the result is the object as
+        given, empty when there are none or any is refused.
+        """
+        if "defaults" not in raw:
+            return {}
+        given = raw["defaults"]
+        at = f"{where}, 'defaults'"
+        if not isinstance(given, dict) or not given:
+            self.problems.append(
+                f"{where}: 'defaults' must be an object naming one or more of "
+                f"{sorted(TARGET_DEFAULTS)}"
+            )
+            return {}
+        start = len(self.problems)
+        unknown = sorted(set(given) - TARGET_DEFAULTS)
+        if unknown:
+            self.problems.append(
+                f"{at}: unknown field(s) {unknown}; defaults: {sorted(TARGET_DEFAULTS)}"
+            )
+        if "link_urls" in given:
+            self._link_urls(at, given)
+        if "newline" in given:
+            self._newline(at, given, None)
+        if "blank_keys" in given:
+            self._blank_keys(at, given)
+        if "render" in given:
+            self._render(at, given)
+        if "strict_schema" in given:
+            self._strict_schema(at, given)
+        return {} if len(self.problems) > start else dict(given)
+
+    def _newline(self, where: str, raw: Mapping[str, Any], local: Path | None) -> Any:
+        """The ``newline`` of a tab (or of a target's defaults, with no ``local``)."""
+        newline = raw.get("newline", "lf")
+        if not isinstance(newline, str) or newline not in NEWLINES:
+            self.problems.append(
+                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
+            )
+        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
+            self.problems.append(
+                f"{where}: 'newline' applies only to a .csv or .tsv file"
+            )
+        return newline
+
+    def _blank_keys(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``blank_keys`` of a tab or of a target's defaults."""
+        blank_keys = raw.get("blank_keys", "refuse")
+        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
+            self.problems.append(
+                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
+                f"not {blank_keys!r}"
+            )
+        return blank_keys
+
+    def _render(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``render`` of a tab or of a target's defaults."""
+        render = raw.get("render", "unformatted")
+        if not isinstance(render, str) or render not in RENDERS:
+            self.problems.append(
+                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
+            )
+        return render
+
+    def _strict_schema(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``strict_schema`` of a tab or of a target's defaults; false if bad."""
+        strict_schema = raw.get("strict_schema", False)
+        if not _is_strict_schema(strict_schema):
+            self.problems.append(
+                f"{where}: 'strict_schema' must be true, false, or {_STRICT_LOCAL!r}"
+            )
+            return False
+        return strict_schema
 
     def _hooks(self, where: str, raw: Mapping[str, Any], mode: str) -> dict[str, str]:
         """The ``hooks`` of a tab or a target, checked by form; empty when refused.
@@ -891,20 +1231,14 @@ class _Checker:
     def _outside(
         self, where: str, what: str, names: Sequence[str], columns: Sequence[str] | None
     ) -> None:
-        if columns is None:
-            return
-        outside = [c for c in names if c not in columns]
-        if outside:
-            self.problems.append(
-                f"{where}: {what} column(s) {outside} not in 'columns'"
-            )
+        self.problems.extend(_outside_problems(where, what, names, columns))
 
     def _schema(
         self,
         where: str,
         raw: Any,
         columns: Sequence[str] | None,
-        strict_schema: bool = False,
+        strict_schema: bool | str = False,
     ) -> dict[str, ColumnSchema]:
         problems = self.problems
         if not isinstance(raw, dict):
@@ -927,41 +1261,21 @@ class _Checker:
             allowed = spec.get("allowed")
             present = spec.get("present", False)
             strict = spec.get("strict", False)
-            ok = not unknown
-            if type_ not in COLUMN_TYPES:
-                problems.append(
-                    f"{at}: 'type' must be one of {sorted(COLUMN_TYPES)}, not {type_!r}"
-                )
-                ok = False
-            if not isinstance(required, bool):
-                problems.append(f"{at}: 'required' must be true or false")
-                ok = False
-            if allowed is not None and not (
-                isinstance(allowed, list)
-                and allowed
-                and all(_is_scalar(value) for value in allowed)
-            ):
-                problems.append(f"{at}: 'allowed' must be a list of one or more values")
-                ok = False
-            if not isinstance(present, bool):
-                problems.append(f"{at}: 'present' must be true or false")
-                ok = False
-            if not isinstance(strict, bool):
-                problems.append(f"{at}: 'strict' must be true or false")
-                ok = False
-            elif strict and type_ in COLUMN_TYPES and type_ not in STRICT_TYPES:
-                problems.append(
-                    f"{at}: 'strict' is only for a column of "
-                    f"{sorted(STRICT_TYPES)}, not {type_!r}"
-                )
-                ok = False
-            if ok:
+            pattern = spec.get("pattern")
+            description = spec.get("description")
+            found = _column_problems(
+                at, type_, required, allowed, present, strict, pattern, description
+            )
+            problems.extend(found)
+            if not unknown and not found:
                 schema[column] = ColumnSchema(
                     type=str(type_),
                     required=bool(required),
                     allowed=tuple(allowed) if allowed is not None else None,
                     present=bool(present),
                     strict=bool(strict),
+                    pattern=pattern,
+                    description=description,
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)

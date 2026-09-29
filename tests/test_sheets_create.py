@@ -4,6 +4,7 @@ The Drive fake holds the file that is created, and the Sheets fake records
 the one structural request that names its tabs.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,9 +19,24 @@ from helpers import (
 )
 
 from gdrives.sheets import create_spreadsheet, name_tabs, run_create
-from gdrives.sheets.create import check_tabs, spreadsheet_url
+from gdrives.sheets.create import check_source, check_tabs, spreadsheet_url
+from gdrives.upload import UPLOAD_RETRIES, UploadError
 
 DRIVE_SCOPE = ["https://www.googleapis.com/auth/drive"]
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def refusing() -> FakeDriveFiles:
+    """A Drive that stores an upload as it came, refusing the conversion."""
+    drive = FakeDriveFiles([folder()])
+    drive.converts = False
+    return drive
+
+
+def workbook(tmp_path: Path, name: str = "Roster.xlsx") -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"PK workbook bytes")
+    return path
 
 
 def folder(id: str = "D", name: str = "reports") -> dict[str, Any]:
@@ -147,6 +163,95 @@ def test_spreadsheet_url():
     assert spreadsheet_url("S") == "https://docs.google.com/spreadsheets/d/S/edit"
 
 
+class TestCheckSource:
+    @pytest.mark.parametrize(
+        "name, mime",
+        [("a.xlsx", XLSX_MIME), ("a.XLSX", XLSX_MIME), ("b.csv", "text/csv")],
+    )
+    def test_the_extension_decides_the_type(self, tmp_path, name, mime):
+        path = workbook(tmp_path, name)
+        assert check_source(path) == (path, mime)
+
+    @pytest.mark.parametrize("name", ["a.xls", "a.ods", "a", "a.xlsx.bak"])
+    def test_other_extensions_are_refused_naming_those_taken(self, tmp_path, name):
+        with pytest.raises(ValueError, match=r"use \.xlsx, \.csv"):
+            check_source(workbook(tmp_path, name))
+
+    def test_a_missing_file_and_a_folder_are_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="does not exist"):
+            check_source(tmp_path / "gone.xlsx")
+        (tmp_path / "dir.xlsx").mkdir()
+        with pytest.raises(ValueError, match="is not a file"):
+            check_source(tmp_path / "dir.xlsx")
+
+
+class TestCreateFromWorkbook:
+    def test_the_workbook_is_the_media_of_a_spreadsheet_create(self, tmp_path):
+        drive, sheets = FakeDriveFiles([folder()]), fresh()
+        path = workbook(tmp_path)
+
+        spreadsheet_id = create_spreadsheet(
+            drive, sheets, "Roster", folder_id="D", source=path
+        )
+
+        assert spreadsheet_id == "new1"
+        (call,) = drive.named("create")
+        assert call["body"] == {
+            "name": "Roster",
+            "mimeType": SHEET_MIME,
+            "parents": ["D"],
+        }
+        assert call["fields"] == "id, mimeType"
+        assert call["supportsAllDrives"] is True
+        assert call["media_body"].mimetype() == XLSX_MIME
+        assert drive.items["new1"]["content"] == b"PK workbook bytes"
+        # Resumable, in two chunks here, each retried.
+        assert drive.requests[0].retries == [UPLOAD_RETRIES, UPLOAD_RETRIES]
+        assert sheets.calls == []
+
+    def test_a_csv_is_sent_as_text_csv(self, tmp_path):
+        drive = FakeDriveFiles([folder()])
+        path = workbook(tmp_path, "members.CSV")
+        create_spreadsheet(drive, fresh(), "Members", folder_id="D", source=str(path))
+        (call,) = drive.named("create")
+        assert call["media_body"].mimetype() == "text/csv"
+
+    def test_tabs_are_refused_with_a_workbook(self, tmp_path):
+        drive = FakeDriveFiles([folder()])
+        with pytest.raises(ValueError, match="names its own tabs"):
+            create_spreadsheet(
+                drive, fresh(), "Roster", source=workbook(tmp_path), tabs=["A"]
+            )
+        assert drive.calls == []
+
+    def test_a_bad_source_creates_nothing(self, tmp_path):
+        drive = FakeDriveFiles([folder()])
+        with pytest.raises(ValueError, match="use .xlsx"):
+            create_spreadsheet(
+                drive, fresh(), "Roster", source=workbook(tmp_path, "a.xls")
+            )
+        assert drive.calls == []
+
+    def test_a_file_left_unconverted_is_an_error_naming_it(self, tmp_path):
+        drive = refusing()
+        with pytest.raises(UploadError) as exc:
+            create_spreadsheet(
+                drive, fresh(), "Roster", folder_id="D", source=workbook(tmp_path)
+            )
+        assert "'Roster' (new1) was created but not converted" in str(exc.value)
+        assert XLSX_MIME in str(exc.value)
+
+    def test_an_api_error_surfaces(self, tmp_path, monkeypatch):
+        drive = FakeDriveFiles([folder()])
+
+        def refuse(kwargs: dict[str, Any]) -> dict[str, Any]:
+            raise http_error(400, "Bad Request")
+
+        monkeypatch.setattr(drive, "_create", refuse)
+        with pytest.raises(Exception, match="Bad Request"):
+            create_spreadsheet(drive, fresh(), "Roster", source=workbook(tmp_path))
+
+
 def patch_paths(monkeypatch: pytest.MonkeyPatch, paths: dict[str, str]) -> None:
     monkeypatch.setattr(
         "gdrives.resolve.resolve_path", lambda path, service: paths[path]
@@ -261,10 +366,69 @@ class TestRunCreate:
         assert out.out == ""
         assert out.err == "Spreadsheet ID: new1\n"
 
+    def test_from_a_workbook(self, monkeypatch, capsys, tmp_path):
+        drive, sheets = FakeDriveFiles([folder()]), fresh()
+        rec = patch_drive_service(monkeypatch, drive)
+        patch_sheets_service(monkeypatch, sheets)
+        path = workbook(tmp_path)
+
+        run_create(folder_id="D", source=str(path))
+
+        assert rec["scopes"] == DRIVE_SCOPE
+        (call,) = drive.named("create")
+        # The title is the file's stem.
+        assert call["body"]["name"] == "Roster"
+        assert call["media_body"].mimetype() == XLSX_MIME
+        assert sheets.calls == []
+        out = capsys.readouterr()
+        assert out.out == "https://docs.google.com/spreadsheets/d/new1/edit\n"
+        assert out.err == (
+            "Spreadsheet ID: new1\n"
+            f"Done: create spreadsheet 'Roster' in 'reports' (D) "
+            f"from '{path}' (17 bytes)\n"
+        )
+
+    def test_a_title_given_wins_over_the_stem(self, monkeypatch, tmp_path):
+        drive = FakeDriveFiles([folder()])
+        patch_drive_service(monkeypatch, drive)
+        patch_sheets_service(monkeypatch, fresh())
+        run_create("Members", folder_id="D", source=str(workbook(tmp_path)))
+        (call,) = drive.named("create")
+        assert call["body"]["name"] == "Members"
+
+    def test_dry_run_from_a_workbook_uploads_nothing(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        drive = FakeDriveFiles([folder()])
+        rec = patch_drive_service(monkeypatch, drive)
+        path = workbook(tmp_path)
+
+        run_create(folder_id="D", source=str(path), dry_run=True)
+
+        assert rec["scopes"] is None
+        assert drive.named("create") == []
+        assert capsys.readouterr().out == (
+            f"Would create spreadsheet 'Roster' in 'reports' (D) "
+            f"from '{path}' (17 bytes)\n"
+        )
+
+    def test_an_unconverted_file_names_its_id(self, monkeypatch, tmp_path):
+        patch_drive_service(monkeypatch, refusing())
+        patch_sheets_service(monkeypatch, fresh())
+        with pytest.raises(UploadError, match=r"\(new1\) was created but not"):
+            run_create(folder_id="D", source=str(workbook(tmp_path)))
+
     @pytest.mark.parametrize(
         "kwargs, message",
         [
+            ({}, "--title is required unless --from is given"),
             ({"title": " "}, "--title must not be empty"),
+            ({"title": "R", "source": "gone.xlsx"}, "does not exist"),
+            ({"title": "R", "source": "a.xls"}, "use .xlsx, .csv"),
+            (
+                {"title": "R", "source": "a.xlsx", "tabs": ["A"]},
+                "--from names its own tabs",
+            ),
             (
                 {"title": "R", "folder": "My Drive/a", "folder_id": "D"},
                 "at most one of --folder or --folder-id",

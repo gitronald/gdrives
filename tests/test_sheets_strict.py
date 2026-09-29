@@ -244,6 +244,23 @@ class TestStrictForms:
             "'20260927' is not YYYY-MM-DD, and the column is strict"
         ]
 
+    def test_a_pattern_failure_is_held_under_on_invalid_hold(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            schema={"name": {"pattern": "[A-Z][a-z]+"}},
+            on_invalid="hold",
+        )
+        write_local(target, ["a", "Ada", "1"])
+        write_base(target, ["a", "Ada", "1"])
+        grid = FakeSheetGrid({"T": [HEADER, ["a", "ada 2", "1"]]})
+        report = run_sync(grid, target, apply=True)
+        assert report.problems == [] and report.exit_code == 2
+        plan = report.plan
+        assert plan is not None
+        assert [(h.column, h.sheet, h.reason) for h in plan.held] == [
+            ("name", "ada 2", "'ada 2' does not match the pattern '[A-Z][a-z]+'")
+        ]
+
     def test_a_held_cell_under_on_invalid_hold(self, tmp_path):
         target = make_target(
             tmp_path,

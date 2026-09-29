@@ -720,6 +720,7 @@ class _GridTab:
         domain, and gone for anything else.
         """
         self.cells[r][c] = None if value == "" else value
+        self.held(r, c).pop("formula", None)
         if link:
             self.held(r, c).pop("link", None)
             target = _link_target(value)
@@ -843,7 +844,10 @@ class FakeSheetGrid:
       ``userEnteredFormat`` under its ``fields`` mask, for the one range
       asked, and ``effectiveFormat`` for a cell with a value or a format: a
       link underlines its text and shows it in :data:`LINK_BLUE` unless the
-      cell's own format says otherwise. Inserted rows and columns take
+      cell's own format says otherwise. A cell whose format holds a
+      ``formula`` (set by a test, with the label as the cell's value) returns
+      it as ``userEnteredValue.formulaValue`` when the mask names it, and a
+      write of a value drops it. Inserted rows and columns take
       ``bold`` and the number format from the side they inherit from, and
       nothing else.
     - A number format (``userEnteredFormat.numberFormat``) is held as set by
@@ -1158,6 +1162,8 @@ class FakeSheetGrid:
         value = tab.cells[r][c]
         if "effectiveFormat" in fields and (value is not None or held):
             cell["effectiveFormat"] = {"textFormat": _shown(held)}
+        if "formulaValue" in fields and "formula" in held:
+            cell["userEnteredValue"] = {"formulaValue": held["formula"]}
         if "formattedValue" in fields and value is not None:
             cell["formattedValue"] = _displayed(value)
         if "effectiveValue" in fields and value is not None:
@@ -1476,7 +1482,8 @@ class FakeDriveFiles:
     bytes, and each such request is kept in ``requests``, where ``retries``
     holds the ``num_retries`` of each chunk; with ``corrupt`` set, the stored
     content loses its last byte, so a read-back finds a file that is not the
-    one sent. Every call is recorded
+    one sent; with ``converts`` off, a create that names a native type stores
+    the upload as it came instead of converting it. Every call is recorded
     in ``calls``, and a request does nothing until it is executed. ``root``
     is the ID of the file the alias ``root`` names.
     """
@@ -1492,6 +1499,7 @@ class FakeDriveFiles:
         self.root = root
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.corrupt = False
+        self.converts = True
         self.pages = pages
         self.requests: list[_DriveRequest] = []
 
@@ -1559,7 +1567,11 @@ class FakeDriveFiles:
         item["id"] = f"new{len(self.named('create'))}"
         media = kwargs.get("media_body")
         if media is not None:
-            item["mimeType"] = media.mimetype()
+            # A native type in the metadata is a conversion: Drive keeps it,
+            # unless ``converts`` is off, when the upload is stored as it came.
+            if not self.converts:
+                item["mimeType"] = media.mimetype()
+            item.setdefault("mimeType", media.mimetype())
             item["content"] = self._content(media)
         self.items[item["id"]] = item
         return self._shown(item)

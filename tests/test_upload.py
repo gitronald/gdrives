@@ -91,6 +91,14 @@ class TestCheckArguments:
     def test_name_with_dest_id_is_accepted(self):
         upload.check_arguments(None, "D", None, "new.pdf")
 
+    def test_no_replace_does_not_go_with_file_id(self):
+        with pytest.raises(ValueError, match="--no-replace cannot go with --file-id"):
+            upload.check_arguments(None, None, "F", None, False)
+
+    @pytest.mark.parametrize("dest, dest_id", [("My Drive/a", None), (None, "D")])
+    def test_no_replace_with_a_folder_is_accepted(self, dest, dest_id):
+        upload.check_arguments(dest, dest_id, None, None, False)
+
 
 class TestLocal:
     def test_mime_type_is_guessed_from_the_extension(self):
@@ -160,6 +168,45 @@ class TestPlanUpload:
             "  report.pdf  A",
             "  report.pdf  B",
         ]
+
+    def test_no_replace_creates_when_the_name_is_free(self, local):
+        svc = FakeDriveFiles([folder(), held("other.pdf", id="O")])
+        plan = upload.plan_upload(svc, local, folder_id="D", replace=False)
+        assert (plan.operation, plan.file_id) == ("create", None)
+
+    def test_no_replace_refuses_one_file_of_that_name_with_its_id(self, local):
+        svc = FakeDriveFiles([folder(), held("Report.pdf", id="A")])
+        with pytest.raises(ValueError) as exc:
+            upload.plan_upload(svc, local, folder_id="D", replace=False)
+        assert str(exc.value).split("\n") == [
+            "'report.pdf' already exists in 'reports'; --no-replace will not "
+            "replace it. Found:",
+            "  Report.pdf  A",
+        ]
+
+    def test_no_replace_refuses_several_files_with_their_ids(self, local):
+        svc = FakeDriveFiles(
+            [folder(), held("report.pdf", id="B"), held("report.pdf", id="A")]
+        )
+        with pytest.raises(ValueError) as exc:
+            upload.plan_upload(svc, local, folder_id="D", replace=False)
+        assert str(exc.value).split("\n")[1:] == [
+            "  report.pdf  A",
+            "  report.pdf  B",
+        ]
+
+    def test_no_replace_refuses_a_native_file_of_that_name_as_taken(self, local):
+        svc = FakeDriveFiles(
+            [folder(), held("report.pdf", mime=SHEET_MIME, content=None)]
+        )
+        with pytest.raises(ValueError, match="already exists"):
+            upload.plan_upload(svc, local, folder_id="D", replace=False)
+
+    def test_no_replace_is_refused_with_file_id_before_any_request(self, local):
+        svc = FakeDriveFiles([held("report.pdf")])
+        with pytest.raises(ValueError, match="--no-replace cannot go with"):
+            upload.plan_upload(svc, local, file_id="F", replace=False)
+        assert svc.calls == []
 
     def test_a_native_file_of_that_name_is_refused(self, local):
         svc = FakeDriveFiles(
@@ -347,6 +394,19 @@ class TestUploadFile:
         assert svc.calls == []
 
 
+class TestUploadFileNoReplace:
+    def test_refuses_a_taken_name_and_writes_nothing(self, local):
+        svc = FakeDriveFiles([folder(), held("report.pdf")])
+        with pytest.raises(ValueError, match="--no-replace"):
+            upload.upload_file(svc, local, folder_id="D", replace=False)
+        assert svc.named("update") == svc.named("create") == []
+
+    def test_creates_a_free_name(self, local):
+        svc = FakeDriveFiles([folder()])
+        meta = upload.upload_file(svc, local, folder_id="D", replace=False)
+        assert meta["id"] == "new1"
+
+
 class TestRun:
     def test_upload_into_a_folder_path(self, monkeypatch, capsys, local):
         svc = FakeDriveFiles([folder()])
@@ -408,6 +468,48 @@ class TestRun:
 
         assert svc.items["B"]["content"] == local.read_bytes()
         assert svc.items["A"]["content"] == b"old"
+
+    def test_no_replace_writes_nothing_over_an_existing_file(self, monkeypatch, local):
+        svc = FakeDriveFiles([folder(), held("report.pdf")])
+        patch_drive_service(monkeypatch, svc)
+        patch_folders(monkeypatch, {"My Drive/reports": ("D", None)})
+
+        with pytest.raises(ValueError, match="--no-replace will not replace"):
+            upload.run(str(local), "My Drive/reports", replace=False)
+
+        assert svc.named("create") == svc.named("update") == []
+        assert svc.items["F"]["content"] == b"old"
+
+    def test_no_replace_dry_run_reports_the_refusal(self, monkeypatch, capsys, local):
+        svc = FakeDriveFiles([folder(), held("report.pdf")])
+        rec = patch_drive_service(monkeypatch, svc)
+        patch_folders(monkeypatch, {"My Drive/reports": ("D", None)})
+
+        with pytest.raises(ValueError, match="already exists in 'reports'"):
+            upload.run(str(local), "My Drive/reports", dry_run=True, replace=False)
+
+        assert rec["scopes"] is None
+        assert capsys.readouterr().out == ""
+
+    def test_no_replace_with_file_id_is_refused_before_authenticating(
+        self, monkeypatch, local
+    ):
+        def build(scopes=None):
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        with pytest.raises(ValueError, match="--no-replace cannot go with"):
+            upload.run(str(local), file_id="F", replace=False)
+
+    def test_no_replace_creates_a_new_name(self, monkeypatch, local):
+        svc = FakeDriveFiles([folder()])
+        patch_drive_service(monkeypatch, svc)
+        patch_folders(monkeypatch, {"My Drive/reports": ("D", None)})
+
+        upload.run(str(local), "My Drive/reports", replace=False)
+
+        (create,) = svc.named("create")
+        assert create["body"] == {"name": "report.pdf", "parents": ["D"]}
 
     def test_dry_run_writes_nothing_and_stays_read_only(
         self, monkeypatch, capsys, local

@@ -15,6 +15,11 @@ file creates one (``files.create``). Several are refused, each listed with its
 ID, and ``--file-id`` names the one to replace. A Google-native file (a Doc,
 Sheet, or Slides file) is refused: an upload cannot replace its content.
 
+``--no-replace`` turns the replace into a refusal: a file of that name in the
+folder, one or several, is listed with its ID and nothing is written. It is
+one listing just before the write, so it narrows the window in which another
+writer can create the name and does not close it: Drive has no create-if-absent.
+
 After the write the file's metadata is read back, and its size and MD5
 checksum are compared with the local file's.
 
@@ -64,6 +69,11 @@ UPLOAD_CHUNK = 8 * 1024 * 1024
 UPLOAD_RETRIES = 5
 
 
+_NO_REPLACE_WITH_FILE_ID = (
+    "--no-replace cannot go with --file-id, which names the file to replace"
+)
+
+
 class UploadError(Exception):
     """Raised when an uploaded file does not read back as the local file."""
 
@@ -94,13 +104,15 @@ def check_arguments(
     dest_id: str | None,
     file_id: str | None,
     name: str | None,
+    replace: bool = True,
 ) -> None:
     """Validate the destination argument combination.
 
     DEST, ``--dest-id``, and ``--file-id`` each name the target by themselves,
     so exactly one is given. ``--name`` is the name a file takes in the folder
     ``--dest-id`` names: a DEST path carries its own, and a replace by
-    ``--file-id`` never renames.
+    ``--file-id`` never renames. ``--no-replace`` refuses a file to replace, so
+    it does not go with ``--file-id``, which names one.
     """
     for label, value in (
         ("DEST", dest),
@@ -115,6 +127,8 @@ def check_arguments(
         raise ValueError("pass exactly one of DEST, --dest-id, or --file-id")
     if name is not None and dest_id is None:
         raise ValueError("--name goes with --dest-id")
+    if not replace and file_id is not None:
+        raise ValueError(_NO_REPLACE_WITH_FILE_ID)
 
 
 def guess_mime_type(path: Path) -> str:
@@ -172,6 +186,16 @@ def _several(name: str, folder: DriveFile, matches: list[DriveFile]) -> ValueErr
     return ValueError("\n".join(lines))
 
 
+def _exists(name: str, folder: DriveFile, matches: list[DriveFile]) -> ValueError:
+    """The refusal of ``--no-replace`` for a name the folder already holds."""
+    lines = [
+        f"'{name}' already exists in '{folder['name']}'; --no-replace will not "
+        "replace it. Found:"
+    ]
+    lines.extend(f"  {m['name']}  {m['id']}" for m in matches)
+    return ValueError("\n".join(lines))
+
+
 def plan_upload(
     service: Service,
     path: Path,
@@ -180,16 +204,22 @@ def plan_upload(
     name: str | None = None,
     file_id: str | None = None,
     mime_type: str | None = None,
+    replace: bool = True,
 ) -> UploadPlan:
     """Decide what uploading ``path`` does, reading Drive and writing nothing.
 
     ``file_id`` names the file to replace. Otherwise ``folder_id`` is the
     folder and ``name`` the file's name in it (the local file's by default),
     and what the folder holds under that name decides: one file is replaced,
-    none is created, and several raise ValueError listing each.
+    none is created, and several raise ValueError listing each. With
+    ``replace=False`` a file of that name, one or several, raises ValueError
+    listing each instead; that is refused with ``file_id``, which names the
+    file to replace.
     """
     if (folder_id is None) == (file_id is None):
         raise ValueError("pass exactly one of folder_id or file_id")
+    if not replace and file_id is not None:
+        raise ValueError(_NO_REPLACE_WITH_FILE_ID)
     size, md5 = local_digest(path)
     mime = mime_type or guess_mime_type(path)
 
@@ -201,6 +231,8 @@ def plan_upload(
     folder = get_folder(service, str(folder_id))
     name = name or path.name
     matches = find_named(service, folder["id"], name, fields=UPLOAD_FIELDS)
+    if matches and not replace:
+        raise _exists(name, folder, matches)
     if len(matches) > 1:
         raise _several(name, folder, matches)
     if matches:
@@ -228,7 +260,16 @@ def describe(plan: UploadPlan) -> str:
     return f"create '{name}'{where}: {size}"
 
 
-def _send(request: Any) -> DriveFile:
+def resumable_media(path: Path, mime_type: str) -> Any:
+    """The media body of a resumable upload of ``path``, in ``UPLOAD_CHUNK`` chunks."""
+    from googleapiclient.http import MediaFileUpload
+
+    return MediaFileUpload(
+        str(path), mimetype=mime_type, chunksize=UPLOAD_CHUNK, resumable=True
+    )
+
+
+def send_upload(request: Any) -> DriveFile:
     """Run a resumable upload request to its end, chunk by chunk.
 
     Each chunk is retried, which is what lets an upload outlive a dropped
@@ -244,15 +285,11 @@ def _send(request: Any) -> DriveFile:
 def apply_upload(service: Service, path: Path, plan: UploadPlan) -> DriveFile:
     """Send the upload ``plan`` describes and return the file's metadata.
 
-    The upload is resumable and each chunk is retried (:func:`_send`), so a
+    The upload is resumable and each chunk is retried (:func:`send_upload`), so a
     large file survives a dropped connection. A replace sends no metadata: the
     file keeps its name and its parents.
     """
-    from googleapiclient.http import MediaFileUpload
-
-    media = MediaFileUpload(
-        str(path), mimetype=plan.mime_type, chunksize=UPLOAD_CHUNK, resumable=True
-    )
+    media = resumable_media(path, plan.mime_type)
     kwargs: dict[str, Any] = {
         "media_body": media,
         "fields": UPLOAD_FIELDS,
@@ -265,7 +302,7 @@ def apply_upload(service: Service, path: Path, plan: UploadPlan) -> DriveFile:
         if plan.folder is not None:
             body["parents"] = [plan.folder["id"]]
         request = service.files().create(body=body, **kwargs)
-    return _send(request)
+    return send_upload(request)
 
 
 def verify(service: Service, file_id: str, plan: UploadPlan) -> DriveFile:
@@ -297,12 +334,14 @@ def upload_file(
     name: str | None = None,
     file_id: str | None = None,
     mime_type: str | None = None,
+    replace: bool = True,
 ) -> DriveFile:
     """Upload ``local``, replacing the file of its name in place or creating it.
 
     The library's one call: plan, write, and read back. Returns the file's
     metadata (:data:`UPLOAD_FIELDS`). See :func:`plan_upload` for what decides
-    the operation, and :func:`verify` for the read-back.
+    the operation (``replace=False`` refuses a name the folder holds), and
+    :func:`verify` for the read-back.
     """
     path = check_local(str(local))
     plan = plan_upload(
@@ -312,6 +351,7 @@ def upload_file(
         name=name,
         file_id=file_id,
         mime_type=mime_type,
+        replace=replace,
     )
     written = apply_upload(service, path, plan)
     return verify(service, written["id"], plan)
@@ -326,12 +366,13 @@ def run(
     name: str | None = None,
     mime_type: str | None = None,
     dry_run: bool = False,
+    replace: bool = True,
 ) -> None:
     """Upload one local file to Drive, printing its URL."""
     from gdrives.auth import DRIVE_WRITE_SCOPES, build_drive_service
     from gdrives.mv import resolve_folder
 
-    check_arguments(dest, dest_id, file_id, name)
+    check_arguments(dest, dest_id, file_id, name, replace)
     if mime_type is not None and not mime_type.strip():
         raise ValueError("--mime-type must not be empty")
     path = check_local(local)
@@ -349,6 +390,7 @@ def run(
         name=name,
         file_id=file_id,
         mime_type=mime_type,
+        replace=replace,
     )
 
     action = describe(plan)

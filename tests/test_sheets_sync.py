@@ -1933,6 +1933,33 @@ class TestStrictSchema:
         ]
         assert writes(grid) == []
 
+    def test_local_checks_the_local_side_only(self, tmp_path):
+        target = make_target(
+            tmp_path,
+            columns=["id", "name", "amt"],
+            schema={"id": {}, "name": {}, "amt": {}},
+            strict_schema="local",
+        )
+        write_local(target, *ROWS)
+        write_base(target, *ROWS)
+        grid = FakeSheetGrid(
+            {"T": [[*HEADER, "region"], [*ROWS[0], "east"], [*ROWS[1], "west"]]}
+        )
+        report = run(grid, target, apply=True)
+        assert report.problems == [] and report.exit_code == 0
+
+    def test_local_still_refuses_an_undeclared_local_column(self, tmp_path):
+        target = make_target(
+            tmp_path, schema={"id": {}, "name": {}}, strict_schema="local"
+        )
+        write_local(target, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = run(grid, target, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
     def test_a_column_dropped_with_drop_extra_is_not_reported(self, tmp_path):
         target = make_target(
             tmp_path,

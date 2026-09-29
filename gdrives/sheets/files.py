@@ -22,24 +22,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from gdrives.local import write_text
+from gdrives.local import escape_formula, line_ending, write_text
 from gdrives.sheets.cells import ColumnType, decode_rows, encode_rows
 
 # The record file formats, by lower-cased extension; the value is the delimiter
 # for a delimited format, None for JSON.
 _FORMATS: dict[str, str | None] = {".csv": ",", ".tsv": "\t", ".json": None}
-
-#: The names of the line endings a delimited file can be written with.
-NEWLINES = frozenset({"lf", "crlf"})
-
-_TERMINATORS = {"lf": "\n", "crlf": "\r\n"}
-
-
-def _terminator(newline: str) -> str:
-    """The line ending called ``newline``, refusing a name that is not one."""
-    if newline not in NEWLINES:
-        raise ValueError(f"newline must be one of {sorted(NEWLINES)}, not {newline!r}")
-    return _TERMINATORS[newline]
 
 
 def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:
@@ -74,7 +62,7 @@ def write_values_csv(
     ``"crlf"`` (the default, and the ``csv`` module's) or ``"lf"``; a line
     break inside a cell is written as the cell holds it.
     """
-    terminator = _terminator(newline)
+    terminator = line_ending(newline)
     buf = io.StringIO()
     if bom:
         buf.write("\ufeff")
@@ -214,6 +202,7 @@ def write_records(
     types: Mapping[str, ColumnType] | None = None,
     bom: bool = False,
     newline: str = "lf",
+    escape_formulas: bool = False,
 ) -> None:
     """Atomically write records to a ``.csv``, ``.tsv``, or ``.json`` file.
 
@@ -228,16 +217,24 @@ def write_records(
     has no date type. Every cell that does not parse as its type is listed in
     one ValueError, by row position and column. A JSON array
     has no header, so a JSON file with no rows does not record its columns. It
-    is written with LF, and refuses ``bom`` and any other ``newline``.
+    is written with LF, and refuses ``bom``, any other ``newline``, and
+    ``escape_formulas``. With ``escape_formulas`` every cell of a delimited
+    file, the header's too, goes through
+    :func:`~gdrives.local.escape_formula`, for a file a spreadsheet
+    application will open; it is off by default because it changes values
+    such as ``-5``.
     """
     delimiter = _format(path)
-    _terminator(newline)
+    line_ending(newline)
     _check_columns(path, columns)
     grid = _row_cells(path, columns, rows)
     if delimiter is not None:
+        table = [list(columns), *grid]
+        if escape_formulas:
+            table = [[escape_formula(cell) for cell in row] for row in table]
         write_values_csv(
             str(path),
-            [list(columns), *grid],
+            table,
             delimiter=delimiter,
             bom=bom,
             newline=newline,
@@ -247,6 +244,8 @@ def write_records(
         raise ValueError(f"{path}: a byte-order mark applies only to .csv and .tsv")
     if newline != "lf":
         raise ValueError(f"{path}: newline applies only to .csv and .tsv")
+    if escape_formulas:
+        raise ValueError(f"{path}: escaping formulas applies only to .csv and .tsv")
     write_text(Path(path), _json_text(path, _json_objects(path, columns, grid, types)))
 
 

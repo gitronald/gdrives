@@ -21,6 +21,7 @@ would change, and writes nothing. Add `--apply` to write.
 - [Pull and push](#pull-and-push)
 - [Links](#links)
 - [Keeping a tab in order](#keeping-a-tab-in-order)
+- [Look before tidying a shared sheet](#look-before-tidying-a-shared-sheet)
 - [How cells are read and written](#how-cells-are-read-and-written)
 - [What is never done](#what-is-never-done)
 - [A usage rule: no defaults in sheet-owned columns](#a-usage-rule-no-defaults-in-sheet-owned-columns)
@@ -105,12 +106,13 @@ to keep in step with local files:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs |
+| `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs; a path must name a native spreadsheet, and a workbook uploaded as-is is refused |
 | `tabs` | yes | An object of one or more tabs, by tab title |
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
 | `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab, or a tab that sets `typed_writes`, must use `RAW` |
 | `hooks` | no | The default `hooks` of the target's tabs, hook by hook: a tab's own name for a hook wins. A push tab is not given the target's `transform`. See [hooks in the config](#hooks-in-the-config) |
+| `defaults` | no | An object giving `link_urls`, `strict_schema`, `newline`, `render`, and `blank_keys` to every tab that does not set its own. See [defaults for every tab](#defaults-for-every-tab) |
 
 ### Tab fields
 
@@ -123,7 +125,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), `pattern` (a regular expression, `str` only), and `description` (text for a person, read by no check). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column), and [describing the columns](#describing-the-columns) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -138,7 +140,7 @@ to keep in step with local files:
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
-| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
+| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry, and `"local"` does so for the local side only. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
 | `hooks` | all | Functions that run as the tab's `validate`, `check`, `warn`, and `transform`, each named as `"module:function"`. **Naming a function runs it**: see [hooks in the config](#hooks-in-the-config). No `transform` on a `push` tab |
 
 The loader checks the whole file before any request is made and reports every
@@ -149,12 +151,57 @@ owned columns outside `columns`, a column both `local_owned` and
 `USER_ENTERED` on a target with a `sync` tab, and two tabs that would write the
 same file (a local file or a base file, compared case-insensitively, across
 the whole config), the same entry of a file, or a whole file and an entry of
-it.
+it. A `schema` named as `module:attribute` is checked by its form alone when
+the file is read; the checks that need its columns run when a command
+resolves it, before its first request (see [a schema in code](#a-schema-in-code)).
 
 Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
 columns outside `columns` are never read or written, unless `--drop-extra`
 deletes them.
+
+### Defaults for every tab
+
+A target's `defaults` object gives five tab fields to every tab of the target
+that does not set its own: `link_urls`, `strict_schema`, `newline`, `render`,
+and `blank_keys`, as a target's `hooks` gives hooks. It is for a target whose
+tabs share a rule, so the rule is written once.
+
+```json
+{
+  "roster": {
+    "spreadsheet": "My Drive/clubs/Roster",
+    "defaults": {
+      "strict_schema": "local",
+      "link_urls": {"color": "#1155cc"},
+      "newline": "crlf"
+    },
+    "tabs": {
+      "Members": {"local": "data/members.csv", "key": ["member_id"]},
+      "Dues": {"local": "data/dues.csv", "key": ["member_id", "year"], "newline": "lf"},
+      "Summary": {"mode": "pull", "local": "data/summary.csv"}
+    }
+  }
+}
+```
+
+- A tab that names a field has set its own, whatever the value: `"newline":
+  "lf"` on `Dues` above keeps LF, though `lf` is also the built-in value.
+- Each default is checked as the tab field is, in the same words, and a
+  problem names the target's `defaults`: `target 'roster', 'defaults':
+  'newline' must be one of ['crlf', 'lf'], not 'cr'`. Any other name is a
+  problem.
+- A default is given only to a tab it applies to, and skipped, without a note,
+  for a tab it would contradict, so a default never makes a tab invalid that
+  was valid without it. `link_urls` is not given to a `pull` tab or to a tab
+  that sets `clear_links`, `newline` is not given to a tab whose `local` is a
+  `.json` file, and `render` `formatted` is not given to a tab that sets
+  `typed_writes`. Above, `Summary` reads with `newline` `crlf` and no
+  `link_urls`, since a pull writes no links. A target's `hooks` follow the
+  same rule: a push tab is not given the `transform`.
+- Nothing else changes: a config with no `defaults` loads as it did.
+- A `Target` built in code has no `defaults`. Its `TabConfig`s carry their own
+  values, and the loader is the only place the defaults are applied.
 
 ### A tab named by its sheetId
 
@@ -310,7 +357,39 @@ one a run is dropping, to have no `schema` entry:
 
 With `strict_schema`, `schema` may also name a column outside `columns`,
 which is refused otherwise: a carried or excluded column has to be declared
-somewhere.
+somewhere. `"local"` gets the same allowance, since a carried local column is
+one it checks.
+
+#### Only the local side
+
+On a shared sheet, collaborators may keep columns of their own outside the
+projection, and `strict_schema: true` refuses every run because of them.
+`strict_schema: "local"` checks the local side only: every local column must be
+declared, and a sheet column outside the projection is left alone.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "columns": ["member_id", "name", "paid"],
+  "schema": {"member_id": {}, "name": {}, "paid": {"type": "bool"}},
+  "strict_schema": "local"
+}
+```
+
+What it checks depends on the mode:
+
+- A `sync` runs the `local` stage as `true` does, and skips the `sheet` stage.
+- A `pull` has no local file to check before the read. Under `true` it checks
+  every named header column, read or not; under `"local"` it checks the
+  columns it reads, which become the local file's columns, and leaves the other
+  header columns alone. With no `columns`, that is every named header column
+  less `exclude`, so the two agree.
+- A `push` replaces the whole tab and has only a local side, so `"local"` and
+  `true` check the same columns. It is accepted there, not refused, as a
+  `blank_keys` is accepted in every mode.
+
+Any other value is a config problem. `true` and `false` read and report as
+before.
 
 ### Column presence and strict forms
 
@@ -365,6 +444,92 @@ folded, never sees such a respelling; it is still reported, since nothing
 would be written for it either way, and it always refuses the tab under
 either `on_invalid` setting (there is nothing for `hold` to hold back).
 
+### A pattern for a column
+
+`pattern` is a regular expression that a `str` column's cells must match in
+full, as `re.fullmatch` does: a cell that only contains a match fails, so
+anchors are not needed. It is refused on any other type, and a string that is
+not a regular expression is a config problem naming the column and giving the
+compile error.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {
+    "member_id": {},
+    "profile": {"type": "str", "pattern": "https://example\\.com/members/[0-9]+"}
+  }
+}
+```
+
+```
+Members (local): key ('m1',), column 'profile': 'example.com/members/1' does not match the pattern 'https://example\\.com/members/[0-9]+'
+```
+
+A blank cell is never checked against the pattern: `required` is the rule for
+blanks. The check is part of `cell_problem`, run after `required`, the type,
+`strict`, and `allowed`, so a value that fails it is a schema problem like any
+other: it blocks the write, and `on_invalid: "hold"` holds a sheet value that
+fails it. In JSON the backslash is written twice, as above. The expression is
+compiled once per distinct string, not once per cell.
+
+### Describing the columns
+
+A schema column takes a `description`, a string that says what the column
+holds. No check of a cell reads it, and a config written without one loads as
+before; it is documentation kept beside the rules it describes.
+`gdrives sheets-schema` lists the columns a target's tabs declare, one row
+each, with the type, the rules, and the description:
+
+```bash
+gdrives sheets-schema roster                      # CSV to stdout
+gdrives sheets-schema roster --tab Members -o schema.csv
+gdrives sheets-schema roster -o schema.json       # .csv, .tsv, or .json by the extension
+```
+
+```json
+"Members": {
+  "local": "data/members.csv", "key": ["member_id"],
+  "schema": {
+    "member_id": {"required": true, "description": "The member's number, kept for life."},
+    "status": {"allowed": ["active", "closed"], "description": "Whether dues are being collected."}
+  }
+}
+```
+
+The columns are `tab`, `column`, `key` (`TRUE` for a column in the tab's
+`key`), `type`, `required`, `present`, `strict`, `allowed`, `pattern`, and
+`description`. A flag is `TRUE` or `FALSE`, as cells are written. `allowed` is
+the permitted values as canonical cell strings in a JSON array, such as
+`["active", "closed"]`, which reads back whatever a value holds, and is blank
+when the column has no list. `pattern` and `description` are blank when unset.
+The rows follow the config's order of tabs, and each tab's order of columns.
+
+- Only the columns a tab's `schema` declares are listed. A column of `key` or
+  `columns` that the `schema` leaves out is not, since a config does not know
+  the columns of a tab that has no projection, and half a list would mislead.
+  `strict_schema` is the way to require that every column is declared.
+- The command reads the config alone: no request to Google, and no
+  credential. **A `schema` given as `"module:attribute"` runs that module**,
+  as a sync does (see [a schema in code](#a-schema-in-code)), so read a
+  config from somewhere else before you run it. Hooks are not imported.
+- With `-o` the file is written atomically, with LF line endings; without it
+  the CSV goes to stdout. Values are exact. A `pattern` or a `description`
+  may start with `=`, `+`, `-`, or `@`, so `--escape-formulas`, as
+  `sheets-get` has it, prefixes a `'` to every cell of the CSV on stdout or of
+  a `.csv` or `.tsv` file that starts with one of those, a tab, or a carriage
+  return. A `.json` file refuses it, as it refuses a byte-order mark: JSON is
+  not opened as a spreadsheet, and a prefix would change its values. `--tab` limits the tabs, and `--config` names the
+  config file. It exits 0, or 1 on a problem with the config, a tab, a
+  schema, or the output path.
+- In code, `schema_rows(target, tabs=None)` returns the rows as dicts, in the
+  order of `gdrives.sheets.SCHEMA_COLUMNS`, for a caller's own docs:
+  give `write_records` the columns and the rows to write a file, or
+  `format_schema(rows)` for the CSV text. Both take `escape_formulas=True` for
+  text a spreadsheet app will open; `schema_rows` itself stays exact. A tab whose `schema` is a reference
+  must be resolved first, and `resolve_schemas(target)` does that without
+  the hooks that `resolve_target` also finds.
+
 ### Ownership
 
 Ownership overrides the cell rule for whole columns:
@@ -391,6 +556,24 @@ sheet values and rows held, and the row flags, each cell with its before and
 after values. A tab is reported `in sync` only when nothing is written and
 nothing is left for a person. A value that came from the sheet or a file is
 shown with control characters escaped, so it cannot drive the terminal.
+
+A preview that `--apply` would change ends, on stderr, with `Preview only;
+rerun with --apply to write.` Stdout stays the report. When the base is all
+an apply would write (a first sync in step, or both sides made the same edit
+since the base), the hint reads `Preview only; rerun with --apply to save the
+base.`, although the report says `in sync: nothing to write`. The hint is left
+out after an apply, after a preview with nothing to write, and after a preview
+whose tabs are all left to a person or refused, since applying those writes
+nothing. `TabReport.pending` and `SyncReport.pending` give the same answer to
+a caller: True exactly when an apply of the same run would write the sheet,
+the local file, or the base, create a tab, or add or delete a column. That is
+a cell to write, a tab to create or give a header, a column to add or delete,
+a base to save (a first sync always has one), or a pull or push whose target
+differs. A preview whose only change is a column is pending. A tab that
+stopped on an error or found problems is not, and neither is the report of a
+run that applied. `TabReport.base_only` (and `SyncReport.base_only`, for the
+pending tabs of a run) is True when the base is all that is pending; it is
+what picks the wording of the hint.
 
 ### Where new rows go
 
@@ -631,16 +814,59 @@ rows, and nothing is written:
 Rewrite the column in the file before declaring it. A column left undeclared
 reads as the text the sheet displays, as it did before, and changes nothing.
 
-**Blank keys.** A blank key cell is refused on every side, the base included
-(`base: blank key ['member_id'] in rows [2]`), where code that refused only
-repeated keys let such rows through. For a one-column key the refusal is
-right, and the rows have to be fixed or removed, in the base too. For a
-composite key of which a component can be absent, set
-[`blank_keys: "partial"`](#keys-with-a-blank-component).
+**Blank keys.** The default is `blank_keys: "refuse"`: a row with data and a
+blank key cell is refused on every side, the base included
+(`base: blank key ['member_id'] in rows [2]`), where code that folded such a
+row in, or let it through because it checked only repeated keys, gets a
+refusal here. For a one-column key the refusal is right, and the rows have to
+be fixed or removed, in the base too. For a composite key of which a component
+can be absent, set [`blank_keys: "partial"`](#keys-with-a-blank-component).
+Then a row is refused only when every key cell is blank, and a row that
+leaves one component blank is matched by the components it has. A row whose
+cells are all blank, key included, is skipped on either setting, as on a tab.
+Whitespace alone counts as blank.
 
 **Line endings.** A `.csv` or `.tsv` file is written with LF unless the tab
 sets `newline: "crlf"`. A file is rewritten only when its records change, so
 one with CRLF keeps it until a run changes the file, and changes once then.
+
+**A header's surrounding whitespace.** A header cell is stripped on read,
+leading and trailing whitespace only, on the sheet and in the local file
+alike (and in a base, which is read as a local file is). Whitespace inside a
+name stays: `First name` and `First  name` are two columns. So a sheet header
+typed as `name ` matches a file column `name`, and no cell is reported for it.
+What shows instead:
+
+- A config that names the padded spelling (`"columns": ["name "]`) finds no
+  such column, and the run stops with `has no column(s) ['name ']` and the
+  header as read. Name the column without the padding.
+- Two headers that differ only in padding read as one name, and the tab is
+  refused with `header repeats ['name']`. Rename one on the sheet.
+- A file whose header is padded is rewritten with a stripped header, the next
+  time a run writes it (see the next cause for when that is).
+
+**Quoting.** A file is written by the `csv` module's default rules: a field
+is quoted only when it holds the delimiter, a quote, or a line break, and an
+empty cell is written bare. A file from a writer that quotes every field, or
+quotes the empty ones (`m2,""`), holds the same cells and different bytes.
+Reading gives the same records, so a preview compares the cells and reports
+nothing for it. The bytes change when a run writes the file: a
+`sheets-sync --apply` that folds something into it, or a `sheets-pull --apply`
+that finds the records changed (a pull leaves an unchanged file alone). It
+then loses every quote it did not need, all at once, and a diff of the commit
+shows every line changed. Rewrite the files once in a commit of their own,
+before the first applied run, so that later diffs show only real edits. The
+[steps below](#a-way-to-move-over) read each file through its store and write
+it back, to show which files change.
+
+**Typed columns.** A column with a declared type in the `schema` is
+[compared by value](#typed-columns-compare-by-value): `3.0` and `3` in a
+`float` column, `true` and `TRUE` in a `bool` column, are one cell. Code that
+compared the text reports those cells as edits and folds or pushes them; this
+one reports nothing, and rewrites neither side. The reverse holds for a column
+the `schema` leaves undeclared: it is compared as text, so `3.0` against `3`
+is an edit here, and code that compared numbers by value did not report it. If
+a preview lists such cells, declare the column's type in the `schema`.
 
 **Cleaning done in code.** Code that cleaned the cells it read (collapsing
 spaces, rewriting links to one form) and kept the cleaned text in its files
@@ -653,6 +879,129 @@ text, and a pull writes the cleaned text.
 target's `base` field names the directory of its base snapshots. A base is one
 CSV per tab, `<base>/<tab title>.csv`, holding the projection columns, so a
 base kept in another shape is converted to that, or deleted for a first sync.
+
+### A way to move over
+
+Four steps, each of which can be run before anything of the old code is
+removed and before anything is written to the sheet.
+
+**1. Run the old merge's test cases against `merge`.** The three-way merge is
+a pure function: `merge(base, local, sheet, key, columns)` takes three lists of
+records (dicts of cell strings) and returns a `MergePlan`, with no request
+made and no file touched. A test table of the old code, with a base, a local
+side, a sheet, and the expected result in each row, ports to calls of it:
+
+```python
+from gdrives.sheets import merge
+
+case_key = ["id"]
+case_columns = ["id", "name", "dues"]
+case_base = [
+    {"id": "m1", "name": "Ada", "dues": "10"},
+    {"id": "m2", "name": "Bea", "dues": "10"},
+    {"id": "m4", "name": "Dee", "dues": "10"},
+]
+case_local = [
+    {"id": "m1", "name": "Ada", "dues": "15"},
+    {"id": "m2", "name": "Bea", "dues": "12"},
+    {"id": "m5", "name": "Eve", "dues": "10"},
+]
+case_sheet = [
+    {"id": "m1", "name": "Ada L.", "dues": "10"},
+    {"id": "m2", "name": "Bea", "dues": "20"},
+    {"id": "m3", "name": "Cy", "dues": "10"},
+    {"id": "m4", "name": "Dee", "dues": "10"},
+]
+case_plan = merge(case_base, case_local, case_sheet, case_key, case_columns)
+print("push to the sheet:", [(c.key, c.column, c.local) for c in case_plan.pushes])
+print("append to the sheet:", [row.key for row in case_plan.appends])
+print("fold into the local side:", [(c.key, c.column) for c in case_plan.fold_cells])
+print("new rows for the local side:", [row.key for row in case_plan.fold_rows])
+print("conflicts:", [(c.key, c.column) for c in case_plan.conflicts])
+print("row flags:", [(flag.key, flag.flag) for flag in case_plan.row_flags])
+```
+
+Read the plan as the [merge tables](#how-a-sync-merges) do. Here `m1` has a
+local edit of `dues` (a push) and a sheet edit of `name` (a fold), `m2` has
+both sides changing `dues` (a conflict, which neither side takes), `m5` is new
+locally (an append), `m3` is new on the sheet (a new local row), and `m4` is
+gone locally while the base has it (the flag `local_deleted`).
+`case_plan.new_local` and `case_plan.new_base` are the two sides after the merge. The keyword arguments
+are the tab's settings: `local_owned`, `sheet_owned`, `owns_rows`, `prefer`,
+`blank_keys`, `types`, `schema`, and `carry`. A case that the old code merged
+differently is a difference to look at before any file is touched.
+
+**2. Read each committed file through its store, and write it back.** The
+bytes should not change. A file that does changes when a run first writes it,
+and it is better to see that now:
+
+```python
+from pathlib import Path
+
+from gdrives.sheets import FileStore
+
+scratch = Path("data/dues-check")
+scratch.mkdir(parents=True, exist_ok=True)
+
+
+def rewritten(store):
+    """Whether reading a file through `store` and writing it back changes its bytes."""
+    before = store.path.read_bytes()
+    store.write(*store.read())
+    changed = store.path.read_bytes() != before
+    store.path.write_bytes(before)
+    return changed
+
+
+ours = FileStore(scratch / "ours.csv")
+ours.write(["id", "name"], [{"id": "m1", "name": "Ada"}, {"id": "m2", "name": ""}])
+other = FileStore(scratch / "other.csv")
+other.path.write_bytes(b'"id","name"\r\n"m1","Ada"\r\n"m2",""\r\n')
+rewrites = [
+    rewritten(ours),
+    rewritten(other),
+    rewritten(FileStore(other.path, newline="crlf")),
+]
+print(rewrites)  # [False, True, True]
+```
+
+The first is `False`: a file the library wrote is stable. The second and third
+are `True`: the other file is quoted throughout, and setting `newline="crlf"`
+(the tab's `newline`) does not make the quotes unnecessary. What a difference
+means:
+
+- **Quotes** the writer did not need, or a bare empty cell where the file had
+  `""`: see the quoting cause above. Rewrite the files in a commit of their own.
+- **Line endings**: the file is CRLF and the store writes LF. Set the tab's
+  `newline: "crlf"` (`FileStore(path, newline="crlf")` in code), or accept
+  one rewrite.
+- **A byte-order mark**: reading drops it, and the store writes one only with
+  `bom=True` on the tab (`FileStore(path, bom=True)`). A file that starts with
+  one and is written without it changes on its first write.
+- **A padded header** is written stripped.
+
+A `.json` file is rewritten in the library's own format, two-space indent and a
+final newline, so a file formatted another way shows a difference there too,
+with every value kept.
+
+**3. Preview every target with both engines, and compare.** Run the old code
+in the way it previews, and `gdrives sheets-sync TARGET` (no `--apply`) for
+each target, against the same sheet and the same committed files. Every
+difference between the two should have one of the causes above. The preview
+writes nothing, to the sheet, the files, or the base.
+
+```bash
+gdrives sheets-sync roster              # every sync tab of the target, preview only
+gdrives sheets-sync roster --tab Dues   # one tab
+```
+
+**4. Apply one small edit, and revert it.** Change one cell of one row on the
+sheet, run `gdrives sheets-sync roster --tab Dues --apply`, and see it land
+in the local file and the base and nowhere else. Then change the cell back on
+the sheet and apply again: the file and the base return to what was committed
+(`git diff` shows nothing). Do the same for a cell edited in the local file,
+which pushes. A tab that survives both moves as the old code did is ready to
+move over.
 
 ## Pull and push
 
@@ -843,6 +1192,37 @@ API cannot take a link out of a run without rewriting the run, so
 hold no link keeps them. `runs=False` leaves runs alone and saves the read
 that finds them.
 
+`clear_link_format` clears the link and nothing of the look. The API shows a
+link in blue and underlined, and shows a cell that lost its link as plain text
+again, but a cell whose colour and underline were written (as `set_url_links`
+does, or a person did) keeps them: the text stays blue, or underlined, with no
+link. `style=True` clears the underline and the text colour too, in the same
+request, and leaves the bold and the rest of the format. It resets every cell
+of the columns and rows it is given, linked or not, so pass the `rows` of the
+cells you mean. It cannot change a look that comes from conditional
+formatting or the theme, and it does not touch text format runs, which `runs`
+clears.
+
+A link that comes from a `HYPERLINK` formula is the cell's link like any
+other, and `clear_link_format` removes it: the formula stays in the cell and
+shows its label as plain text. To find such cells first, read with
+`linked_cells(..., detail=True)`, whose `formula` is True for them (see
+[auditing links](#auditing-the-links-of-a-tab)). `formulas=False` leaves them
+as they are instead: their link, their underline, and their colour, and their
+text format runs if a cell had both. It finds them by the read that finds the
+runs (`detail=True`, so one read serves both, and `runs=False` does not save
+it), and clears every other wanted cell, splitting a block around each cell it
+leaves. A column with no such cell is cleared by the same single block as
+before; with no `rows`, the block above and below a cell left is bounded by it
+and open at the end, which costs a read of the tab's size, so that no range
+starts past its last row. It combines with `style=True`, whose reset skips the cells
+left too. The default, `formulas=True`, sends what it always did.
+
+`formulas` belongs to the call. The tab field `clear_links` does not skip
+formula cells, and neither does `strip_links`. A run writes literal strings
+(`RAW`), so the cells it writes and clears hold no formula unless the target's
+`input_option` is `USER_ENTERED`.
+
 A link set as the cell's own format (`userEnteredFormat.textFormat.link`,
 sent with `repeatCell`) takes, on plain text and on a cell whose link points
 elsewhere. A link sent as a text format run over the whole text takes too,
@@ -907,6 +1287,121 @@ set_url_links(service, "<spreadsheet-id>", "Members", color="#1155cc")
 
 The colour is compared with the one the API returns, a fraction per channel,
 to the nearest of 255 steps. A tab with no problem gets no write.
+
+### Checking a whole spreadsheet
+
+`link_urls` formats the cells a run wrote. The cells a person typed or pasted
+are never touched by it, and a sheet that people edit collects URL cells with
+the API's blue and underline, or a link to somewhere else. `sheets-links`
+sweeps them: it applies the rule above to every tab of a spreadsheet, or to
+the tabs of a config target, and touches no other cell.
+
+```bash
+gdrives sheets-links <spreadsheet-id> --color "#1155cc"           # Check every tab
+gdrives sheets-links roster                                        # A target's tabs, in their link_urls colour
+gdrives sheets-links roster --tab Members --color "#1155cc" --apply  # Fix one tab
+```
+
+- **The source** is a spreadsheet (a URL, a file ID, or a Drive path) or a
+  target name. With `--config`, it is a target. Without it, a URL or a path
+  is a spreadsheet, and a bare word is a target when the config found from the
+  working directory upward has a target of that name, and otherwise a
+  spreadsheet ID. A directory with no config has only spreadsheets, and a
+  config file that cannot be read is an error. The config's hooks and schemas
+  are not imported.
+- **The tabs** are every tab of a spreadsheet, or the `--tab`s. For a target
+  they default to the tabs that set `link_urls`, or every tab of the target
+  when `--color` is given. A tab without `link_urls` is left out with a note
+  on stderr, and one named with `--tab` is refused unless `--color` is given.
+  A pull tab has no `link_urls`, so it is swept when it is named or when
+  `--color` is given. A target's tab with a `sheet_id` is found by it, under
+  whatever title it has now, as a sync finds it: the rename is noted on
+  stderr, and a `sheet_id` the spreadsheet lacks is refused before any tab is
+  swept.
+- **The colour** is `--color` (`#rrggbb`), which a spreadsheet needs and which
+  overrides a target's `link_urls` for every tab swept.
+- **A preview** reads with the read-only scope, lists each URL cell that
+  breaks the rule with its reasons, and exits 2 when it found any, with the
+  usual hint on stderr. `--apply` prints the credential line, requests the
+  `spreadsheets` scope, fixes each tab in one request and reads it back, and
+  exits 0.
+- **A tab that cannot hold a URL cell in a named column**, one with no header
+  row or a header of blank cells (a notes tab, a chart tab, an empty tab), is
+  reported as skipped and is no error. A tab that fails, because its header
+  repeats a name, the API refuses a request, or the read-back finds a cell
+  still wrong, is reported with its message and the sweep goes on to the next;
+  the exit code is then 1. To leave such a tab out, name the tabs to check.
+
+As a library, `sweep_url_links(service, spreadsheet_id, tabs=None, *, color,
+apply=False, listing=None)` returns a `LinkSweep`, whose `tabs` are `TabLinks` (the
+`problems`, whether they were `applied`, and any `skipped` or `error`), with
+`pending` and `exit_code`. `color` is one colour, or a mapping of tab title to
+colour that has an entry for each tab swept, and `listing` is the
+spreadsheet's `tab_listing` when the caller has read it. The tabs are named by
+the titles they have on the sheet: `sheet_id` is a config's field, which the
+command resolves. `format_sweep(sweep)` renders what the command prints.
+
+### Auditing the links of a tab
+
+`linked_cells` tells where a link is and where it points. An audit that sorts
+the cells into kinds needs the cell's text too, and to find the cells that
+look linked and are not. Two additions read that:
+
+- `linked_cells(..., detail=True)` reads under `LINK_DETAIL_FIELDS` and fills
+  `LinkedCell.text`, the cell's displayed text (empty for an empty cell, which
+  can hold a link), and `LinkedCell.formula`. Without `detail` the read and
+  the result are those of `linked_cells` before, and `text` and `formula`
+  keep their defaults, `""` and False.
+- `styled_cells` returns each cell that looks like a link and holds none, as
+  a `StyledCell`: its row, its column, its text, its `reasons`, from
+  `LINK_STYLE_REASONS`, and `resettable`.
+
+`formula` is True when the cell holds a link on the whole cell and its
+formula calls `HYPERLINK`, in any case. A format link cannot tell this: the
+API copies a formula's link into the cell's format once any other text
+property is written to it. The rule reads the formula's text, so a
+`HYPERLINK` inside a string, or inside a branch of another function, also
+counts, and a formula that does not call it (`=A1`) does not.
+
+A cell looks like a link when its text is underlined (`underline`) or shown
+in the link colour (`color`), and it holds no link when it has no link on the
+whole cell and none in its text format runs. The look is read from the
+effective format, since a link's own underline and colour have no
+user-entered property, and a theme colour from its resolved colour. The
+colour is `#1155cc`, the one the API gives a link; a tab whose links use
+another colour, such as its `link_urls`, names it with `colors=["#0b57d0"]`
+(which replaces the default, so name both to find both), and `colors=[]`
+finds underlines alone. Colours are compared to the nearest of 255 steps a
+channel. A cell with no text is never returned, and styling inside text
+format runs is not read. `resettable` is False when some of the look is not
+set by the cell itself, and `clear_link_format(..., style=True)` will not
+change it.
+
+```python
+from gdrives.sheets import linked_cells, styled_cells
+
+kinds: dict[str, list[tuple[int, str]]] = {}
+for cell in linked_cells(service, "<spreadsheet-id>", "Members", detail=True):
+    if cell.formula:
+        kind = "formula link"
+    elif not cell.text:
+        kind = "link on an empty cell"
+    elif cell.targets == (cell.text,):
+        kind = "link to its own text"
+    else:
+        kind = "link to somewhere else"
+    kinds.setdefault(kind, []).append((cell.row, cell.column))
+for cell in styled_cells(service, "<spreadsheet-id>", "Members"):
+    kinds.setdefault("link styling with no link", []).append((cell.row, cell.column))
+for kind, where in kinds.items():
+    print(kind, where)
+```
+
+A bare domain (`example.com`) is a link to somewhere else by this rule: its
+target is `http://example.com`. A link on part of a cell's text is sorted by
+its targets, like any other. The cells of one kind can then be passed on:
+`clear_link_format(..., rows=[...], style=True)` for the styling with no
+link, and for the links a caller meant to be plain text.
 
 ## Keeping a tab in order
 
@@ -976,6 +1471,53 @@ conditional format ranges, and named ranges are adjusted, so a formula that
 refers to another row by position follows that row to its new place. A
 filter view or a sort someone applied on the sheet is not applied again: the
 tab is left in the order given.
+
+## Look before tidying a shared sheet
+
+A sheet that people edit is rarely in the order, or of the columns, that the
+local side expects. Someone adds a row in the middle, and a collaborator keeps
+a column of notes that no config knows. Both
+[`reorder_rows`](#keeping-a-tab-in-order) and
+[`strict_schema`](#requiring-every-column-to-be-declared) act on the sheet as
+it is, so preview each against the live sheet before adopting either.
+
+`reorder_rows` previews by default. Without `apply=True` it reads the tab,
+writes nothing, and returns a `ReorderResult` that says what an apply would do:
+
+```python
+from gdrives.sheets import reorder_rows
+
+dues_order = ["m1", "m2", "m3"]
+dues_preview = reorder_rows(service, "<spreadsheet-id>", "Dues", ["id"], dues_order)
+print(f"{dues_preview.moves} row(s) would move: {dues_preview.moved}")
+print("already in order:", dues_preview.unchanged, "; written:", dues_preview.applied)
+```
+
+`moves` is the number of rows the order would move, `moved` their keys, and
+`unchanged` is True when nothing would. A count near the number of rows means
+the order is not the one the sheet is kept in, and moving that many rows on a
+sheet others are editing is a decision to make with them. A count of one or two
+is a row typed out of place.
+
+`strict_schema` is previewed by the sync itself. With the setting in the
+config, a `sheets-sync` without `--apply` reads the sheet and lists every
+column the `schema` leaves undeclared, and writes nothing:
+
+```bash
+gdrives sheets-sync roster --tab Dues    # preview: the problems list the undeclared columns
+```
+
+```
+  problems (1), so nothing is written:
+    Dues (sheet): column 'note' has no schema entry, and the tab is strict_schema
+```
+
+The run exits 1 while there are problems. For a sheet where collaborators keep
+columns of their own, `strict_schema: "local"` checks the local file's columns
+only, and leaves the sheet's extra columns alone (see
+[only the local side](#only-the-local-side)). Decide between `true` and
+`"local"` by what that preview lists: columns the config should declare, or
+columns that belong to other people.
 
 ## How cells are read and written
 
@@ -1213,6 +1755,8 @@ gdrives sheets-pull roster --apply                 # Replace local files for the
 gdrives sheets-push roster --apply                 # Replace the push tabs from local files
 gdrives sheets-pull <spreadsheet-id> --all-tabs -o out/  # One-off dump, no config
 gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSON for the config
+gdrives sheets-links <spreadsheet-id> --color "#1155cc"  # Check the links of URL cells on every tab
+gdrives sheets-schema roster -o schema.csv         # The target's schema columns, one row each
 ```
 
 | Option | Commands | Meaning |
@@ -1227,9 +1771,11 @@ gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSO
 | `--prefer local\|sheet` | `sheets-sync` | Resolve cell conflicts toward one side |
 | `--all-tabs` | `sheets-pull` | Dump every tab, with no config. Needs `-o` |
 | `-o`, `--output DIR` | `sheets-pull` | The directory for `--all-tabs` files |
+| `-o`, `--output FILE` | `sheets-schema` | Write the schema rows to this `.csv`, `.tsv`, or `.json` file. Default: CSV to stdout |
 | `--skip TITLE` | `sheets-pull` | With `--all-tabs`, leave this tab out; repeat for several |
 | `--format csv\|tsv\|json` | `sheets-pull` | With `--all-tabs`, the file format. Default `csv` |
 | `--bom` | `sheets-pull` | With `--all-tabs`, start each `.csv` or `.tsv` file with a byte-order mark. Not with `--format json` |
+| `--color #rrggbb` | `sheets-links` | The colour a URL cell's link text is to have. Needed for a spreadsheet; for a target, it overrides each tab's `link_urls` |
 | `--slug` | `sheets-pull` | With `--all-tabs`, name each file by its title in lower case, with each run of other characters than letters and digits as one hyphen: `Form responses 1` is `form-responses-1` |
 
 Refused before any request, with exit code 1: an unknown target, a `--tab`
@@ -1241,6 +1787,16 @@ a target with no tabs of the command's mode, `--all-tabs` combined with
 
 The report goes to stdout. The spreadsheet ID, the credential line, retry
 notices, and error messages go to stderr.
+
+**`sheets-links`** checks the URL cells of a spreadsheet's tabs, or of a
+target's, and with `--apply` fixes them; see
+[checking a whole spreadsheet](#checking-a-whole-spreadsheet). It exits 0 when
+every URL cell follows the rule or was fixed, 2 when a preview found cells to
+fix, and 1 on an error.
+
+**`sheets-schema`** lists the schema columns of a target, from the config alone:
+no request and no credential. See [describing the
+columns](#describing-the-columns).
 
 **`sheets-widths`** prints a tab's column widths in pixels as a JSON object
 by header name, ready to paste under the tab's `widths`. It takes a Sheet
@@ -1300,8 +1856,10 @@ knows are valid.
 
 A preview reads with the read-only scope, so it never triggers a consent for
 write access. It prints a credential line only when its authentication is
-about to wait on an interactive consent or a token refresh, as every `gdrives`
-command does.
+about to wait on an interactive consent or a token refresh, or when OAuth is
+configured, no cached token serves, and there is no terminal for a consent (the
+run then goes on as a service account or ADC, and the line ends with the reason),
+as every `gdrives` command does.
 
 With `--apply`, each command first prints one line to stderr naming the
 credential its requests will use (an OAuth token, a service account and its
@@ -1312,6 +1870,13 @@ look hung and a write is not made as an unexpected identity:
 ```
 Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json)
 Spreadsheet ID: <spreadsheet-id>
+```
+
+When OAuth is configured but no consent could run for lack of a terminal, the
+line ends with the reason, so a write is not made as an unexpected identity:
+
+```
+Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json), since OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login
 ```
 
 On a preview that waits, the line follows the spreadsheet ID, since the
@@ -1344,10 +1909,87 @@ print(format_report(report))
 raise SystemExit(report.exit_code)
 ```
 
+`spreadsheet_id` may be None, and is then the target's own, when the config
+names the spreadsheet by URL or ID: `run_target(service, None, target, "sync")`.
+A Drive path is refused with a message that names `resolve_file_id`, since
+resolving one needs a Drive service and the drive cache; a caller resolves it
+with `gdrives.resolve.resolve_spreadsheet_id`, which also refuses a path that
+names a file that is not a native spreadsheet, such as an uploaded `.xlsx`.
+`target.spreadsheet_id` gives the same value to the other calls.
+
+`format_report` takes the report of one tab as well, and `TabReport.exit_code`
+is the code a run of only that tab exits with, so a caller of `pull_tab` or
+`push_rows` prints and exits as the commands do:
+
+```python
+import sys
+
+from gdrives.sheets import format_report, push_rows
+
+one = push_rows(
+    service,
+    "<spreadsheet-id>",
+    "Members",
+    ["member_id", "name"],
+    [{"member_id": "m1", "name": "Ada"}],
+    key=["member_id"],
+)
+print(format_report(one))
+if one.pending:
+    print("Preview only; rerun with apply=True to write.", file=sys.stderr)
+```
+
 `plan_tab` and `apply_tab` split a sync of one tab into its read-and-merge and
 its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
 The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
 `verify`, `read_records`, and `write_records`.
+
+### Reading a tab into memory
+
+`pull_records` reads a tab's rows into memory, checked as a pull checks them,
+with no local file and nothing to apply. It takes what a `pull` tab takes:
+`columns`, `key`, `blank_keys`, `schema`, `strict_schema`, `exclude`, `render`,
+and `sheet_id`, and the hooks and `transform` that `pull_tab` takes. It is
+`pull_tab` underneath, run on a `MemoryStore` with `apply=True`, so it refuses
+what a `pull` tab refuses, and a combination a tab refuses (`exclude` with
+`columns`, say) raises the same `ValueError` before any request.
+
+```python
+from gdrives.sheets import ColumnSchema, PullError, decode_rows, pull_records
+
+types = {"id": "int", "total": "float", "paid": "bool"}
+try:
+    records = pull_records(
+        service,
+        "<spreadsheet-id>",
+        "Summary",
+        schema={name: ColumnSchema(kind) for name, kind in types.items()},
+    )
+except PullError as e:
+    print(e)  # the report a `sheets-pull` of the tab would print
+    print(e.report.exit_code)
+else:
+    typed = decode_rows(records.rows, types)
+    print(typed[0])
+```
+
+The result is `Records`: `columns` in header order, and `rows` as dicts of
+canonical cell strings, as a local file holds them. `decode_rows(records.rows,
+types)` turns them into Python values (`int`, `float`, `bool`, `date`, and
+`datetime` by the column's type, `None` for a blank cell), and any dataframe
+library takes those rows with a schema of its own. The library depends on
+none.
+
+`PullError` is a `ValueError` whose `report` is the tab's `TabReport` and whose
+message is `format_report(report)`. It is raised when the pull was refused (no
+such tab, no header row, no rows, an `exclude` name the header lacks) or the
+rows have `problems` from the schema, `validate`, or `check`. An API error is
+not a refusal: an `HttpError` (after the retries of the value calls, as in
+[a retry of your own](#a-retry-of-your-own)) and an `OSError` propagate as
+they were raised, so code that handles them around the value wrappers needs no
+change here. What `warn` says fails nothing; to read it, pass
+`report=TabReport(tab="Summary", mode="pull")` and read its `warnings`
+afterwards.
 
 ### Stores
 
@@ -1446,6 +2088,149 @@ What a store has to keep to:
   `JsonEntryStore`) only, so a caller that gives tabs stores of its own owns
   that check.
 
+### Two store recipes
+
+Each is a small class with `label`, `exists()`, `read()`, and `write(columns,
+rows)`, used as a tab's `store`. A store may wrap another one, since it is
+only asked for those four things.
+
+**A store that sorts its rows on write.** It passes reads through, and sorts
+the rows before handing them on. The sort key is the caller's, so an order
+that no alphabetical sort gives (ranks, enumerations) is a function:
+
+```python
+from pathlib import Path
+
+from gdrives.sheets import MemoryStore, TabConfig, Target, pull_tab, sync_tab
+
+
+class SortedStore:
+    """Keeps the rows of another store sorted by `sort_key`, whatever order they arrive in."""
+
+    def __init__(self, inner, sort_key):
+        self.inner, self.sort_key = inner, sort_key
+        self.label = f"{inner.label} (sorted)"
+
+    def exists(self):
+        return self.inner.exists()
+
+    def read(self):
+        return self.inner.read()
+
+    def write(self, columns, rows):
+        self.inner.write(columns, sorted(rows, key=self.sort_key))
+
+
+def by_id(row):
+    return row["id"]
+
+
+dues_held = MemoryStore(
+    ["id", "dues", "paid"],
+    [
+        {"id": "m3", "dues": "30", "paid": "TRUE"},
+        {"id": "m1", "dues": "10", "paid": "FALSE"},
+    ],
+)
+dues_tab = TabConfig(title="Dues", key=("id",), store=SortedStore(dues_held, by_id))
+dues_target = Target(
+    name="roster",
+    spreadsheet="<spreadsheet-id>",
+    tabs=(dues_tab,),
+    base_stores={"Dues": SortedStore(MemoryStore(), by_id)},
+)
+dues_first = sync_tab(service, "<spreadsheet-id>", dues_target, dues_tab, apply=True)
+dues_second = sync_tab(service, "<spreadsheet-id>", dues_target, dues_tab, apply=True)
+print([row["id"] for row in dues_held.read().rows])  # ['m1', 'm2', 'm3']
+print(dues_first.wrote_local, dues_second.wrote_local)  # True False
+dues_pulled = pull_tab(service, "<spreadsheet-id>", dues_tab, apply=True)
+print(dues_pulled.wrote_local)  # True: the sheet's order is not the sorted one
+```
+
+The sheet's `m2` row folds in after the local rows, and the store puts it in
+its place. What this costs, and what it does not:
+
+- **A sync ignores row order.** Rows are matched by key, so a sorted local
+  side stays in sync, and two rows in another order are not a change in the
+  report. A sync writes the local side only when a run changes a cell or
+  adds a row, so the sort happens on those runs. A file whose rows are out of
+  order is left alone by a sync that has nothing to fold.
+- **The base is compared in order.** A run saves the base again when its rows
+  are in another order than the saved ones. Give the base the same wrapper, as
+  above, or the run after a sort saves the base once for the new order.
+- **A pull compares the lists of rows in order.** A tab in the sheet's order
+  differs from a sorted local side, so an applied `pull_tab` writes the store
+  on every run, and reports `the local store holds 3 rows (9 non-blank
+  cells); it now holds 3`, with no row added, removed, or changed. The
+  rewrite is harmless and leaves the same file. A pull that should be quiet
+  wants a sort on the sheet (see [Keeping a tab in order](#keeping-a-tab-in-order)),
+  or a store that does not sort.
+
+**A store whose local side is computed, and written to two files.** Club
+members are kept in a file of `id` and `name`, and their dues in a file of
+`id`, `dues`, and `paid`. The tab shows one table of the four columns:
+`read` joins the files on `id`, and `write` sends each column back to the file
+it belongs to:
+
+```python
+from gdrives.sheets import FileStore, Records
+
+
+class SplitStore:
+    """A local side joined from two files on `id`, and written back to the two."""
+
+    def __init__(self, people, dues):
+        self.people, self.dues = people, dues
+        self.label = f"{people.label} + {dues.label}"
+
+    def exists(self):
+        return self.people.exists() and self.dues.exists()
+
+    def read(self):
+        people, dues = self.people.read(), self.dues.read()
+        owed = {row["id"]: row for row in dues.rows}
+        extra = [name for name in dues.columns if name != "id"]
+        rows = [
+            {**row, **{name: owed.get(row["id"], {}).get(name, "") for name in extra}}
+            for row in people.rows
+        ]
+        return Records([*people.columns, *extra], rows)
+
+    def write(self, columns, rows):
+        parts = ((self.people, ("id", "name")), (self.dues, ("id", "dues", "paid")))
+        for store, belongs in parts:
+            names = [name for name in columns if name in belongs]
+            store.write(names, [{name: row[name] for name in names} for row in rows])
+
+
+people = FileStore(Path("data/people.csv"))
+owing = FileStore(Path("data/dues.csv"))
+people.write(["id", "name"], [{"id": "m1", "name": "Ada"}, {"id": "m2", "name": "Bea"}])
+owing.write(
+    ["id", "dues", "paid"],
+    [
+        {"id": "m1", "dues": "10", "paid": "FALSE"},
+        {"id": "m2", "dues": "20", "paid": "FALSE"},
+    ],
+)
+standing = TabConfig(title="Standing", key=("id",), store=SplitStore(people, owing))
+standing_target = Target(
+    name="roster",
+    spreadsheet="<spreadsheet-id>",
+    tabs=(standing,),
+    base_stores={"Standing": MemoryStore()},
+)
+joined = sync_tab(service, "<spreadsheet-id>", standing_target, standing, apply=True)
+print(owing.path.read_text())  # id,dues,paid / m1,12,TRUE / m2,20,FALSE / m3,30,TRUE
+```
+
+The sheet's edit of `m1` and its new member `m3` fold into the local side:
+`name` lands in `data/people.csv`, and `dues` and `paid` in `data/dues.csv`.
+The store keeps to the rules above: `read` returns the same records each time,
+and a file that cannot be written raises `OSError`, which the run reports for
+the tab. A dues row with no member is not part of the local side, so a write
+does not keep it.
+
 ### A retry of your own
 
 The functions of `gdrives.sheets` that call the API retry inside themselves:
@@ -1464,7 +2249,8 @@ last `HttpError` is raised as it was, so error handling around the call needs
 no change.
 
 The waits are silent in the library. `retry_notices` reports them to a
-callback, for every call inside its block:
+callback, for every call inside its block, and with no callback it prints the
+message the commands print (`print_retry`) to stderr:
 
 ```python
 from gdrives.sheets import pull_values, retry_notices
@@ -1480,6 +2266,10 @@ def say(notice):
 with retry_notices(say):
     values = pull_values(service, "<spreadsheet-id>", "'Members'!A1:C")
 ```
+
+`with retry_notices():` alone gives the commands' wording, `Sheets API returned
+429; retrying in 1s (attempt 2 of 5)`, and `print_retry` is that function, for a
+caller that wraps it or passes it as `on_retry`.
 
 `with_retry` is the same retry for a call of your own, such as a request the
 library has no wrapper for.
@@ -1612,6 +2402,32 @@ local file, once, and the two sides agree from then on. A run that adds or
 deletes columns merges again after doing so, and calls the transform again,
 so it must also return the same rows for the same input.
 
+### A stock transform
+
+`gdrives.sheets.transforms:trim_cells` does the cleaning above, so a caller
+need not write it. It strips each cell and collapses each run of whitespace
+inside a line to one space, keeping the line breaks of a cell that holds
+several lines. It does to every cell what the merge does to a key, line by line
+(`normalize_key`, the function `row_key` uses), and a key cell comes out with
+the key it went in with. Name it in a config, for a tab or as a target's
+default, as `"hooks": {"transform": "gdrives.sheets.transforms:trim_cells"}`
+(see [hooks in the config](#hooks-in-the-config)), or pass it in code as
+`transform=trim_cells`, from `gdrives.sheets`.
+
+It differs from `row_key` in one respect: a key folds a line break into a
+space, and a cell does not, since collapsing the lines of a note would change
+what it says. A carriage return counts as whitespace, so `\r\n` becomes `\n`,
+and a break at either end of a cell is stripped with the rest. It takes the
+tab's title as an optional second argument and ignores it, so it also serves
+`pull_all_tabs`.
+
+**What it costs**: whitespace a collaborator typed stays on the sheet and is
+never pushed away. The transform cleans the sheet's side of the merge only, so
+a cell that differs from the local side and the base only by spacing is in
+sync, and nothing is written to the sheet to tidy it. The local file and the
+base hold the trimmed text. If the spacing matters on the sheet itself, tidy it with a script of
+your own.
+
 ### Hooks in the config
 
 **Running a command on a config runs the functions it names.** A `hooks`
@@ -1680,3 +2496,89 @@ the hook and the function, and the run goes on to the next tab. `run_target`
 runs a tab's config hooks too, before the ones given in code: the messages
 are the config hook's, then the code hook's, and a config `transform` runs
 first, the code's cleaning what it returns.
+
+### A schema in code
+
+**Running a command on a config runs the schema module it names**, as it runs
+the hooks. A `schema` given as `"module:attribute"` is code: `sheets-sync`,
+`sheets-pull`, and `sheets-push`, a preview included, import the module, and
+call its function when the attribute is one. `sheets-schema` runs it too.
+
+A caller that declares its columns in Python, for its own checks and its own
+docs, names that declaration in the config instead of restating it as JSON:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "base": "sheets-base/roster",
+    "tabs": {
+      "Members": {
+        "local": "data/members.csv",
+        "key": ["id"],
+        "schema": "clubtools.schema:MEMBERS",
+        "strict_schema": true
+      }
+    }
+  }
+}
+```
+
+The attribute is a mapping of column name to `ColumnSchema`, or a function
+that is given the tab's title and returns one, for a module that serves
+several tabs. Here `clubtools/schema.py` holds both:
+
+```python
+from gdrives.sheets import ColumnSchema
+
+MEMBERS = {
+    "id": ColumnSchema("str", required=True),
+    "name": ColumnSchema("str", required=True),
+    "joined": ColumnSchema("date", strict=True),
+    "paid": ColumnSchema("bool"),
+}
+
+DUES = {
+    "id": ColumnSchema("str", required=True),
+    "amount": ColumnSchema("float", required=True),
+}
+
+
+def by_title(title):
+    """The schema of the tab titled ``title``: ``"schema": "clubtools.schema:by_title"``."""
+    return {"Members": MEMBERS, "Dues": DUES}[title]
+```
+
+The module is found as a hook's is: as `import` finds it, installed where
+`gdrives` runs or on `PYTHONPATH`, and never in the config's directory.
+
+Reading a config imports nothing: `load_config` checks only that the string
+has the form `module:attribute`. The checks a `schema` object gets when the
+file is read, and that need its columns, wait for the run: each column's
+fields, a column outside `columns` (unless `strict_schema`), and a column
+that `exclude` names. A command resolves the reference before its first
+request, in the same pass that finds the hooks, and lists every problem at
+once, each in the words the loader uses for a `schema` object, naming the tab
+and the reference, and exits 1. A module that does not import, an attribute
+it lacks, a value that is neither a mapping nor a function, a function that
+raises or returns something else, a column name that is not a string, and a
+value that is not a `ColumnSchema` are problems too.
+
+A schema written in Python may hold what a JSON file cannot. A column's
+`allowed` may name `date` and `datetime` values, as in
+`ColumnSchema("date", allowed=[date(2026, 1, 1)])`: each is compared as the
+canonical cell string of its value (`2026-01-01`). In a `date` or `datetime`
+column the cell and the allowed values are compared as the same moment, so a
+`datetime` cell read from its serial, `2026-01-01 09:00:00.000`, is allowed by
+`datetime(2026, 1, 1, 9)`.
+
+From code, `resolve_target(target)` resolves every tab's reference and checks
+every hook name the same way, and returns the target with each tab's
+`schema` filled; `resolve_tab(tab)` does it for one tab. `run_target`,
+`plan_tab`, `sync_tab`, `pull_tab`, and `push_tab` resolve a tab they are
+given, so a tab built in code may name its schema too:
+`TabConfig("Members", Path("data/members.csv"), key=("id",),
+schema_ref="clubtools.schema:MEMBERS")`. It takes `schema` or `schema_ref`,
+not both. Until it is resolved, a tab has no types: its `types` and
+`local_store`, and a `base_file` entry for it, raise rather than read the
+file untyped.

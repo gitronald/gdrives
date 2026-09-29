@@ -18,6 +18,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from functools import cache
 from types import MappingProxyType
 from typing import Any
 
@@ -56,6 +57,9 @@ _STRICT_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 #: The column types a schema may declare ``strict`` for.
 STRICT_TYPES = frozenset({"bool", "date"})
+
+#: The column types a schema may declare a ``pattern`` for.
+PATTERN_TYPES = frozenset({"str"})
 
 # Day 0 of a sheet's serial numbers, and the milliseconds in one day.
 _SERIAL_EPOCH = datetime(1899, 12, 30)
@@ -463,6 +467,18 @@ class ColumnSchema:
     problem like any other, from :func:`cell_problem`, so ``on_invalid:
     "hold"`` holds it; comparison is unchanged, so a respelling
     (``true``/``TRUE``) is a problem, not an edit.
+
+    ``pattern`` is a regular expression that a non-blank cell must match in
+    full (:func:`re.fullmatch`), for a ``str`` column only, refused for any
+    other type and for a string that does not compile. A blank cell is
+    ``required``'s, never the pattern's. A failure is a problem from
+    :func:`cell_problem` like the rest. The expression is compiled once per
+    distinct string, not once per cell.
+
+    ``description`` is text for a person: what the column holds. No check of a
+    cell reads it; :func:`~gdrives.sheets.schema.schema_rows` and
+    ``gdrives sheets-schema`` carry it into a documentation export. It is
+    part of a schema's equality, like its other fields.
     """
 
     type: str = "str"
@@ -470,9 +486,25 @@ class ColumnSchema:
     allowed: Collection[Any] | None = None
     present: bool = False
     strict: bool = False
+    pattern: str | None = None
+    description: str | None = None
 
     def __post_init__(self) -> None:
         _check_type(self.type)
+        if self.description is not None and not isinstance(self.description, str):
+            raise ValueError(
+                f"description must be a string, not {type(self.description).__name__}"
+            )
+        if self.pattern is not None:
+            if self.type not in PATTERN_TYPES:
+                raise ValueError(
+                    f"pattern is only for a column of {sorted(PATTERN_TYPES)}, "
+                    f"not {self.type!r}"
+                )
+            try:
+                _compiled(self.pattern)
+            except (re.error, TypeError) as e:
+                raise ValueError(f"pattern is not a regular expression: {e}") from None
         if self.strict and self.type not in STRICT_TYPES:
             raise ValueError(
                 f"strict is only for a column of {sorted(STRICT_TYPES)}, "
@@ -488,6 +520,8 @@ class ColumnSchema:
         allowed: Collection[Any] | None = None,
         present: bool = False,
         strict: bool = False,
+        pattern: str | None = None,
+        description: str | None = None,
     ) -> "ColumnSchema":
         """A schema whose type is given by name or by class (``int``, ``date``).
 
@@ -500,7 +534,15 @@ class ColumnSchema:
             allowed=allowed,
             present=present,
             strict=strict,
+            pattern=pattern,
+            description=description,
         )
+
+
+@cache
+def _compiled(pattern: str) -> re.Pattern[str]:
+    """``pattern`` compiled, once per distinct string; raises re.error."""
+    return re.compile(pattern)
 
 
 @dataclass(frozen=True)
@@ -519,6 +561,22 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
+def _is_allowed(text: str, allowed: Sequence[str], type_: ColumnType) -> bool:
+    """True when ``text`` is one of the ``allowed`` cell strings.
+
+    In a ``date`` or ``datetime`` column the two sides are compared as
+    :func:`normalize_cell` writes them, since one moment has more than one
+    spelling: a ``datetime`` read from its serial arrives as
+    ``2026-01-01 09:00:00.000``, and :func:`to_cell` writes the same moment as
+    ``2026-01-01 09:00:00``. Other columns compare the text as it is.
+    """
+    if text in allowed:
+        return True
+    if column_type(type_) not in SERIAL_TYPES:
+        return False
+    return normalize_cell(text, type_) in {normalize_cell(a, type_) for a in allowed}
+
+
 def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     """Why ``text`` does not fit ``schema``, or None when it does.
 
@@ -526,7 +584,8 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     ``schema.strict``, a ``bool`` cell must be ``TRUE`` or ``FALSE`` and a
     ``date`` cell must be ``YYYY-MM-DD``, both exactly; a cell that parses as
     the type but not in that exact form is a problem under ``strict`` and
-    passes without it. A ``date`` cell read from its serial number
+    passes without it. With ``schema.pattern``, a cell that does not match it
+    in full is a problem, checked last. A ``date`` cell read from its serial number
     (:func:`serial_to_cell`) already arrives in that form.
     """
     if text == "":
@@ -542,8 +601,10 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
             return f"{text!r} is not YYYY-MM-DD, and the column is strict"
     if schema.allowed is not None:
         allowed = [to_cell(value) for value in schema.allowed]
-        if text not in allowed:
+        if not _is_allowed(text, allowed, schema.type):
             return f"{text!r} is not one of {allowed}"
+    if schema.pattern is not None and not _compiled(schema.pattern).fullmatch(text):
+        return f"{text!r} does not match the pattern {schema.pattern!r}"
     return None
 
 
