@@ -682,6 +682,20 @@ upload unconverted, the command fails naming the file's ID, since the file
 exists either way. What Drive makes of a formula, a date, or a merged cell is
 Drive's conversion, and is not something the command controls.
 
+An `.xlsx` workbook keeps its tabs, by name and in order, its formulas as
+formulas, a `HYPERLINK` formula among them, its merged cells, and its bold. A
+date or a time stays a value, with the workbook's number format, and a cell
+the workbook holds as text stays text, so `007` stays `007`. A `.csv` file is
+read as typed input is: it becomes one tab named after the file, `007` becomes
+the number `7`, and `2026-02-03` becomes a date. Use an `.xlsx` workbook, or
+push the rows with `sheets-push`, for a column whose text must arrive as
+written.
+
+A service account has no storage of its own, so Drive refuses its upload into
+a folder of My Drive with `storageQuotaExceeded`, though the converted file
+would take no space. Create from a workbook with an OAuth credential, or in a
+shared drive.
+
 The file is created through the Drive API, since the Sheets API creates in the
 root of My Drive only, so `sheets-create` needs the full `drive` scope, cached
 in `gdrives_token_drive.json`; `spreadsheets` alone cannot place a file in a
