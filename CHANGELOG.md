@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-29
+
 ### Added
 
 - The guide, `docs/sheets-sync.md`, grows: "Moving an existing sync over" has four more causes of a first preview's changes (a header's surrounding whitespace, quoting, typed columns, and blank keys) and "A way to move over" as four steps, run against `merge` and `FileStore` in examples the guide's test executes; a section on looking before tidying a shared sheet previews `reorder_rows` and `strict_schema`; and "Stores" has two recipes, a store that sorts its rows on write and a store whose local side is joined from two files.
