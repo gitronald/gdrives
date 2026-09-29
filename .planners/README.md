@@ -2,6 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 019 | [Remove the glue callers still write around gdrives.sheets](plans/019-caller-glue-followups/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 010 | [Write typed columns to the sheet as dates and numbers, not text](plans/010-sheets-typed-writes/plan.md) | done | 2026-09-27 21:45 PT | [#61](https://github.com/gitronald/gdrives/pull/61) |
 | 009 | [Add file upload and spreadsheet creation to Drive writes](plans/009-drive-upload-and-sheet-create/plan.md) | done | 2026-09-27 21:03 PT | [#60](https://github.com/gitronald/gdrives/pull/60) |
