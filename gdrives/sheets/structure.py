@@ -16,6 +16,7 @@ The Sheets API formats text that is a URL or a bare domain as a link when it
 is written, under ``RAW`` input too. :func:`linked_cells` finds the cells
 that hold a link, and :func:`clear_link_format` takes the link format off
 cells meant to hold plain text, leaving every other format alone.
+:func:`styled_cells` finds the cells that look like a link and hold none.
 :func:`url_link_problems` and :func:`set_url_links` do the opposite for cells
 whose whole text is a URL: each is to hold a link to its own text, in a
 colour the caller names, and not underlined.
@@ -43,8 +44,25 @@ from gdrives.sheets.values import (
 #: ``textFormatRuns`` a link on part of the cell's text.
 LINK_FIELDS = "sheets(data(rowData(values(hyperlink,textFormatRuns(format(link))))))"
 
+#: :data:`LINK_FIELDS` and, for :func:`linked_cells` with ``detail``, each
+#: cell's displayed text and its formula, if it has one.
+LINK_DETAIL_FIELDS = (
+    "sheets(data(rowData(values(hyperlink,formattedValue,"
+    "userEnteredValue(formulaValue),textFormatRuns(format(link))))))"
+)
+
 #: The format field of a link on the whole cell, which a write gives a URL.
 CELL_LINK_FIELD = "userEnteredFormat.textFormat.link"
+
+#: The format fields a link's look is written in: the link, the underline, and
+#: the text colour. ``clear_link_format`` with ``style`` clears all three.
+CELL_STYLE_FIELDS = ",".join(
+    f"userEnteredFormat.textFormat.{name}"
+    for name in ("link", "underline", "foregroundColorStyle")
+)
+
+#: The colour the API shows a link in, which a cell that looks like a link has.
+LINK_COLOR = "#1155cc"
 
 #: The field of a cell's text format runs, where a link on part of its text is.
 RUNS_FIELD = "textFormatRuns"
@@ -253,6 +271,19 @@ class LinkedCell:
     ``in_runs`` says whether any of them is a link on part of the cell's
     text, which lives in the cell's text format runs.
 
+    ``text`` and ``formula`` are filled by :func:`linked_cells` with
+    ``detail`` only, and otherwise keep their defaults. ``text`` is the
+    cell's displayed text, empty for an empty cell, which can hold a link
+    all the same. ``formula`` is True when the link on the whole cell comes
+    from a ``HYPERLINK`` formula: the cell's formula calls ``HYPERLINK``,
+    read without regard to case. The rule is the formula's text, so a
+    ``HYPERLINK`` inside a string, or inside a branch of another function
+    that is not the one taken, also counts. A format link cannot tell the
+    two apart, since a formula's link is also copied into the cell's format
+    once anything else is written to it. Clearing the link format of such a
+    cell removes the link and leaves the formula, which then shows its label
+    as plain text.
+
     A caller that wants plain text looks for any linked cell. A caller that
     wants links looks for a target that differs from the cell's text, as a
     bare domain's does: ``example.com`` is given the target
@@ -263,6 +294,12 @@ class LinkedCell:
     column: str
     targets: tuple[str, ...]
     in_runs: bool
+    text: str = ""
+    formula: bool = False
+
+
+# A formula that calls HYPERLINK, as a function and not as part of a longer name.
+_HYPERLINK_CALL = re.compile(r"(?<![\w.])HYPERLINK\s*\(", re.IGNORECASE)
 
 
 def _wanted(
@@ -300,6 +337,7 @@ def linked_cells(
     *,
     columns: Sequence[str] | None = None,
     header: Sequence[str] | None = None,
+    detail: bool = False,
 ) -> list[LinkedCell]:
     """Every cell of ``columns`` that holds a link, in row then column order.
 
@@ -308,6 +346,11 @@ def linked_cells(
     (:func:`~gdrives.sheets.values.pull_grid`) under :data:`LINK_FIELDS`,
     over the columns from the first wanted to the last. ``header`` is the
     tab's header row when the caller has it, which saves the read of row 1.
+
+    With ``detail`` the read is under :data:`LINK_DETAIL_FIELDS` and fills
+    each cell's ``text`` and ``formula``; without it they keep their
+    defaults (``""`` and False), and the read and the result are those of
+    0.14.
 
     Raises ValueError, before the grid read, for a blank or repeated name, or
     a name the header lacks or repeats.
@@ -318,7 +361,8 @@ def linked_cells(
     first, last = min(positions.values()), max(positions.values())
     names = {index: name for name, index in positions.items()}
     span = f"{a1_quote(tab)}!{column_letter(first)}:{column_letter(last)}"
-    data = pull_grid(service, spreadsheet_id, span, LINK_FIELDS)
+    fields = LINK_DETAIL_FIELDS if detail else LINK_FIELDS
+    data = pull_grid(service, spreadsheet_id, span, fields)
     found: list[LinkedCell] = []
     for row, held in enumerate(data.get("rowData", []), start=1):
         for index, cell in enumerate(held.get("values", []), start=first):
@@ -330,10 +374,20 @@ def linked_cells(
                 for run in cell.get(RUNS_FIELD, [])
                 if "uri" in run.get("format", {}).get("link", {})
             ]
-            if whole or parts:
-                found.append(
-                    LinkedCell(row, names[index], (*whole, *parts), in_runs=bool(parts))
+            if not (whole or parts):
+                continue
+            extra: dict[str, Any] = {}
+            if detail:
+                formula = cell.get("userEnteredValue", {}).get("formulaValue", "")
+                extra = {
+                    "text": cell.get("formattedValue", ""),
+                    "formula": bool(whole) and bool(_HYPERLINK_CALL.search(formula)),
+                }
+            found.append(
+                LinkedCell(
+                    row, names[index], (*whole, *parts), in_runs=bool(parts), **extra
                 )
+            )
     return found
 
 
@@ -345,6 +399,7 @@ def clear_link_format(
     columns: Sequence[str] | None = None,
     rows: Sequence[int] | None = None,
     runs: bool = True,
+    style: bool = False,
     header: Sequence[str] | None = None,
     sheet_id: int | None = None,
 ) -> None:
@@ -355,6 +410,22 @@ def clear_link_format(
     cleared by one ``repeatCell`` per run of adjacent columns and rows, under
     the mask :data:`CELL_LINK_FIELD`, so a cell keeps its bold, its fill, and
     the rest of its format.
+
+    With ``style`` the same request also resets the cells' underline and text
+    colour, under the mask :data:`CELL_STYLE_FIELDS`, which leaves black text
+    that is not underlined, with the bold and the rest kept. It clears them
+    on every cell of the block, linked or not, so a caller with text of
+    another colour in those columns passes the ``rows`` of the cells it
+    means (from :func:`linked_cells` and :func:`styled_cells`). A reset
+    changes what the cell itself says, so a look that comes from conditional
+    formatting or the theme stays. ``style`` and ``runs`` are independent:
+    ``runs`` clears the text format runs of a cell with a link in them, and
+    ``style`` does not touch runs.
+
+    A cell whose link comes from a ``HYPERLINK`` formula loses the link and
+    keeps the formula, which then shows its label as plain text. Find such
+    cells first with ``linked_cells(..., detail=True)``, whose ``formula`` is
+    True for them.
 
     With ``runs``, a cell that holds a link on part of its text has its text
     format runs cleared whole, in the same request. The API cannot take a
@@ -383,7 +454,8 @@ def clear_link_format(
         )
     if sheet_id is None:
         sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
-    requests = _link_clears(sheet_id, positions, rows, partial)
+    field = CELL_STYLE_FIELDS if style else CELL_LINK_FIELD
+    requests = _link_clears(sheet_id, positions, rows, partial, field)
     batch_update_spreadsheet(service, spreadsheet_id, requests)
 
 
@@ -411,11 +483,12 @@ def _link_clears(
     positions: Mapping[str, int],
     rows: Sequence[int] | None,
     partial: Sequence[LinkedCell],
+    field: str = CELL_LINK_FIELD,
 ) -> list[dict[str, Any]]:
-    """The requests that clear the cell link of a block, and the runs of ``partial``."""
+    """The requests that clear ``field`` of a block, and the runs of ``partial``."""
     spans = [None] if rows is None else _adjacent([row - 1 for row in rows])
     requests = [
-        link_clear(sheet_id, CELL_LINK_FIELD, across, down)
+        link_clear(sheet_id, field, across, down)
         for across in _adjacent(list(positions.values()))
         for down in spans
     ]
@@ -495,10 +568,7 @@ _URL_FIELDS = (
 # The properties the fix writes, and no others, so a cell keeps its bold, its
 # fill, and its font. The runs are not among them: in the request that sets a
 # link they take the link away, so they are cleared by a request of their own.
-_URL_FORMAT_FIELDS = ",".join(
-    f"userEnteredFormat.textFormat.{name}"
-    for name in ("link", "underline", "foregroundColorStyle")
-)
+_URL_FORMAT_FIELDS = CELL_STYLE_FIELDS
 
 _RGB = tuple[int, int, int]
 
@@ -781,6 +851,146 @@ def set_url_links(
     """
     return _fix_url_links(
         service, spreadsheet_id, tab, color, columns=columns, rows=rows
+    )
+
+
+# -- link styling --
+
+# Why a cell looks like a link and holds none, in the order a result lists them.
+_STYLE_REASON_ORDER = ("underline", "color")
+
+#: The reasons a :class:`StyledCell` can give.
+LINK_STYLE_REASONS = frozenset(_STYLE_REASON_ORDER)
+
+# The grid read of styled cells: whether the cell holds a link, its text, and
+# the look of its text as shown (a link's look has no user-entered property)
+# and as set. The older ``foregroundColor`` is read because a theme colour has
+# no rgb under ``foregroundColorStyle``.
+_STYLE_FIELDS = (
+    "sheets(data(rowData(values(hyperlink,formattedValue,textFormatRuns(format(link)),"
+    "userEnteredFormat(textFormat(underline,foregroundColorStyle,foregroundColor)),"
+    "effectiveFormat(textFormat(underline,foregroundColorStyle,foregroundColor))))))"
+)
+
+
+@dataclass(frozen=True)
+class StyledCell:
+    """A cell that looks like a link and holds none, and why.
+
+    ``row`` is the 1-based spreadsheet row, ``column`` the header name, and
+    ``text`` the cell's displayed text. ``reasons`` are names from
+    :data:`LINK_STYLE_REASONS`, in the order ``underline``, ``color``.
+    ``resettable`` says whether every reason is a property the cell sets
+    itself, which ``clear_link_format(..., style=True)`` resets; when False,
+    some of the look comes from conditional formatting or the theme, and a
+    reset leaves it.
+    """
+
+    row: int
+    column: str
+    text: str
+    reasons: tuple[str, ...]
+    resettable: bool
+
+
+def _shown_rgb(text_format: Mapping[str, Any]) -> _RGB:
+    """The channels of the text colour a format shows.
+
+    A theme colour has no rgb under ``foregroundColorStyle``, so it is read
+    from the resolved ``foregroundColor`` beside it.
+    """
+    style = text_format.get("foregroundColorStyle", {})
+    if "themeColor" in style and "rgbColor" not in style:
+        return _channels(text_format.get("foregroundColor", {}))
+    return _channels(style.get("rgbColor", {}))
+
+
+def _style_reasons(
+    cell: Mapping[str, Any], rgbs: Collection[_RGB]
+) -> tuple[tuple[str, ...], bool]:
+    """Why a cell with text and no link looks like a link, and if a reset undoes it."""
+    shown = cell.get("effectiveFormat", {}).get("textFormat", {})
+    entered = cell.get("userEnteredFormat", {}).get("textFormat", {})
+    found = {
+        "underline": bool(shown.get("underline")),
+        "color": _shown_rgb(shown) in rgbs,
+    }
+    own = {
+        "underline": bool(entered.get("underline")),
+        "color": "foregroundColorStyle" in entered or "foregroundColor" in entered,
+    }
+    reasons = tuple(reason for reason in _STYLE_REASON_ORDER if found[reason])
+    return reasons, all(own[reason] for reason in reasons)
+
+
+def styled_cells(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    columns: Sequence[str] | None = None,
+    rows: Sequence[int] | None = None,
+    header: Sequence[str] | None = None,
+    colors: Sequence[str] = (LINK_COLOR,),
+) -> list[StyledCell]:
+    """Every cell of ``columns`` and ``rows`` that looks like a link and holds none.
+
+    A cell holds no link when it has no link on the whole cell and none in its
+    text format runs. It looks like one when its text is underlined
+    (``underline``), or shown in one of ``colors`` (``color``): each
+    ``#rrggbb``, compared to the nearest of 255 steps a channel. The default
+    is the colour the API gives a link, :data:`LINK_COLOR`; a caller whose
+    links are in another colour, as ``link_urls`` sets, names it, and a
+    caller that wants underlines alone passes none. Either reason is enough,
+    so a cell underlined in black is found. Returns the cells in row then
+    column order.
+
+    The look is read from the effective format, since a link's own look has
+    no user-entered property and conditional formatting or a theme can
+    produce it; a theme colour is read from its resolved colour.
+    ``StyledCell.resettable`` says whether the cell sets the look itself. A
+    cell with no text is never returned: nothing of it shows. Styling inside
+    text format runs is not read, only a link there counts as a link.
+
+    ``columns`` defaults to every named column of the header, the header row
+    a row like any other, and ``rows`` (1-based spreadsheet rows) to every
+    row; ``rows`` filters the result of one grid read
+    (:func:`~gdrives.sheets.values.pull_grid`) over the columns from the first
+    wanted to the last. ``header`` saves the read of row 1.
+
+    Raises ValueError, before any request, for a colour that is not
+    ``#rrggbb`` or a row below 1, and before the grid read for a blank or
+    repeated column name, or a name the header lacks or repeats.
+    """
+    rgbs = {_rgb(color) for color in colors}
+    _check_rows(rows)
+    positions, _ = _wanted(service, spreadsheet_id, tab, columns, header)
+    if not positions:
+        return []
+    first, last = min(positions.values()), max(positions.values())
+    names = {index: name for name, index in positions.items()}
+    wanted = None if rows is None else set(rows)
+    span = f"{a1_quote(tab)}!{column_letter(first)}:{column_letter(last)}"
+    data = pull_grid(service, spreadsheet_id, span, _STYLE_FIELDS)
+    found: list[StyledCell] = []
+    for row, held in enumerate(data.get("rowData", []), start=1):
+        if wanted is not None and row not in wanted:
+            continue
+        for index, cell in enumerate(held.get("values", []), start=first):
+            text = cell.get("formattedValue", "")
+            if index not in names or not text or _holds_link(cell):
+                continue
+            reasons, resettable = _style_reasons(cell, rgbs)
+            if reasons:
+                found.append(StyledCell(row, names[index], text, reasons, resettable))
+    return found
+
+
+def _holds_link(cell: Mapping[str, Any]) -> bool:
+    """Whether a cell of a grid read has a link, on the whole cell or in its runs."""
+    return "hyperlink" in cell or any(
+        "uri" in run.get("format", {}).get("link", {})
+        for run in cell.get(RUNS_FIELD, [])
     )
 
 

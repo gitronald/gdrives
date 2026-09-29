@@ -11,9 +11,14 @@ from googleapiclient.errors import HttpError
 from helpers import LINK_BLUE, FakeSheetGrid, http_error
 
 from gdrives.sheets import (
+    CELL_STYLE_FIELDS,
+    LINK_COLOR,
+    LINK_DETAIL_FIELDS,
+    LINK_STYLE_REASONS,
     URL_LINK_REASONS,
     LinkedCell,
     ReadBackError,
+    StyledCell,
     UrlLinkProblem,
     add_columns,
     clear_link_format,
@@ -25,8 +30,10 @@ from gdrives.sheets import (
     set_column_widths,
     set_url_links,
     strip_links,
+    styled_cells,
     url_link_problems,
 )
+from gdrives.sheets.structure import _shown_rgb, _style_reasons
 
 READ = "values.get"
 GRID = "spreadsheets.get"
@@ -433,6 +440,255 @@ class TestLinkedCells:
         with pytest.raises(ValueError, match=message):
             linked_cells(grid, "S", "T", columns=columns)
         assert GRID not in grid.methods
+
+
+UNDERLINE = "userEnteredFormat.textFormat.underline"
+COLOR = "userEnteredFormat.textFormat.foregroundColorStyle"
+
+FORMULA = '=HYPERLINK("https://example.com/b", "label")'
+
+
+def detail_grid():
+    """A tab with a link of each kind an audit sorts, and cells that only look linked.
+
+    Column ``site`` holds, from row 2: a link to its own text, a bare domain, a
+    link to somewhere else, a ``HYPERLINK`` formula, a formula that does not
+    call it, and a link on an empty cell. ``note`` holds a link in a run.
+    """
+    grid = FakeSheetGrid(
+        {
+            "T": [
+                ["id", "site", "note"],
+                ["a", "https://own.io", "see the docs"],
+                ["b", "example.com", ""],
+                ["c", "click here", ""],
+                ["d", "label", ""],
+                ["e", "plain", ""],
+                ["f", "", ""],
+            ]
+        }
+    )
+    formats = grid.tab("T").formats
+    formats[(3, 1)] = {"link": "https://elsewhere.io"}
+    formats[(4, 1)] = {"link": "https://example.com/b", "formula": FORMULA}
+    formats[(5, 1)] = {"link": "https://x.io", "formula": "=A1"}
+    formats[(6, 1)] = {"link": "https://empty.io"}
+    formats[(1, 2)] = {"runs": [run_link("https://docs.example", 4)]}
+    return grid
+
+
+class TestLinkedCellsDetail:
+    def test_a_cell_built_as_before_is_unchanged(self):
+        cell = LinkedCell(2, "site", ("https://a.io",), in_runs=False)
+        assert (cell.text, cell.formula) == ("", False)
+        assert cell == LinkedCell(2, "site", ("https://a.io",), False, "", False)
+
+    def test_the_text_and_the_formula_of_each_link(self):
+        grid = detail_grid()
+        found = linked_cells(grid, "S", "T", detail=True)
+        assert found == [
+            LinkedCell(2, "site", ("https://own.io",), False, "https://own.io", False),
+            LinkedCell(2, "note", ("https://docs.example",), True, "see the docs"),
+            LinkedCell(3, "site", ("http://example.com",), False, "example.com"),
+            LinkedCell(4, "site", ("https://elsewhere.io",), False, "click here"),
+            LinkedCell(5, "site", ("https://example.com/b",), False, "label", True),
+            # A formula that does not call HYPERLINK holds a format link.
+            LinkedCell(6, "site", ("https://x.io",), False, "plain", False),
+            LinkedCell(7, "site", ("https://empty.io",), False, "", False),
+        ]
+        assert grid.calls[-1][1]["fields"] == LINK_DETAIL_FIELDS
+
+    def test_without_detail_the_read_and_the_result_are_those_of_0_14(self):
+        grid = detail_grid()
+        found = linked_cells(grid, "S", "T")
+        assert all((cell.text, cell.formula) == ("", False) for cell in found)
+        assert grid.calls[-1][1]["fields"] == (
+            "sheets(data(rowData(values(hyperlink,textFormatRuns(format(link))))))"
+        )
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ('=hyperlink("https://a.io","a")', True),
+            ('=IF(A1, HYPERLINK ("https://a.io","a"), "")', True),
+            ('=MYHYPERLINK("https://a.io")', False),
+            ("=A1", False),
+        ],
+    )
+    def test_the_rule_reads_the_call_of_hyperlink(self, formula, expected):
+        grid = detail_grid()
+        grid.tab("T").formats[(4, 1)]["formula"] = formula
+        (cell,) = [c for c in linked_cells(grid, "S", "T", detail=True) if c.row == 5]
+        assert cell.formula is expected
+
+
+def look(grid, row, column, **held):
+    grid.tab("T").formats[(row - 1, column - 1)] = held
+
+
+def styled_grid():
+    """Cells that look like a link and cells that do not."""
+    grid = FakeSheetGrid(
+        {
+            "T": [
+                ["id", "site", "note"],
+                ["a", "both", "blue only"],
+                ["b", "underlined", "black underline"],
+                ["c", "linked", "red"],
+                ["d", "plain", ""],
+                ["e", "", "run link"],
+            ]
+        }
+    )
+    look(grid, 2, 2, underline=True, color=LINK_BLUE)
+    look(grid, 3, 2, underline=True)
+    look(grid, 4, 2, link="https://a.io", underline=True, color=LINK_BLUE)
+    look(grid, 6, 2, underline=True, color=LINK_BLUE)
+    look(grid, 2, 3, color=LINK_BLUE)
+    look(grid, 3, 3, underline=True, color={"red": 0.0})
+    look(grid, 4, 3, color={"red": 1.0})
+    look(grid, 6, 3, runs=[run_link("https://docs.example")], color=LINK_BLUE)
+    return grid
+
+
+class TestStyledCells:
+    def test_the_cells_that_look_like_a_link_and_hold_none(self):
+        grid = styled_grid()
+        assert styled_cells(grid, "S", "T") == [
+            StyledCell(2, "site", "both", ("underline", "color"), True),
+            StyledCell(2, "note", "blue only", ("color",), True),
+            StyledCell(3, "site", "underlined", ("underline",), True),
+            StyledCell(3, "note", "black underline", ("underline",), True),
+        ]
+        assert grid.methods == [READ, GRID]
+        (_, kwargs) = grid.calls[-1]
+        assert kwargs["ranges"] == ["'T'!A:C"]
+        assert "effectiveFormat" in kwargs["fields"]
+
+    def test_a_link_makes_a_cell_a_link_and_a_run_link_does_too(self):
+        found = styled_cells(styled_grid(), "S", "T")
+        assert {(cell.row, cell.column) for cell in found}.isdisjoint(
+            {(4, "site"), (6, "note")}
+        )
+
+    def test_a_cell_with_no_text_is_not_returned(self):
+        found = styled_cells(styled_grid(), "S", "T")
+        assert (6, "site") not in {(cell.row, cell.column) for cell in found}
+
+    def test_the_colours_named_replace_the_default(self):
+        grid = styled_grid()
+        found = styled_cells(grid, "S", "T", colors=["#ff0000"])
+        assert [(cell.row, cell.column, cell.reasons) for cell in found] == [
+            (2, "site", ("underline",)),
+            (3, "site", ("underline",)),
+            (3, "note", ("underline",)),
+            (4, "note", ("color",)),
+        ]
+        assert [c.row for c in styled_cells(grid, "S", "T", colors=[])] == [2, 3, 3]
+        assert LINK_COLOR == "#1155cc"
+
+    def test_columns_rows_and_header_bound_the_result_and_the_read(self):
+        grid = styled_grid()
+        header = ["id", "site", "note"]
+        found = styled_cells(
+            grid, "S", "T", columns=["note"], rows=[3, 9], header=header
+        )
+        assert [(cell.row, cell.column) for cell in found] == [(3, "note")]
+        assert grid.methods == [GRID]
+        assert grid.calls[-1][1]["ranges"] == ["'T'!C:C"]
+
+    def test_a_reset_undoes_what_the_cell_sets_itself(self):
+        grid = styled_grid()
+        found = styled_cells(grid, "S", "T", rows=[2, 3])
+        clear_link_format(
+            grid, "S", "T", rows=[cell.row for cell in found], style=True, runs=False
+        )
+        assert styled_cells(grid, "S", "T") == []
+
+    def test_no_columns_asks_nothing(self):
+        grid = FakeSheetGrid({"T": []})
+        assert styled_cells(grid, "S", "T") == []
+        assert grid.methods == [READ]
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"colors": ["blue"]}, "a colour is written '#rrggbb'"),
+            ({"colors": "#1155cc"}, "a colour is written '#rrggbb'"),
+            ({"rows": [0]}, r"rows are spreadsheet rows, from 1: \[0\]"),
+            ({"columns": ["nope"]}, r"has no column\(s\) \['nope'\]"),
+        ],
+    )
+    def test_refusals_read_no_grid(self, options, message):
+        grid = styled_grid()
+        with pytest.raises(ValueError, match=message):
+            styled_cells(grid, "S", "T", **options)
+        assert GRID not in grid.methods
+
+    def test_the_reasons_are_a_fixed_set(self):
+        assert LINK_STYLE_REASONS == {"underline", "color"}
+
+
+class TestLookOfACell:
+    def test_a_theme_colour_is_read_from_its_resolved_colour(self):
+        theme = {
+            "foregroundColorStyle": {"themeColor": "LINK"},
+            "foregroundColor": LINK_BLUE,
+        }
+        assert _shown_rgb(theme) == (17, 85, 204)
+        assert _shown_rgb({"foregroundColorStyle": {"rgbColor": {}}}) == (0, 0, 0)
+        assert _shown_rgb({}) == (0, 0, 0)
+
+    def test_a_look_the_cell_does_not_set_is_not_resettable(self):
+        shown = {
+            "underline": True,
+            "foregroundColorStyle": {"themeColor": "LINK"},
+            "foregroundColor": LINK_BLUE,
+        }
+        cell = {"effectiveFormat": {"textFormat": shown}}
+        assert _style_reasons(cell, {(17, 85, 204)}) == (("underline", "color"), False)
+        entered = {"underline": True, "foregroundColorStyle": {"themeColor": "LINK"}}
+        cell["userEnteredFormat"] = {"textFormat": entered}
+        assert _style_reasons(cell, {(17, 85, 204)}) == (("underline", "color"), True)
+        entered.pop("underline")
+        assert _style_reasons(cell, {(17, 85, 204)}) == (("underline", "color"), False)
+
+
+class TestClearLinkFormatStyle:
+    def test_style_widens_the_mask_to_the_look_and_by_default_it_is_the_link_alone(
+        self,
+    ):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", runs=False)
+        assert {body["fields"] for _, body in requests_of(grid)} == {LINK}
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", runs=False, style=True)
+        assert {body["fields"] for _, body in requests_of(grid)} == {CELL_STYLE_FIELDS}
+        assert CELL_STYLE_FIELDS == ",".join([LINK, UNDERLINE, COLOR])
+
+    def test_the_cells_end_black_plain_and_keep_their_bold(self):
+        grid = linked_grid()
+        look(grid, 2, 2, link="https://a.io", underline=True, color=LINK_BLUE)
+        grid.tab("T").formats[(1, 1)]["bold"] = True
+        clear_link_format(grid, "S", "T", columns=["site"], style=True)
+        assert grid.format("T", 2, 2) == {"bold": True}
+        assert styled_cells(grid, "S", "T") == []
+
+    def test_runs_and_style_are_independent(self):
+        grid = linked_grid()
+        clear_link_format(grid, "S", "T", style=True)
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        fields = [body["fields"] for _, body in requests_of(grid)]
+        assert fields.count("textFormatRuns") == 2
+        assert fields.count(CELL_STYLE_FIELDS) == 2
+        assert linked_cells(grid, "S", "T") == []
+
+    def test_a_formula_cell_loses_the_link_and_keeps_the_formula(self):
+        grid = detail_grid()
+        clear_link_format(grid, "S", "T", columns=["site"], rows=[5], style=True)
+        assert 5 not in {cell.row for cell in linked_cells(grid, "S", "T")}
+        assert grid.tab("T").formats[(4, 1)]["formula"] == FORMULA
+        assert grid.values("T")[4][1] == "label"
 
 
 class TestClearLinkFormat:

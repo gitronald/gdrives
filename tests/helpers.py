@@ -720,6 +720,7 @@ class _GridTab:
         domain, and gone for anything else.
         """
         self.cells[r][c] = None if value == "" else value
+        self.held(r, c).pop("formula", None)
         if link:
             self.held(r, c).pop("link", None)
             target = _link_target(value)
@@ -843,7 +844,10 @@ class FakeSheetGrid:
       ``userEnteredFormat`` under its ``fields`` mask, for the one range
       asked, and ``effectiveFormat`` for a cell with a value or a format: a
       link underlines its text and shows it in :data:`LINK_BLUE` unless the
-      cell's own format says otherwise. Inserted rows and columns take
+      cell's own format says otherwise. A cell whose format holds a
+      ``formula`` (set by a test, with the label as the cell's value) returns
+      it as ``userEnteredValue.formulaValue`` when the mask names it, and a
+      write of a value drops it. Inserted rows and columns take
       ``bold`` and the number format from the side they inherit from, and
       nothing else.
     - A number format (``userEnteredFormat.numberFormat``) is held as set by
@@ -1158,6 +1162,8 @@ class FakeSheetGrid:
         value = tab.cells[r][c]
         if "effectiveFormat" in fields and (value is not None or held):
             cell["effectiveFormat"] = {"textFormat": _shown(held)}
+        if "formulaValue" in fields and "formula" in held:
+            cell["userEnteredValue"] = {"formulaValue": held["formula"]}
         if "formattedValue" in fields and value is not None:
             cell["formattedValue"] = _displayed(value)
         if "effectiveValue" in fields and value is not None:
