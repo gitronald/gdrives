@@ -45,6 +45,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
   ``run_target``) and report it
+- ``transforms``: stock ``transform`` hooks (``trim_cells``)
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -231,6 +232,7 @@ from gdrives.sheets.table import (
     pull_serials,
     read_tab,
 )
+from gdrives.sheets.transforms import trim_cells
 from gdrives.sheets.typed import (
     NUMBER_FORMAT_FIELD,
     dated_cells,
@@ -460,6 +462,7 @@ __all__ = [
     "tab_listing",
     "tab_sheet_ids",
     "to_cell",
+    "trim_cells",
     "update_values",
     "url_link_problems",
     "verify",

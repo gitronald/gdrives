@@ -980,6 +980,7 @@ SUBMODULES = (
     "structure",
     "sync",
     "table",
+    "transforms",
     "typed",
     "values",
 )
