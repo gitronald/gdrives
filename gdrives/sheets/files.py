@@ -22,24 +22,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from gdrives.local import write_text
+from gdrives.local import line_ending, write_text
 from gdrives.sheets.cells import ColumnType, decode_rows, encode_rows
 
 # The record file formats, by lower-cased extension; the value is the delimiter
 # for a delimited format, None for JSON.
 _FORMATS: dict[str, str | None] = {".csv": ",", ".tsv": "\t", ".json": None}
-
-#: The names of the line endings a delimited file can be written with.
-NEWLINES = frozenset({"lf", "crlf"})
-
-_TERMINATORS = {"lf": "\n", "crlf": "\r\n"}
-
-
-def _terminator(newline: str) -> str:
-    """The line ending called ``newline``, refusing a name that is not one."""
-    if newline not in NEWLINES:
-        raise ValueError(f"newline must be one of {sorted(NEWLINES)}, not {newline!r}")
-    return _TERMINATORS[newline]
 
 
 def read_values_csv(path: str, *, delimiter: str = ",") -> list[list[str]]:
@@ -74,7 +62,7 @@ def write_values_csv(
     ``"crlf"`` (the default, and the ``csv`` module's) or ``"lf"``; a line
     break inside a cell is written as the cell holds it.
     """
-    terminator = _terminator(newline)
+    terminator = line_ending(newline)
     buf = io.StringIO()
     if bom:
         buf.write("\ufeff")
@@ -231,7 +219,7 @@ def write_records(
     is written with LF, and refuses ``bom`` and any other ``newline``.
     """
     delimiter = _format(path)
-    _terminator(newline)
+    line_ending(newline)
     _check_columns(path, columns)
     grid = _row_cells(path, columns, rows)
     if delimiter is not None:

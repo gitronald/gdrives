@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from gdrives.local import safe_filename
+from gdrives.local import NEWLINES, safe_filename
 from gdrives.sheets.cells import (
     BLANK_KEYS,
     COLUMN_TYPES,
@@ -39,7 +39,6 @@ from gdrives.sheets.cells import (
     STRICT_TYPES,
     ColumnSchema,
 )
-from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
 from gdrives.sheets.structure import _rgb
 from gdrives.sheets.values import RAW, RENDERS, USER_ENTERED

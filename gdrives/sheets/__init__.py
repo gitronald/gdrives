@@ -48,6 +48,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``commands``: the ``run_*`` CLI entry points
 """
 
+from gdrives.local import NEWLINES
 from gdrives.sheets.a1 import (
     a1_quote,
     a1_to_grid_range,
@@ -133,7 +134,6 @@ from gdrives.sheets.create import (
     spreadsheet_url,
 )
 from gdrives.sheets.files import (
-    NEWLINES,
     Records,
     read_records,
     read_values_csv,

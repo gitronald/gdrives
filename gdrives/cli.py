@@ -111,12 +111,22 @@ def export(
             help="Output: .docx/.txt/.md (Docs), .xlsx/.csv (Sheets), .pptx (Slides)",
         ),
     ],
+    newline: Annotated[
+        str | None,
+        typer.Option(
+            "--newline",
+            help="Rewrite a text export's line endings: lf or crlf "
+            "(default: as Drive sends them)",
+        ),
+    ] = None,
 ):
     """Export a Doc to .docx/.txt/.md, a Sheet to .xlsx/.csv, or Slides to .pptx."""
     from gdrives.export import run
 
     with _cli_errors():
-        run(source, output)
+        # Only an asked-for newline is passed, so a call without one is unchanged.
+        options = {} if newline is None else {"newline": newline}
+        run(source, output, **options)
 
 
 @app.command()

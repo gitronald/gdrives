@@ -111,6 +111,19 @@ def _escape_control(match: re.Match[str]) -> str:
     return f"\\x{ord(match.group()):02x}"
 
 
+#: The names of the line endings a text file can be written with.
+NEWLINES = frozenset({"lf", "crlf"})
+
+_LINE_ENDINGS = {"lf": "\n", "crlf": "\r\n"}
+
+
+def line_ending(newline: str) -> str:
+    """The line ending called ``newline``, refusing a name that is not one."""
+    if newline not in NEWLINES:
+        raise ValueError(f"newline must be one of {sorted(NEWLINES)}, not {newline!r}")
+    return _LINE_ENDINGS[newline]
+
+
 def printable(text: str) -> str:
     """Escape control characters so a Drive name can't drive the terminal.
 

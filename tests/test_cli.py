@@ -64,6 +64,18 @@ class TestExport:
             "o": "out.docx",
         }
 
+    def test_newline_option_is_passed_on(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.export.run",
+            lambda source, output, newline: rec.update(n=newline),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["export", "SHEET", "-o", "out.csv", "--newline", "lf"]
+        )
+        assert result.exit_code == 0
+        assert rec == {"n": "lf"}
+
     def test_value_error_exits_1(self, monkeypatch, capsys):
         def boom(source, output):
             raise ValueError("Unsupported output extension '.bad'")
