@@ -422,6 +422,58 @@ class TestSheetsLinksOnATarget:
         (tmp_path / CONFIG_NAME).write_text(json.dumps(config), encoding="utf-8")
         assert env.invoke("sheets-links", "roster").exit_code == 2
 
+    def renamed(self, env, tmp_path, sheet_id):
+        """A target whose ``Members`` tab has a ``sheet_id``, renamed on the sheet."""
+        env.grid.tabs[0].title = "Members 2026"
+        tab = {"local": "m.csv", "key": ["name"], "sheet_id": sheet_id}
+        config = config_of(
+            {
+                "Members": {**tab, "link_urls": {"color": GREEN}},
+                "Dues": {
+                    "mode": "push",
+                    "local": "d.csv",
+                    "link_urls": {"color": BLUE},
+                },
+            }
+        )
+        (tmp_path / CONFIG_NAME).write_text(json.dumps(config), encoding="utf-8")
+
+    def test_a_tab_with_a_sheet_id_is_found_under_the_title_it_has_now(
+        self, env, tmp_path
+    ):
+        self.renamed(env, tmp_path, env.grid.tabs[0].sheet_id)
+        result = env.invoke("sheets-links", "roster")
+        assert result.exit_code == 2
+        assert [
+            line for line in result.stdout.splitlines() if line.startswith("tab ")
+        ] == [
+            "tab 'Members 2026' (preview, colour #33aa55)",
+            "tab 'Dues' (preview, colour #1155cc)",
+        ]
+        assert result.stderr == (
+            "Spreadsheet ID: SHEET\n"
+            "Tab 'Members': renamed on the sheet: 'Members' is now 'Members 2026'\n"
+            + HINT
+        )
+        applied = env.invoke("sheets-links", "roster", "--tab", "Members", "--apply")
+        assert applied.exit_code == 0
+        assert "fixed: 2 URL cell(s) linked" in applied.stdout
+        assert url_link_problems(env.grid, "SHEET", "Members 2026", color=GREEN) == []
+
+    def test_a_sheet_id_the_spreadsheet_lacks_is_refused_and_nothing_swept(
+        self, env, tmp_path
+    ):
+        self.renamed(env, tmp_path, 99)
+        result = env.invoke("sheets-links", "roster", "--apply")
+        assert result.exit_code == 1
+        assert "the spreadsheet has no tab with sheet_id 99" in result.stderr
+        assert result.stdout == "" and STRUCTURE not in env.grid.methods
+
+    def test_a_bad_colour_for_a_target_makes_no_request(self, env):
+        result = env.invoke("sheets-links", "roster", "--color", "blue")
+        assert result.exit_code == 1 and "'#rrggbb'" in result.stderr
+        assert env.grid.calls == []
+
     def test_a_target_whose_spreadsheet_is_a_url(self, env, tmp_path):
         config = config_of(
             {

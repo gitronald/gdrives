@@ -25,7 +25,7 @@ from gdrives.sheets.create import (
 )
 from gdrives.sheets.files import read_values_csv, write_records, write_values_csv
 from gdrives.sheets.hooks import resolve_schemas, resolve_target
-from gdrives.sheets.links import format_sweep, sweep_url_links
+from gdrives.sheets.links import _colors, format_sweep, sweep_url_links
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import retry_notices
 from gdrives.sheets.rules import (
@@ -44,6 +44,8 @@ from gdrives.sheets.schema import SCHEMA_COLUMNS, format_schema, schema_rows
 from gdrives.sheets.structure import get_column_widths
 from gdrives.sheets.sync import (
     SyncReport,
+    TabReport,
+    _sheet_title,
     format_report,
     pull_all_tabs,
     run_target,
@@ -51,12 +53,14 @@ from gdrives.sheets.sync import (
 from gdrives.sheets.values import (
     RAW,
     USER_ENTERED,
+    TabListing,
     _lookup_tab,
     _tab_ids,
     append_values,
     clear_values,
     first_tab,
     pull_values,
+    tab_listing,
     tab_sheet_ids,
     update_values,
 )
@@ -843,6 +847,31 @@ def _links_plan(
     return named or list(colors), colors
 
 
+def _links_on_sheet(
+    target: Target,
+    titles: Sequence[str],
+    colors: str | Mapping[str, str],
+    listing: TabListing,
+) -> tuple[list[str], str | Mapping[str, str]]:
+    """The tabs to sweep and their colours, by the titles they have on the sheet.
+
+    A tab of the target with a ``sheet_id`` is found by it, as a sync finds
+    it, and a title that differs from the config's is noted on stderr. A
+    ``sheet_id`` the spreadsheet lacks raises ValueError, before any tab is
+    swept. A tab with none keeps its title, which the sweep looks for.
+    """
+    found: dict[str, str] = {}
+    for title in titles:
+        report = TabReport(tab=title, mode=target.tab(title).mode)
+        on_sheet = _sheet_title(title, target.tab(title).sheet_id, listing, report)
+        found[title] = title if on_sheet is None else on_sheet
+        for note in report.notes:
+            print(f"Tab {printable(repr(title))}: {printable(note)}", file=sys.stderr)
+    if not isinstance(colors, str):
+        colors = {found[title]: colors[title] for title in titles}
+    return list(found.values()), colors
+
+
 def run_schema(
     name: str,
     *,
@@ -891,7 +920,9 @@ def run_links(
     target: see :func:`_links_target` for how the two are told apart. A
     spreadsheet needs ``color`` (``#rrggbb``); a target's tabs take their
     ``link_urls`` colour, or ``color`` when given, which applies to every tab
-    swept. No hooks or schema of the config are imported. Previews on the
+    swept. A target's tab with a ``sheet_id`` is found by it, under whatever
+    title it has now, as a sync finds it. No hooks or schema of the config are
+    imported. Previews on the
     read-only scope unless ``apply``. Prints the report and returns its exit
     code: 0 when every URL cell follows the rule or was fixed, 1 for an
     error, 2 when a preview found cells to fix.
@@ -911,7 +942,15 @@ def run_links(
         source if target is None else target.spreadsheet
     )
     service = build_sheets_service(scopes)
-    sweep = sweep_url_links(service, spreadsheet_id, titles, color=colors, apply=apply)
+    listing: TabListing | None = None
+    if target is not None and titles is not None:
+        # The colours are checked before the listing, the first request.
+        _colors(colors, titles)
+        listing = tab_listing(service, spreadsheet_id)
+        titles, colors = _links_on_sheet(target, titles, colors, listing)
+    sweep = sweep_url_links(
+        service, spreadsheet_id, titles, color=colors, apply=apply, listing=listing
+    )
     print(format_sweep(sweep))
     _hint_pending(sweep.pending)
     return sweep.exit_code

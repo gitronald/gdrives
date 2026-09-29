@@ -20,7 +20,7 @@ from gdrives.sheets.structure import (
     _url_problems,
     _write_url_links,
 )
-from gdrives.sheets.values import tab_listing
+from gdrives.sheets.values import TabListing, tab_listing
 
 # What one tab's failure is, as in a sync run: the tab is reported and the
 # sweep goes on to the next, since tabs are independent. ReadBackError and
@@ -111,6 +111,7 @@ def sweep_url_links(
     *,
     color: str | Mapping[str, str],
     apply: bool = False,
+    listing: TabListing | None = None,
 ) -> LinkSweep:
     """Check the URL cells of each of ``tabs``; with ``apply``, fix them.
 
@@ -118,7 +119,8 @@ def sweep_url_links(
     a tab it lacks is refused before any write, with the tabs it has.
     ``color`` (``#rrggbb``) is the wanted colour of every tab, or a mapping
     of tab title to colour that has one for each tab swept. A colour that is
-    not ``#rrggbb`` raises ValueError before any request.
+    not ``#rrggbb`` raises ValueError before any request. ``listing`` is the
+    spreadsheet's tabs when the caller has read them, which saves the listing.
 
     Each tab is read as :func:`~gdrives.sheets.structure.url_link_problems`
     reads it, over every named column, and with ``apply`` the cells found are
@@ -131,7 +133,9 @@ def sweep_url_links(
     """
     titles = None if tabs is None else list(dict.fromkeys(tabs))
     colors = _colors(color, titles)
-    grids = tab_listing(service, spreadsheet_id).grids
+    if listing is None:
+        listing = tab_listing(service, spreadsheet_id)
+    grids = listing.grids
     if titles is None:
         titles = list(grids)
         colors = _colors(color, titles)
