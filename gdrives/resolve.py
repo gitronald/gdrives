@@ -220,18 +220,16 @@ def resolve_file_id(source: str, service: Service | None = None) -> str:
     return file_id
 
 
-# What a type is called to a person who uploaded a file of it, and whether
-# ``sheets-create --from`` converts it.
+# What a type is called to a person who uploaded a file of it.
 _TYPE_WORDS = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
-        "an Excel workbook",
-        True,
+        "an Excel workbook"
     ),
-    "application/vnd.ms-excel": ("an Excel workbook", False),
-    "text/csv": ("a CSV file", True),
-    "application/vnd.google-apps.folder": ("a folder", False),
-    "application/vnd.google-apps.document": ("a Google Doc", False),
-    "application/vnd.google-apps.presentation": ("a Google Slides file", False),
+    "application/vnd.ms-excel": "an Excel workbook",
+    "text/csv": "a CSV file",
+    "application/vnd.google-apps.folder": "a folder",
+    "application/vnd.google-apps.document": "a Google Doc",
+    "application/vnd.google-apps.presentation": "a Google Slides file",
 }
 
 
@@ -241,14 +239,19 @@ def check_spreadsheet(file: DriveFile) -> None:
     The Sheets API answers a workbook uploaded as-is with an error that does not
     say what is wrong with the file. ``file`` needs ``name`` and ``mimeType``; a
     file the caller resolved itself (a path walk's entry) is checked at no cost.
+    A type that ``sheets-create --from`` converts
+    (:data:`~gdrives.sheets.create.SOURCE_MIMES`) is refused with that way out.
     """
     mime = file.get("mimeType", "")
     if mime == SPREADSHEET_MIME:
         return
-    words, convertible = _TYPE_WORDS.get(mime, (None, False))
+    # Imported here, since the sheets package is not needed to resolve a path.
+    from gdrives.sheets.create import SOURCE_MIMES
+
+    words = _TYPE_WORDS.get(mime)
     kind = f"{words} ({mime})" if words else f"of type {mime or 'unknown'}"
     message = f"'{printable(file['name'])}' is {kind}, not a Google spreadsheet"
-    if convertible:
+    if mime in SOURCE_MIMES.values():
         message += (
             "; download it and convert the local copy with 'gdrives "
             "sheets-create --from'"

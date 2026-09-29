@@ -339,6 +339,18 @@ class TestResolveSpreadsheetId:
         assert message.endswith("not a Google spreadsheet") is not advice
         assert ("sheets-create --from" in message) is advice
 
+    def test_every_type_sheets_create_converts_is_refused_with_the_advice(
+        self, monkeypatch
+    ):
+        from gdrives.sheets import create
+
+        mimes = {**create.SOURCE_MIMES, ".ods": "application/x-synthetic-sheet"}
+        monkeypatch.setattr(create, "SOURCE_MIMES", mimes)
+        for mime in mimes.values():
+            file = {"id": "f", "name": "Roster", "mimeType": mime}
+            with pytest.raises(ValueError, match="sheets-create --from"):
+                check_spreadsheet(file)
+
     @patch("gdrives.resolve.load", return_value=_DRIVES)
     def test_a_drive_alone_is_not_a_spreadsheet(self, _load, mock_service):
         with pytest.raises(ValueError, match="'My Drive' is a folder"):
