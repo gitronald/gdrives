@@ -166,3 +166,41 @@ with `gdrives.testing`, which the guide's test runs), and `.claude/CLAUDE.md`.
 `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyrefly check`, and
 `uv run pytest` (the live suite included, run once at the end by the orchestrating
 session).
+
+## Log
+
+### 2026-09-29
+
+All ten steps are on `feature/caller-seams-and-fakes`, one PR. The full suite,
+live tests included, passed at the end: 3839 passed, 1 skipped (the revisions
+test that needs `GDRIVES_TEST_FILE_ID`), coverage 100%.
+
+Where the work differs from the plan:
+
+- **Step 1.** `pending_hint` takes a `TabLinks` as well as the three types the plan
+  names. `sheets/sync.py` imports the two link types from `sheets/links.py`, which
+  imports nothing from it, so no `Protocol` was needed.
+- **Step 2.** Four lines of the fakes had no test. The `effectiveValue` of a grid
+  read, which no test and no library call asked for, got a test and stayed, since
+  it answers as the API does. `patch_sheets_service` takes either fake.
+- **Step 3.** The API refuses the range, so plan 019's fix stands. It also takes
+  two ranges the fake refused, one that starts inside the grid and ends past it and
+  one that holds no cell, so the fake changed in both directions. The refusal names
+  the request's place in its batch, which the fake now does. The findings are in
+  `live-findings.md`. The live test of the last-row case was run once with the
+  check taken out of `_row_spans`, failed with the API's 400, and the check was
+  put back unchanged.
+- **Step 4.** The mode is spelled as the config's own messages spell it, `true` and
+  `'local'`. The remedy at the local stage is the schema entry alone: taking a
+  column out of a local file is not advice the library should give. `'local'` is
+  offered for a sheet column the run does not read, which for a pull under `true`
+  is a header column outside `columns`, and never for a column a pull reads, where
+  it would change nothing.
+- **Step 7.** `ColumnSchema.allowed_cells` is public, since a caller that renders a
+  schema wants the same strings. Measured on 50,000 cells: 50 allowed `str`
+  values, 0.16 s before and 0.01 s after; 28 allowed `datetime` values, 1.41 s
+  and 0.07 s.
+- **Step 8.** No new test: the row filters answer as they did, and the tests of
+  `clear_link_format` and `strip_links` cover them.
+- **Step 9.** The library parameter is `newline_cells` on `export_file` and `run`,
+  and `cells` on `set_line_endings` and `check_newline`.
