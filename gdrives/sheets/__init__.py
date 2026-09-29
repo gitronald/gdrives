@@ -40,7 +40,7 @@ pull_values`` works regardless of which submodule defines a name:
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
-  ``pull_tab``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
+  ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
   ``run_target``) and report it
 - ``commands``: the ``run_*`` CLI entry points
 """
@@ -193,6 +193,7 @@ from gdrives.sheets.structure import (
 from gdrives.sheets.sync import (
     STAGES,
     CheckContext,
+    PullError,
     Replacement,
     SyncReport,
     TabPlan,
@@ -201,6 +202,7 @@ from gdrives.sheets.sync import (
     format_report,
     plan_tab,
     pull_all_tabs,
+    pull_records,
     pull_tab,
     push_rows,
     push_tab,
@@ -294,6 +296,7 @@ __all__ = [
     "OVERRIDE_REASONS",
     "Override",
     "Problem",
+    "PullError",
     "RATE_LIMIT_STATUSES",
     "RAW",
     "RENDERS",
@@ -384,6 +387,7 @@ __all__ = [
     "pull_all_tabs",
     "pull_grid",
     "pull_many",
+    "pull_records",
     "pull_serials",
     "pull_tab",
     "pull_values",

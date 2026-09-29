@@ -23,7 +23,9 @@ from gdrives.sheets import (
     MergePlan,
     NewRow,
     Override,
+    PullError,
     ReadBackError,
+    Records,
     Replacement,
     RowFlag,
     SheetChangedError,
@@ -31,10 +33,12 @@ from gdrives.sheets import (
     TabConfig,
     TabReport,
     Target,
+    decode_rows,
     format_report,
     parse_config,
     plan_tab,
     pull_all_tabs,
+    pull_records,
     pull_tab,
     push_rows,
     push_tab,
@@ -1861,3 +1865,97 @@ class TestPullStrictSchema:
         report = pull_tab(grid, "S", tab, apply=True)
         assert report.problems == []
         assert rows_of(tab.local) == ROWS
+
+
+class TestPullRecords:
+    def test_reads_the_tab_as_records_and_writes_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        records = pull_records(grid, "S", "T", key=["id"])
+        assert records == Records(HEADER, [dict(zip(HEADER, row)) for row in ROWS])
+        assert list(tmp_path.iterdir()) == []
+        assert writes(grid) == []
+
+    def test_takes_what_a_pull_tab_takes(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        records = pull_records(
+            grid,
+            "S",
+            "T",
+            key=("id",),
+            schema={"amt": ColumnSchema("int")},
+            strict_schema=False,
+            exclude=["name"],
+            render="formatted",
+            blank_keys="partial",
+        )
+        assert records.columns == ["id", "amt"]
+        assert decode_rows(records.rows, {"amt": "int"}) == [
+            {"id": "a", "amt": 1},
+            {"id": "b", "amt": 2},
+        ]
+
+    def test_columns_and_sheet_id_pick_the_tab_and_its_columns(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        records = pull_records(
+            grid, "S", "Renamed", columns=["id"], sheet_id=grid.tab("T").sheet_id
+        )
+        assert records.rows == [{"id": "a"}, {"id": "b"}]
+
+    def test_hooks_and_transform_are_pull_tabs(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        seen: list[str] = []
+        records = pull_records(
+            grid,
+            "S",
+            "T",
+            transform=lambda rows: [
+                {**row, "name": row["name"].upper()} for row in rows
+            ],
+            validate=lambda rows: seen.append(rows[0]["name"]) or [],
+            check=lambda context: [],
+            warn=lambda context: [f"{len(context.rows)} rows"],
+        )
+        assert seen == ["ADA"] and records.rows[0]["name"] == "ADA"
+
+    def test_warnings_are_read_from_a_report_the_caller_gives(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = TabReport(tab="T", mode="pull")
+        pull_records(grid, "S", "T", warn=lambda context: ["odd"], report=report)
+        assert report.warnings == ["odd"]
+
+    def test_problems_raise_with_the_report(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(PullError) as raised:
+            pull_records(
+                grid, "S", "T", schema={"amt": ColumnSchema("int", allowed=["1"])}
+            )
+        error = raised.value
+        assert isinstance(error, ValueError)
+        assert error.report.problems == [
+            "T (sheet): row 2, column 'amt': '2' is not one of ['1']"
+        ]
+        assert str(error) == format_report(error.report)
+
+    def test_a_refusal_raises_with_the_error_in_the_report(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(PullError) as raised:
+            pull_records(grid, "S", "Nope")
+        assert raised.value.report.tab_state == "missing"
+        assert "no tab named 'Nope'" in (raised.value.report.error or "")
+        assert "error: no tab named 'Nope'" in str(raised.value)
+
+    def test_an_api_error_raises_with_the_cause(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        grid.fail("values.get", http_error(403, "no access"))
+        with pytest.raises(PullError) as raised:
+            pull_records(grid, "S", "T")
+        assert isinstance(raised.value.__cause__, HttpError)
+        assert raised.value.report.error
+
+    def test_a_bad_combination_is_refused_before_any_request(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(ValueError, match="contradict") as raised:
+            pull_records(grid, "S", "T", columns=["id"], exclude=["name"])
+        assert not isinstance(raised.value, PullError)
+        assert grid.calls == []

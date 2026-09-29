@@ -90,7 +90,7 @@ from gdrives.sheets.config import (
 from gdrives.sheets.files import Records, read_records, write_records
 from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
-from gdrives.sheets.stores import FileStore, Store
+from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     UrlLinkProblem,
@@ -1589,6 +1589,98 @@ def pull_tab(
         store.write(table.columns, table.rows)
         report.wrote_local = True
     return report
+
+
+class PullError(ValueError):
+    """A pull of :func:`pull_records` that was refused or found problems.
+
+    ``report`` is the tab's :class:`TabReport`, and the message is
+    ``format_report(report)``, so printing the error prints what the commands
+    would.
+    """
+
+    def __init__(self, report: TabReport) -> None:
+        super().__init__(format_report(report))
+        self.report = report
+
+
+def pull_records(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    columns: Sequence[str] | None = None,
+    key: Sequence[str] = (),
+    blank_keys: str = "refuse",
+    schema: Mapping[str, ColumnSchema] | None = None,
+    strict_schema: bool = False,
+    exclude: Sequence[str] = (),
+    render: str = "unformatted",
+    sheet_id: int | None = None,
+    validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
+    transform: Transform | None = None,
+    listing: TabListing | None = None,
+    report: TabReport | None = None,
+) -> Records:
+    """Read the tab titled ``tab`` into memory, checked as a pull checks it.
+
+    This is :func:`pull_tab` with ``apply`` on and the tab's local side a
+    :class:`~gdrives.sheets.stores.MemoryStore`, so nothing is read from or
+    written to a file, and a pull tab in a config and this call refuse the
+    same things. The arguments are those of a pull tab (``columns``, ``key``,
+    ``blank_keys``, ``schema``, ``strict_schema``, ``exclude``, ``render``,
+    ``sheet_id``) and of :func:`pull_tab` (the hooks, ``transform``, and
+    ``listing``). A combination of them a tab refuses, such as ``exclude``
+    with ``columns``, raises the ValueError :class:`TabConfig` raises, before
+    any request.
+
+    Returns the rows as the store holds them: :class:`Records` of the columns
+    read and their rows, as canonical cell strings. :func:`decode_rows`
+    turns them into typed values.
+
+    Raises :class:`PullError` when the pull did not cleanly succeed: the
+    report has an ``error`` (a refusal, an API error) or ``problems`` (schema,
+    ``validate``, ``check``), which is when ``report.failed`` is true and a
+    pull's exit code is 1. Its ``report`` and message are the tab's
+    :class:`TabReport` and its rendering. What ``warn`` says fails nothing;
+    pass a ``report`` of your own and read its ``warnings`` afterwards.
+    """
+    report = report if report is not None else TabReport(tab=tab, mode="pull")
+    store = MemoryStore()
+    pull = TabConfig(
+        title=tab,
+        store=store,
+        mode="pull",
+        key=tuple(key),
+        columns=tuple(columns) if columns is not None else None,
+        exclude=tuple(exclude),
+        schema=schema if schema is not None else {},
+        blank_keys=blank_keys,
+        render=render,
+        sheet_id=sheet_id,
+        strict_schema=strict_schema,
+    )
+    try:
+        pull_tab(
+            service,
+            spreadsheet_id,
+            pull,
+            apply=True,
+            validate=validate,
+            check=check,
+            warn=warn,
+            listing=listing,
+            report=report,
+            transform=transform,
+        )
+    except TAB_ERRORS as e:
+        report.error = str(e)
+        raise PullError(report) from e
+    if report.failed:
+        raise PullError(report)
+    return store.read()
 
 
 def _sheet_records(title: str, grid: Sequence[Sequence[Any]]) -> Records | None:
