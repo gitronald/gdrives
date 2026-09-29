@@ -436,3 +436,45 @@ the token file's name apply here too. No scope option was added.
   `resolve_schemas`, and `TARGET_DEFAULTS`.
 - **The project's `.claude/CLAUDE.md`** is not tracked, so the branch does not carry
   its update: the package tree, the command list, and a paragraph for each step.
+
+### 2026-09-29: the owner's questions, decided
+
+Written at 2026-09-29T03:45:13-07:00. The owner read the list above and left the choices to the
+orchestrating session, to be researched in the code. This entry takes the place of
+that list. At the branch's tip the full suite, live tests included, gives 3732
+passed and 1 skipped, at 100% coverage, with ruff and pyrefly clean.
+
+| Question | Decision | Commit |
+|---|---|---|
+| Is a first sync's preview `pending`, and a run that only saves the base? | `pending` is exact: True when an apply of the same run would write the sheet, the local side, or the base. `TabReport.stale_base` and `stale_local` are set at plan time by the helpers `apply_tab` uses, and a test previews and applies eleven cases and holds the two to one answer. The report's text cannot change, so the hint carries it: `Preview only; rerun with --apply to save the base.` | `623d020` |
+| Does `pull_records` wrap an API error? | No. `PullError` is for a refusal and for problems, as the plan words it. An `HttpError` or an `OSError` is raised as it was. | `00a1946` |
+| Two pairs of parentheses on the fallback line | One sentence: `Credential: <credential>, since OAuth is configured, but ...`. The reason constant is private, and `credential_line` is the interface. | `96dc4bf` |
+| `allowed` in a referenced schema | It takes `date` and `datetime` values, as a schema built in code does. | `65e047c` |
+| `strict_schema: "local"` on a push | Accepted, as it was. A target's `defaults` gives the field to every tab, so a refusal on a push would make a default break a tab. | none |
+| A `HYPERLINK` formula's cell under `clear_link_format` | `formulas=False` leaves such cells as they are. The default, and its requests, are unchanged. A second live test pins it. | `e7393ee` |
+| The scope of `upload` | The full `drive` scope stays, option 1 of the write-up. Narrowing is draft plan 004's. | none |
+| Formula escaping in `sheets-schema` | `--escape-formulas`, as `sheets-get` has it, off by default, and refused for a `.json` output. `SCHEMA_COLUMNS` is exported. | `9b11fb9` |
+| The names made public | Kept, except the reason constant. Each stands beside a public name of its kind, or is used across modules. | none |
+
+**One change goes past the plan's rule** that a 0.14 config reports the same. The
+question about `allowed` showed a fault that was there before: a `datetime` cell
+read from its serial number arrives as `2026-01-01 09:00:00.000`, so an allowed
+`2026-01-01 09:00:00` never matched it. In a `date` or `datetime` column a cell and
+the allowed values are now compared as the same moment. What matched still matches,
+so the change only accepts more, and it is under `### Changed` in the changelog
+(`373d1c5`).
+
+### 2026-09-29: not closed in this session
+
+The owner closes the plan in a later session. The PR stays a draft. What the close
+has to do beyond the usual:
+
+- **Copy the project's `.claude/CLAUDE.md`** from the worktree to the main checkout,
+  before the worktree is removed. The file is not tracked, the worktree's copy holds
+  the update for this plan, and the owner has said to copy it over.
+- **Remove the two scratch spreadsheets** the live run of step 9 left in the test
+  folder, `plan019-scratch-book` and `plan019-book`, or ask the owner to.
+- **Still open, for the owner:** whether `tab.schema` read on an unresolved tab
+  should raise, where it is empty now (`types` and `local_store` raise), and
+  whether a tab with `clear_links` and nothing to push counts as `pending`, which
+  it does not.
