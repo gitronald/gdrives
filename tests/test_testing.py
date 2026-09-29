@@ -16,6 +16,7 @@ from gdrives.testing import (
     FakeSheetsService,
     http_error,
     patch_sheets_service,
+    terminal,
 )
 
 
@@ -46,6 +47,7 @@ class TestModule:
             "LINK_BLUE",
             "http_error",
             "patch_sheets_service",
+            "terminal",
         ]
         assert all(hasattr(testing, name) for name in testing.__all__)
 
@@ -61,6 +63,46 @@ class TestModule:
         error = http_error(429, "rate")
         assert isinstance(error, HttpError)
         assert (error.resp.status, error.resp.reason) == (429, "rate")
+
+
+class TestTerminal:
+    def test_the_library_sees_what_the_block_says(self, monkeypatch):
+        from gdrives import auth
+
+        monkeypatch.setattr(auth, "_is_interactive", lambda: "as it was")
+        with terminal():
+            assert auth._is_interactive() is True
+            with terminal(False):
+                assert auth._is_interactive() is False
+            assert auth._is_interactive() is True
+        assert auth._is_interactive() == "as it was"
+
+    def test_what_was_seen_is_seen_again_after_a_failure(self, monkeypatch):
+        from gdrives import auth
+
+        monkeypatch.setattr(auth, "_is_interactive", lambda: "as it was")
+        try:
+            with terminal(False):
+                raise RuntimeError("the test failed")
+        except RuntimeError:
+            pass
+        assert auth._is_interactive() == "as it was"
+
+    def test_a_fallback_is_announced_with_no_terminal(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from gdrives import auth
+
+        monkeypatch.setenv("GOOGLE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_PATH", raising=False)
+        (tmp_path / "gdrives_credentials.json").write_text("{}")
+        (tmp_path / "service_account.json").write_text('{"client_email": "a@b.c"}')
+        with terminal(False):
+            assert auth.describe_credentials().consent_skipped is True
+            auth.announce_credentials()
+        assert capsys.readouterr().err.startswith("Credential: service account a@b.c")
+        with terminal():
+            assert auth.describe_credentials().consent is True
 
 
 class TestACallersTest:

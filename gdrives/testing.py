@@ -10,8 +10,9 @@ every call:
 - :class:`FakeSheetGrid` holds each tab's cells and applies writes to them,
   for asserting the sheet a sequence of calls leaves behind.
 
-:func:`http_error` builds the ``HttpError`` the client raises, and
-:func:`patch_sheets_service` makes the ``run_*`` entry points use a fake.
+:func:`http_error` builds the ``HttpError`` the client raises,
+:func:`patch_sheets_service` makes the ``run_*`` entry points use a fake, and
+:func:`terminal` makes the library see a terminal, or none, for a block.
 
 The fakes model the API where the library depends on it, and no further: a
 request the library never sends may be refused, or answered more simply than
@@ -23,6 +24,8 @@ Nothing here imports a test framework.
 """
 
 import re
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Any, Protocol
 
@@ -34,6 +37,7 @@ __all__ = [
     "FakeSheetsService",
     "http_error",
     "patch_sheets_service",
+    "terminal",
 ]
 
 
@@ -46,6 +50,28 @@ def http_error(status: int, reason: str) -> HttpError:
             self.reason = reason
 
     return HttpError(_Resp(), reason.encode())
+
+
+@contextmanager
+def terminal(present: bool = True) -> Generator[None, None, None]:
+    """Make the library see a terminal on stdin, or none, inside the block.
+
+    Whether an OAuth consent can run rests on it: with none, and no cached
+    token that serves, a run goes on as a service account or Application
+    Default Credentials, and says so inside
+    :func:`~gdrives.auth.announcing_credentials`. A test of what a caller
+    prints on that fallback sets it here, whatever the test runner's own
+    stdin is. What was seen before is seen again after the block.
+    """
+    # Imported here: importing gdrives.auth reads a .env file.
+    from gdrives import auth
+
+    seen = auth._is_interactive
+    auth._is_interactive = lambda: present
+    try:
+        yield
+    finally:
+        auth._is_interactive = seen
 
 
 # -- Sheets API fake --
