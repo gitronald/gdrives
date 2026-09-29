@@ -114,12 +114,14 @@ def _hint_pending(pending: bool) -> None:
 def _resolve_and_report(source: str) -> str:
     """Resolve ``source`` to a spreadsheet ID and echo it to stderr.
 
+    A Drive path must name a native spreadsheet; a URL or ID is taken as given.
+
     Every command opens the same way, so the resolve-then-announce step lives
     here once instead of in each ``run_*`` entry point.
     """
     from gdrives.resolve import resolve_and_report
 
-    return resolve_and_report(source, "Spreadsheet")
+    return resolve_and_report(source, "Spreadsheet", spreadsheet=True)
 
 
 @_noticed

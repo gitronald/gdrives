@@ -17,11 +17,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from gdrives.files import Service
+from gdrives.files import SPREADSHEET_MIME, Service
 from gdrives.sheets.values import batch_update_spreadsheet, tab_sheet_ids
 from gdrives.upload import UploadError, check_local, resumable_media, send_upload
-
-SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 # The workbook formats Drive converts here, by extension, with the type sent.
 SOURCE_MIMES: Mapping[str, str] = MappingProxyType(
