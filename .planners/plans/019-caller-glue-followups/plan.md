@@ -1,10 +1,10 @@
 ---
 id: 19
 slug: caller-glue-followups
-status: active
+status: done
 branch: feature/caller-glue-followups
 created: 2026-09-29T01:19:50-07:00
-concluded:
+concluded: 2026-09-29T09:50:50-07:00
 pr: https://github.com/gitronald/gdrives/pull/63
 ---
 
@@ -478,3 +478,52 @@ has to do beyond the usual:
   should raise, where it is empty now (`types` and `local_store` raise), and
   whether a tab with `clear_links` and nothing to push counts as `pending`, which
   it does not.
+
+### 2026-09-29: the close
+
+Written at 2026-09-29T09:51:12-07:00. The review gate ran on the branch at `d5656d2`,
+and what it read, found, and rejected is in [review.md](review.md). It was posted to
+the PR.
+
+**Review follow-up.** Six findings, each fixed at the source with a test:
+
+- `0510b24`: `sheets-links` finds a target's tab by its `sheet_id`, as a sync does.
+- `1e233bb`: the CSV scan of `export --newline` starts after a byte-order mark.
+- `5fc376c`: `clear_link_format(formulas=False)` sends no range past the tab's last
+  row, and `_URL_FORMAT_FIELDS` is gone.
+- `a476890`: the hint to convert a workbook is decided by `SOURCE_MIMES`.
+- `b994b82`: the guide's fallback line lost a stray parenthesis, and a test holds it
+  to `credential_line`.
+
+Conscious no-ops, each with its measurement in the review: two per-cell costs that
+stay under a second on a large tab, and two checks written twice on purpose.
+
+At the branch's tip the full suite, live tests included, gives 3741 passed and 1
+skipped, at 100% coverage, with ruff and pyrefly clean.
+
+**Of the two questions left open:** a tab with `clear_links` and nothing to push is
+not `pending`, and that is right, since an apply of it returns before it clears
+anything. Whether `tab.schema` read on an unresolved tab should raise is still the
+owner's.
+
+## Retrospective
+
+- **The plan's order held, and its one design question was the right one to name.**
+  Step 4 was the only step that changed a type callers hold, and deciding at the
+  start that a tab has either `schema` or `schema_ref` kept every later step free
+  of it.
+- **Reading the API before writing the code paid for itself in step 8.** The field
+  that seemed to tell a formula's link from a format link does not, and the code
+  would have been built on it.
+- **Wording changed late is where the docs slipped.** The one docs finding was a line
+  reworded after its step, in a file no test read that line of. A guide example that
+  shows output needs a test as much as one that shows input.
+- **A fake that refuses what the API refuses found a bug no test asked about.** The
+  range past the grid was reproduced offline because the fake grid checks bounds.
+  The unit tests of the split had all used a tab of 1000 rows.
+- **A new command should be read against every field of the config it takes.**
+  `sheets-links` took a target's tabs and missed `sheet_id`, which no step's scope
+  named. A list of the tab fields a command honours would have shown the gap.
+- **Next time:** leave the list of open questions shorter by deciding as the step is
+  built, and size a plan of fourteen steps as an umbrella with subplans, since this
+  one ends at the length where a plan should split.
