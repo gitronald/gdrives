@@ -71,7 +71,11 @@ HOOKS = frozenset({"validate", "check", "warn", "transform"})
 _CACHE_DIR = ".gdrives"
 
 _TARGET_FIELDS = frozenset(
-    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks"}
+    {"spreadsheet", "base", "base_file", "input_option", "tabs", "hooks", "defaults"}
+)
+#: The tab fields a target's ``defaults`` may give.
+TARGET_DEFAULTS = frozenset(
+    {"link_urls", "strict_schema", "newline", "render", "blank_keys"}
 )
 _TAB_FIELDS = frozenset(
     {
@@ -469,6 +473,29 @@ def _with_defaults(tab: TabConfig, defaults: Mapping[str, str]) -> TabConfig:
     return replace(tab, hooks={**given, **tab.hooks})
 
 
+def _applicable(raw: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """``raw`` with the ``defaults`` that apply to it under its own fields.
+
+    A field the tab's object names is its own, whatever its value. A default
+    is skipped for a tab it would contradict, so a default never makes a
+    valid tab invalid: ``link_urls`` is not given to a pull tab or one that
+    sets ``clear_links``, ``newline`` not to a tab whose ``local`` is a
+    ``.json`` file, and ``render`` ``formatted`` not to one that sets
+    ``typed_writes``.
+    """
+    local = raw.get("local")
+    skipped = {
+        "link_urls": raw.get("mode") == "pull" or raw.get("clear_links") is True,
+        "newline": isinstance(local, str) and Path(local).suffix.lower() == ".json",
+        "render": defaults.get("render") == "formatted"
+        and raw.get("typed_writes") is True,
+    }
+    return {
+        **{name: value for name, value in defaults.items() if not skipped.get(name)},
+        **raw,
+    }
+
+
 def _is_names(value: Any) -> bool:
     """True for a list of non-blank strings."""
     return isinstance(value, list) and all(
@@ -688,6 +715,7 @@ class _Checker:
                 )
         base_file = self._base_file(where, raw)
         defaults = self._hooks(where, raw, "sync")
+        tab_defaults = self._defaults(where, raw)
 
         input_option = raw.get("input_option", RAW)
         if input_option not in INPUT_OPTIONS:
@@ -704,7 +732,7 @@ class _Checker:
             )
         else:
             for title, raw_tab in raw_tabs.items():
-                tab = self.tab(where, title, raw_tab)
+                tab = self.tab(where, title, raw_tab, tab_defaults)
                 if tab is None:
                     continue
                 if defaults:
@@ -838,7 +866,13 @@ class _Checker:
                         "one tab: " + "; ".join(roles)
                     )
 
-    def tab(self, target: str, title: str, raw: Any) -> TabConfig | None:
+    def tab(
+        self,
+        target: str,
+        title: str,
+        raw: Any,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> TabConfig | None:
         where = f"{target}, tab {title!r}"
         problems = self.problems
         start = len(problems)
@@ -847,6 +881,8 @@ class _Checker:
         if not isinstance(raw, dict):
             problems.append(f"{where}: expected an object")
             return None
+        if defaults:
+            raw = _applicable(raw, defaults)
         unknown = sorted(set(raw) - _TAB_FIELDS)
         if unknown:
             problems.append(f"{where}: unknown field(s) {unknown}")
@@ -878,23 +914,12 @@ class _Checker:
             problems.append(f"{where}: 'bom' must be true or false")
         elif bom and local is not None and local.suffix.lower() == ".json":
             problems.append(f"{where}: 'bom' applies only to a .csv or .tsv file")
-        newline = raw.get("newline", "lf")
-        if not isinstance(newline, str) or newline not in NEWLINES:
-            problems.append(
-                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
-            )
-        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
-            problems.append(f"{where}: 'newline' applies only to a .csv or .tsv file")
+        newline = self._newline(where, raw, local)
 
         key = self._names(where, raw, "key")
         if mode == "sync" and not key:
             problems.append(f"{where}: a sync tab needs a 'key' of one or more columns")
-        blank_keys = raw.get("blank_keys", "refuse")
-        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
-            problems.append(
-                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
-                f"not {blank_keys!r}"
-            )
+        blank_keys = self._blank_keys(where, raw)
         columns = self._columns(where, raw)
         exclude = self._names(where, raw, "exclude")
         if exclude and columns is not None:
@@ -936,17 +961,8 @@ class _Checker:
                 f"{where}: 'on_invalid' must be one of {sorted(ON_INVALID)}, "
                 f"not {on_invalid!r}"
             )
-        render = raw.get("render", "unformatted")
-        if not isinstance(render, str) or render not in RENDERS:
-            problems.append(
-                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
-            )
-        strict_schema = raw.get("strict_schema", False)
-        if not _is_strict_schema(strict_schema):
-            problems.append(
-                f"{where}: 'strict_schema' must be true, false, or {_STRICT_LOCAL!r}"
-            )
-            strict_schema = False
+        render = self._render(where, raw)
+        strict_schema = self._strict_schema(where, raw)
         typed_writes = raw.get("typed_writes", False)
         if not isinstance(typed_writes, bool):
             problems.append(f"{where}: 'typed_writes' must be true or false")
@@ -1009,6 +1025,82 @@ class _Checker:
             typed_writes=bool(typed_writes),
             schema_ref=schema_ref,
         )
+
+    def _defaults(self, where: str, raw: Mapping[str, Any]) -> dict[str, Any]:
+        """The target's ``defaults``, each checked as the tab field is.
+
+        Problems name the target's ``defaults``; the result is the object as
+        given, empty when there are none or any is refused.
+        """
+        if "defaults" not in raw:
+            return {}
+        given = raw["defaults"]
+        at = f"{where}, 'defaults'"
+        if not isinstance(given, dict) or not given:
+            self.problems.append(
+                f"{where}: 'defaults' must be an object naming one or more of "
+                f"{sorted(TARGET_DEFAULTS)}"
+            )
+            return {}
+        start = len(self.problems)
+        unknown = sorted(set(given) - TARGET_DEFAULTS)
+        if unknown:
+            self.problems.append(
+                f"{at}: unknown field(s) {unknown}; defaults: {sorted(TARGET_DEFAULTS)}"
+            )
+        if "link_urls" in given:
+            self._link_urls(at, given)
+        if "newline" in given:
+            self._newline(at, given, None)
+        if "blank_keys" in given:
+            self._blank_keys(at, given)
+        if "render" in given:
+            self._render(at, given)
+        if "strict_schema" in given:
+            self._strict_schema(at, given)
+        return {} if len(self.problems) > start else dict(given)
+
+    def _newline(self, where: str, raw: Mapping[str, Any], local: Path | None) -> Any:
+        """The ``newline`` of a tab (or of a target's defaults, with no ``local``)."""
+        newline = raw.get("newline", "lf")
+        if not isinstance(newline, str) or newline not in NEWLINES:
+            self.problems.append(
+                f"{where}: 'newline' must be one of {sorted(NEWLINES)}, not {newline!r}"
+            )
+        elif newline != "lf" and local is not None and local.suffix.lower() == ".json":
+            self.problems.append(
+                f"{where}: 'newline' applies only to a .csv or .tsv file"
+            )
+        return newline
+
+    def _blank_keys(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``blank_keys`` of a tab or of a target's defaults."""
+        blank_keys = raw.get("blank_keys", "refuse")
+        if not isinstance(blank_keys, str) or blank_keys not in BLANK_KEYS:
+            self.problems.append(
+                f"{where}: 'blank_keys' must be one of {sorted(BLANK_KEYS)}, "
+                f"not {blank_keys!r}"
+            )
+        return blank_keys
+
+    def _render(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``render`` of a tab or of a target's defaults."""
+        render = raw.get("render", "unformatted")
+        if not isinstance(render, str) or render not in RENDERS:
+            self.problems.append(
+                f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
+            )
+        return render
+
+    def _strict_schema(self, where: str, raw: Mapping[str, Any]) -> Any:
+        """The ``strict_schema`` of a tab or of a target's defaults; false if bad."""
+        strict_schema = raw.get("strict_schema", False)
+        if not _is_strict_schema(strict_schema):
+            self.problems.append(
+                f"{where}: 'strict_schema' must be true, false, or {_STRICT_LOCAL!r}"
+            )
+            return False
+        return strict_schema
 
     def _hooks(self, where: str, raw: Mapping[str, Any], mode: str) -> dict[str, str]:
         """The ``hooks`` of a tab or a target, checked by form; empty when refused.
