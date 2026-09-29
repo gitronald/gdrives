@@ -125,7 +125,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), `pattern` (a regular expression, `str` only), and `description` (text for a person, read by no check). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column), and [describing the columns](#describing-the-columns) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), `pattern` (a regular expression, `str` only), `pattern_hint` (what a cell of the column is, for the message of a cell that fails the `pattern`), and `description` (text for a person, read by no check). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"` or `"module:attribute[key]"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column), and [describing the columns](#describing-the-columns) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -483,6 +483,29 @@ other: it blocks the write, and `on_invalid: "hold"` holds a sheet value that
 fails it. In JSON the backslash is written twice, as above. The expression is
 compiled once per distinct string, not once per cell.
 
+The message names the expression, which serves the person who wrote the
+config and not the one who edits the sheet. `pattern_hint` says what a cell of
+the column is, as a noun phrase, and the message is then written with it:
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "schema": {
+    "member_id": {},
+    "profile": {
+      "pattern": "https://example\\.com/members/[0-9]+",
+      "pattern_hint": "a member page link"
+    }
+  }
+}
+```
+
+```
+Members (local): key ('m1',), column 'profile': 'example.com/members/1' is not a member page link
+```
+
+It is refused without a `pattern`, and when it is empty or not a string.
+
 ### Describing the columns
 
 A schema column takes a `description`, a string that says what the column
@@ -508,11 +531,12 @@ gdrives sheets-schema roster -o schema.json       # .csv, .tsv, or .json by the 
 ```
 
 The columns are `tab`, `column`, `key` (`TRUE` for a column in the tab's
-`key`), `type`, `required`, `present`, `strict`, `allowed`, `pattern`, and
-`description`. A flag is `TRUE` or `FALSE`, as cells are written. `allowed` is
+`key`), `type`, `required`, `present`, `strict`, `allowed`, `pattern`,
+`description`, and `pattern_hint`. A flag is `TRUE` or `FALSE`, as cells are written. `allowed` is
 the permitted values as canonical cell strings in a JSON array, such as
 `["active", "closed"]`, which reads back whatever a value holds, and is blank
-when the column has no list. `pattern` and `description` are blank when unset.
+when the column has no list. `pattern`, `description`, and `pattern_hint` are
+blank when unset.
 The rows follow the config's order of tabs, and each tab's order of columns.
 
 - Only the columns a tab's `schema` declares are listed. A column of `key` or
@@ -1366,7 +1390,11 @@ look linked and are not. Two additions read that:
   keep their defaults, `""` and False.
 - `styled_cells` returns each cell that looks like a link and holds none, as
   a `StyledCell`: its row, its column, its text, its `reasons`, from
-  `LINK_STYLE_REASONS`, and `resettable`.
+  `LINK_STYLE_REASONS`, and `resettable`. With `own_colors=True` the reason
+  `color` is also any text colour the cell sets itself, whatever it is, black
+  included: the answer to whether a cell sets a text colour of its own.
+- Both take `rows`, 1-based spreadsheet rows, which filters the result of the
+  same grid read, so an audit of the data rows leaves row 1 out.
 
 `formula` is True when the cell holds a link on the whole cell and its
 formula calls `HYPERLINK`, in any case. A format link cannot tell this: the
@@ -1893,6 +1921,21 @@ Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <con
 
 On a preview that waits, the line follows the spreadsheet ID, since the
 wait starts when the first request is made.
+
+A refresh that Google refuses is said too, naming the token file, and so is
+the service account or the Application Default Credentials the run then goes
+on with:
+
+```
+Credential: the refresh of OAuth token <config-dir>/gdrives_token_rw.json was refused
+Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json), used in its place
+```
+
+A caller that runs the library inside `gdrives.auth.announcing_credentials()`
+gets the same lines. An access token lasts about an hour, so after an idle
+hour most runs begin with a refresh; `announcing_credentials(refresh=False)`
+leaves a coming refresh unannounced, and still says a consent, a fallback for
+lack of a terminal, a refused refresh, and the line of an `--apply`.
 
 `sheets-sync --apply` and `sheets-push --apply` request the `spreadsheets`
 write scope, cached in its own token file as for the other Sheets write
@@ -2431,7 +2474,9 @@ several lines. It does to every cell what the merge does to a key, line by line
 the key it went in with. Name it in a config, for a tab or as a target's
 default, as `"hooks": {"transform": "gdrives.sheets.transforms:trim_cells"}`
 (see [hooks in the config](#hooks-in-the-config)), or pass it in code as
-`transform=trim_cells`, from `gdrives.sheets`.
+`transform=trim_cells`, from `gdrives.sheets`. `trim_cell(text)` is what it
+does to one cell, for a value cleaned outside a run: a header, or a cell read
+with `pull_values`.
 
 It differs from `row_key` in one respect: a key folds a line break into a
 space, and a cell does not, since collapsing the lines of a note would change
@@ -2568,11 +2613,45 @@ def by_title(title):
     return {"Members": MEMBERS, "Dues": DUES}[title]
 ```
 
+A caller that keeps its schemas in one registry names an entry of it, with
+the key in brackets after the attribute. Tabs of different titles then share
+a schema:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "base": "sheets-base/roster",
+    "tabs": {
+      "Members 2026": {
+        "local": "data/members-2026.csv",
+        "key": ["id"],
+        "schema": "clubtools.schema:SCHEMAS[members]"
+      },
+      "Members 2027": {
+        "local": "data/members-2027.csv",
+        "key": ["id"],
+        "schema": "clubtools.schema:SCHEMAS[members]"
+      }
+    }
+  }
+}
+```
+
+With a key, a mapping is a registry, a mapping of key to schema such as
+`SCHEMAS = {"members": MEMBERS, "dues": DUES}`, and the schema is its entry of
+that key. A function is given the key in place of the tab's title. The key is
+the text between the brackets as it is written, with no quotes: one or more
+characters, none of them a bracket. A registry with no such entry, and an
+entry that is not a mapping of column name to `ColumnSchema`, are problems of
+the tab, listed with the rest. `schema_ref_parts` in `gdrives.sheets` splits
+a reference into its `module:attribute` and its key, by form alone.
+
 The module is found as a hook's is: as `import` finds it, installed where
 `gdrives` runs or on `PYTHONPATH`, and never in the config's directory.
 
 Reading a config imports nothing: `load_config` checks only that the string
-has the form `module:attribute`. The checks a `schema` object gets when the
+has the form `module:attribute` or `module:attribute[key]`. The checks a `schema` object gets when the
 file is read, and that need its columns, wait for the run: each column's
 fields, a column outside `columns` (unless `strict_schema`), and a column
 that `exclude` names. A command resolves the reference before its first
@@ -2622,7 +2701,10 @@ both record every call:
 
 `http_error(status, reason)` builds the `HttpError` the client raises, and
 `patch_sheets_service(monkeypatch, fake)` makes the `run_*` entry points and
-the commands use a fake. The module imports no test framework.
+the commands use a fake. `terminal(present)` is a context manager that makes
+the library see a terminal on stdin, or none, inside its block, for a test of
+what a caller prints when a consent cannot run: `with terminal(False):`. The
+module imports no test framework.
 
 ```python
 from googleapiclient.errors import HttpError

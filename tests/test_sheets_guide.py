@@ -117,6 +117,7 @@ PROMISED = {
     ],
     "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
     "report and run seams": ["pending_hint", "print_retry"],
+    "a second report": ["SCHEMA_REF_FORMS", "schema_ref_parts", "trim_cell"],
     "schema by reference": ["resolve_tab", "resolve_target"],
     "typed writes": [
         "DATE_FORMATS",
@@ -243,7 +244,7 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 18
+        assert len(blocks(GUIDE, "json")) == 20
         assert len(blocks(GUIDE, "python")) == 21
 
     def test_a_refused_example_fails(self, tmp_path):
