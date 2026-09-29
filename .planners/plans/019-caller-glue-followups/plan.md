@@ -387,6 +387,9 @@ branch coverage, with ruff and pyrefly clean.
 - `f21cfe4` passes `newline` straight through `export`. The subagent had passed it
   only when set, so that test fakes written for two arguments kept working; four
   fakes now take it.
+- `2179802` strips the colour from a usage error before a test reads it. CI renders
+  Typer's usage errors in colour, which split `--title` and failed the test on all
+  four Python versions, while the same test passed locally.
 
 ### 2026-09-29: step 10's scope, written up
 
