@@ -342,3 +342,94 @@ the interface for each.
 - Draft plan 004, beyond the note of step 10.
 - Rebuilding a caller's commands as `gdrives` commands. The CLI grows where a
   command is general (`sheets-links`), and not to mirror one caller's.
+
+## Log
+
+### 2026-09-29: how the steps were run
+
+Written at 2026-09-29T03:04:34-07:00. One branch and one draft PR,
+[#63](https://github.com/gitronald/gdrives/pull/63). The steps ran in order, each
+implemented by a subagent in the branch's worktree (step 4 on the larger model, for
+its design question, the others on the smaller), then read, rerun, and pushed by the
+orchestrating session before the next began. The subagents ran the unit tests only.
+Every live call was made by the orchestrating session, with the owner's word for the
+test spreadsheet and the test folder. What the APIs returned is in
+[live-findings.md](live-findings.md).
+
+At the branch's tip the full suite, live tests included, gives 3671 passed and 1
+skipped (the revision test that needs `GDRIVES_TEST_FILE_ID`), at 100% line and
+branch coverage, with ruff and pyrefly clean.
+
+### 2026-09-29: what landed, step by step
+
+| # | Commits | What landed, and where it departs from the plan |
+|---|---|---|
+| 1 | `4717471`, `ea99514` | `pending`, `format_report` for a `TabReport`, `print_retry`, `Target.spreadsheet_id`, and `run_target(None)`. `TabReport.exit_code` was there already, so a test now holds the two to one answer. `resolve.direct_file_id` is new, the one place that tells a URL, an ID, and a path apart. |
+| 2 | `2f99ad7`, `44b6720` | `pull_records` and `PullError`. It takes `report=` and `listing=` beyond the plan's list: `report=` is how a caller reads what `warn` said. |
+| 3 | `13e82d7`, `8d4b5e0`, `c5edbb5` | The fallback line, built by the public `credential_line`. `str(CredentialInfo)` is unchanged, so the reason follows the key path in a second pair of parentheses. |
+| 4 | `4d100d2`, `f916bd5` | `TabConfig.schema_ref`, `resolve_tab`, and `resolve_target`. The load and the resolution call the same checks. A key column's type, `typed_writes`, and `widths` turned out not to read the schema at load, so nothing moved for them. `Target.base_file` is new: a referenced tab's base store is built when it is asked for. |
+| 5 | `36da0e9`, `f879b6d`, `5cdaf0c` | `strict_schema: "local"`. `f879b6d` fails the guide test on its own: the count it needed is in `5cdaf0c`. |
+| 6 | `a68e6a6`, `7a07a11`, `8cf815a` | `ColumnSchema.pattern`, checked last in `cell_problem`, and `PATTERN_TYPES`. |
+| 7 | `ecd9efa`, `6c6243f` | `sheets-links`, and `sweep_url_links` in a new `sheets/links.py`. A tab with no named column in its first row is skipped, not an error. |
+| 8 | `d59261f`, `157ede5`, `168763c` | `linked_cells(detail=True)` fills `text` and `formula`, so a 0.14 call reads what it read. `styled_cells`, and `clear_link_format(style=True)`. Built from the live findings, and pinned by one live test. |
+| 9 | `9121f0d`, `d6182d8`, `62ee4e4` | `sheets-create --from`. `upload._send` became the public `send_upload`, beside `resumable_media`. The read-back checks the created file's type. |
+| 10 | `4fb4547`, `2d21950` | `upload --no-replace`, which refuses on any file of the name, a Google-native one included. |
+| 11 | `b192b4c`, `6173557` | The type check, at no request: the listing that found the file already carries its type. The message says to download the workbook and convert the local copy, since `--from` takes a local file. |
+| 12 | `dc9d1b4`, `132cc84`, `f21cfe4` | `export --newline`. The CSV rewrite walks the bytes and never requotes. `NEWLINES` moved to `gdrives/local.py`. |
+| 13 | `f00380d` to `36b37ee` | All three were built. `trim_cells` runs the key's normalization on each line of a cell, since on a whole cell it would fold the line breaks the plan says to keep. `sheets-schema` resolves the schemas alone (`resolve_schemas`), so a hook that does not import cannot stop an export. |
+| 14 | `3fc50bc` | The guide's additions, each claim pinned by a test in `tests/test_sheets_guide.py`. |
+
+### 2026-09-29: the review's own changes
+
+- `8cf815a` put `PATTERN_TYPES` in its sorted place in `__all__`.
+- `62ee4e4` wrote what a conversion keeps into the README and the changelog, from
+  the live run.
+- `f21cfe4` passes `newline` straight through `export`. The subagent had passed it
+  only when set, so that test fakes written for two arguments kept working; four
+  fakes now take it.
+
+### 2026-09-29: step 10's scope, written up
+
+Under the narrow `drive.file` scope a listing holds only the files the app created
+or opened. A replace would then miss a file of the name that someone else made and
+create a second one, and `--no-replace` would report the name as free exactly when
+it should refuse. The options:
+
+1. Keep the full `drive` scope for `upload`, the only one under which the listing
+   is whole.
+2. Offer a `drive.file` mode for a caller that only ever touches its own files, and
+   refuse `--no-replace` there, or warn, since it cannot keep its promise.
+3. Leave the narrow scope to the caller: a `drive.file` token of its own, and
+   `--file-id` to replace, which needs no listing and gives up `--no-replace`.
+
+Draft plan 004 asks the same of `mv` and `drive.metadata`, and its questions about
+the token file's name apply here too. No scope option was added.
+
+### 2026-09-29: left for the owner, at the close
+
+- **Step 1.** A first sync's preview is `pending`, since an apply saves a base,
+  though its report can end `in sync: nothing to write`. A run that would only save
+  the base again is not counted, since the report's fields cannot show it.
+- **Step 2.** `pull_records` raises `PullError` for an API error too, with the
+  `HttpError` as its cause.
+- **Step 3.** The two pairs of parentheses on a service account's fallback line, and
+  a reason that also covers a cached token that is invalid or unreadable.
+- **Step 4.** A referenced schema's `allowed` holds scalars, as JSON does, so a
+  Python `date` there is refused. `tab.schema` read on an unresolved tab is empty,
+  where `types` and `local_store` raise.
+- **Step 5.** `strict_schema: "local"` on a push checks what `true` checks, and is
+  accepted.
+- **Step 8.** Clearing the link format of a `HYPERLINK` formula's cell removes its
+  link and leaves the formula. It did so before this plan, and is now documented.
+  An option to skip such cells was not built.
+- **Step 9.** A service account cannot create from a workbook in a folder of My
+  Drive. Two scratch spreadsheets from the live run are in the test folder, for the
+  owner to remove.
+- **Step 13.** `sheets-schema` does not escape a cell that starts with `=`, which a
+  `pattern` may. `SCHEMA_COLUMNS` is not among the names `gdrives.sheets` exports.
+- **Names made public beyond the plan's list:** `direct_file_id`,
+  `credential_line`, `FALLBACK_REASON`, `PATTERN_TYPES`, `send_upload`,
+  `resumable_media`, `resolve_spreadsheet_id`, `check_spreadsheet`,
+  `resolve_schemas`, and `TARGET_DEFAULTS`.
+- **The project's `.claude/CLAUDE.md`** is not tracked, so the branch does not carry
+  its update: the package tree, the command list, and a paragraph for each step.
