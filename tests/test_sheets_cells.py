@@ -773,6 +773,10 @@ class TestColumnPattern:
         with pytest.raises(ValueError, match="pattern is not a regular expression"):
             ColumnSchema(pattern=pattern)
 
+    def test_it_must_not_be_empty(self):
+        with pytest.raises(ValueError, match="pattern must not be empty"):
+            ColumnSchema(pattern="")
+
     def test_of_takes_it(self):
         assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
 

@@ -470,8 +470,9 @@ class ColumnSchema:
 
     ``pattern`` is a regular expression that a non-blank cell must match in
     full (:func:`re.fullmatch`), for a ``str`` column only, refused for any
-    other type and for a string that does not compile. A blank cell is
-    ``required``'s, never the pattern's. A failure is a problem from
+    other type, for a string that does not compile, and for an empty string,
+    which no cell that is checked can match. A blank cell is ``required``'s,
+    never the pattern's. A failure is a problem from
     :func:`cell_problem` like the rest. The expression is compiled once per
     distinct string, not once per cell.
 
@@ -501,6 +502,8 @@ class ColumnSchema:
                     f"pattern is only for a column of {sorted(PATTERN_TYPES)}, "
                     f"not {self.type!r}"
                 )
+            if self.pattern == "":
+                raise ValueError("pattern must not be empty")
             try:
                 _compiled(self.pattern)
             except (re.error, TypeError) as e:

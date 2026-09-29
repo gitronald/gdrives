@@ -603,6 +603,8 @@ def _column_problems(
     if pattern is not None:
         if not isinstance(pattern, str):
             found.append(f"{at}: 'pattern' must be a string")
+        elif not pattern:
+            found.append(f"{at}: 'pattern' must not be empty")
         else:
             try:
                 re.compile(pattern)

@@ -1291,6 +1291,13 @@ class TestSchemaPattern:
             "target 'roster', tab 'Members': schema 'link': 'pattern' must be a string",
         )
 
+    def test_must_not_be_empty(self):
+        refused(
+            config({"Members": members(schema={"link": {"pattern": ""}})}),
+            "target 'roster', tab 'Members': schema 'link': "
+            "'pattern' must not be empty",
+        )
+
     def test_must_compile(self):
         (found,) = problems_of(
             config({"Members": members(schema={"link": {"pattern": "[0-9"}})})
