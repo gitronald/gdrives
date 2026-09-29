@@ -330,3 +330,49 @@ Where the work differs from the plan:
   `clear_link_format` and `strip_links` cover them.
 - **Step 9.** The library parameter is `newline_cells` on `export_file` and `run`,
   and `cells` on `set_line_endings` and `check_newline`.
+
+### 2026-09-29: the steps of the second report
+
+Steps 11 to 21 are on the same branch and PR. The full suite, live tests
+included, passed at the end: 3916 passed, 1 skipped (the same one), coverage
+100%. The live suite has 40 tests.
+
+Where the work differs from the plan, and what was decided on the way:
+
+- **Step 11.** The key went into the reference, not into a tab field of its own:
+  one string still says where the schema is, and a tab built in code needs no new
+  argument. `schema_ref_parts` and `SCHEMA_REF_FORMS` are exported, since every
+  public name of a submodule is. The two messages for a malformed reference now
+  name both forms, so a caller that matches their text needs the new one.
+- **Step 12.** Both halves of the proposal were taken, the `hint` and the
+  exception. `hint` replaces the sentence only where the default gives one, for
+  the types `sheets-create --from` converts. A caller whose command converts
+  other types writes its message from the exception's fields.
+- **Step 13.** `resolve_spreadsheet_id` did not get a starting folder. With
+  `walk_entry` and `check_spreadsheet` a caller has it in two calls, and a source
+  that is a URL, an ID, or a path from a drive has no folder to start from.
+- **Step 14.** The hint is a noun phrase and the message is `'x' is not <hint>`.
+  The schema export is one column wider, `pattern_hint`, last.
+- **Step 16.** `--newline` applies to a `.md` listing too. The check is
+  `listing.check_newline`, run by the command before it authenticates.
+- **Step 17.** The option is `own_colors`. Read from the API: a text colour a cell
+  sets is returned in its user-entered format, black included (`live-findings.md`).
+- **Step 19.** A refused refresh is said inside any block, whatever `refresh` is,
+  and `authenticate` names the service account or the Application Default
+  Credentials used in its place. After a refusal an OAuth outcome is not named: a
+  consent is seen by the person, and another cached token is the same account's.
+  This changes what the commands print, in the one case where the identity of a
+  run changed without a word.
+
+Left for the owner:
+
+- **Whether the commands announce a refresh that succeeds.** They still do. The
+  line was added so that a wait does not look hung and a write is not made as an
+  unexpected identity. A refresh is a fraction of a second, and an `--apply`
+  prints the credential whatever happens, so the case for dropping it from the
+  commands is good. It changes what every command prints after an idle hour,
+  which is why it was not done here. It is a one-line change:
+  `announcing_credentials(refresh=False)` in `cli._cli_errors`.
+- **Plan 004.** The two-service option for a narrow upload scope is in its Log,
+  with what it leaves unsolved, and with a note that `DRIVE_WRITE_SCOPES` now has
+  three consumers.
