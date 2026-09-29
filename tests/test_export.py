@@ -185,6 +185,20 @@ class TestSetLineEndingsCsv:
         assert set_line_endings(data, ".csv", "lf") == b'a,"x\ny"\n1,"p\r\nq"\n'
         assert set_line_endings(b'a,"x\ny"\n1,2', ".csv", "crlf") == b'a,"x\ny"\r\n1,2'
 
+    def test_a_quoted_first_cell_after_a_byte_order_mark_keeps_its_line_break(self):
+        data = b'\xef\xbb\xbf"a\nb",c\nd\n'
+        out = set_line_endings(data, ".csv", "crlf")
+        assert out == b'\xef\xbb\xbf"a\nb",c\r\nd\r\n'
+        assert list(csv.reader(io.StringIO(out.decode("utf-8-sig"), newline=""))) == [
+            ["a\nb", "c"],
+            ["d"],
+        ]
+        assert set_line_endings(out, ".csv", "lf") == data
+        # A mark anywhere else is a cell's own bytes.
+        assert set_line_endings(b'a\r\n\xef\xbb\xbf"b\r\n', ".csv", "lf") == (
+            b'a\n\xef\xbb\xbf"b\n'
+        )
+
     def test_a_quote_inside_an_unquoted_cell_does_not_open_a_cell(self):
         data = b'5" pipe,b\r\n"x\ny",2\r\n'
         assert set_line_endings(data, ".csv", "lf") == b'5" pipe,b\n"x\ny",2\n'

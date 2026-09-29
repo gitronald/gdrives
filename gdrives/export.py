@@ -35,11 +35,13 @@ TEXT_EXTENSIONS = frozenset({".csv", ".txt", ".md"})
 # csv module reads by, and a doubled quote inside a cell is part of it; a cell
 # left open at the end of the file runs to it. A line ending is CRLF, LF, or a
 # lone CR, as the csv module reads them, so a conversion never merges a CR with
-# the LF after it.
+# the LF after it. A byte-order mark is no part of the first cell, so the scan
+# starts after one.
 _CSV_SCAN = re.compile(
     rb'(?P<cell>(?<![^,\r\n])"[^"]*(?:""[^"]*)*(?:"|\Z))|(?P<end>\r\n|\r|\n)'
 )
 _TEXT_END = re.compile(rb"\r\n|\r|\n")
+_BOM = b"\xef\xbb\xbf"
 
 
 def mime_for_output(output_path: str) -> str:
@@ -63,7 +65,8 @@ def set_line_endings(content: bytes, extension: str, newline: str) -> bytes:
     In a ``.txt`` or ``.md`` file every line ending is rewritten. In a ``.csv``
     file a line break inside a quoted cell is part of the cell's value and
     stays as the cell holds it: only the row endings change, and which cells
-    are quoted, and every other byte, stay as they were.
+    are quoted, and every other byte, stay as they were. A UTF-8 byte-order
+    mark at the start of the file is kept, and the first cell starts after it.
     """
     ending = line_ending(newline).encode()
     if extension.lower() != ".csv":
@@ -72,7 +75,8 @@ def set_line_endings(content: bytes, extension: str, newline: str) -> bytes:
     def row_ending(match: re.Match[bytes]) -> bytes:
         return ending if match.group("end") else match.group("cell")
 
-    return _CSV_SCAN.sub(row_ending, content)
+    mark = _BOM if content.startswith(_BOM) else b""
+    return mark + _CSV_SCAN.sub(row_ending, content[len(mark) :])
 
 
 def check_newline(output_path: str, newline: str | None) -> None:
