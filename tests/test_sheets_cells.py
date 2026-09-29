@@ -3,6 +3,7 @@
 All pure functions, so the tests are exhaustive over the documented cases.
 """
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from gdrives.sheets import (
     ColumnSchema,
     Problem,
     cell_problem,
+    cells,  # the module, for patching its names
     column_type,
     decode_rows,
     encode_rows,
@@ -714,6 +716,61 @@ class TestColumnSchema:
             match=r"strict is only for a column of \['bool', 'date'\]",
         ):
             ColumnSchema(type=type_, strict=True)
+
+
+class TestAllowedCells:
+    def test_they_are_the_canonical_strings_in_order(self):
+        schema = ColumnSchema(type="date", allowed=[date(2026, 1, 1), "2026-02-01"])
+        assert schema.allowed_cells == ("2026-01-01", "2026-02-01")
+
+    def test_a_schema_with_no_allowed_has_none(self):
+        assert ColumnSchema().allowed_cells == ()
+
+    def test_they_are_built_once(self, monkeypatch):
+        built: list[object] = []
+
+        def counting(value: object) -> str:
+            built.append(value)
+            return to_cell(value)
+
+        monkeypatch.setattr(cells, "to_cell", counting)
+        schema = ColumnSchema(allowed=["x", "y"])
+        for text in ("x", "y", "z", "x"):
+            cell_problem(text, schema)
+        assert built == ["x", "y"]
+
+    def test_a_date_column_normalizes_them_once(self, monkeypatch):
+        seen: list[str] = []
+        normalize = cells.normalize_cell
+
+        def counting(text: str, type_: str = "str") -> str:
+            seen.append(text)
+            return normalize(text, type_)
+
+        monkeypatch.setattr(cells, "normalize_cell", counting)
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        for _ in range(3):
+            assert cell_problem("2026-01-01 09:00:00.000", schema) is None
+        assert seen.count("2026-01-01 09:00:00") == 1
+
+    def test_a_list_changed_after_the_first_check_is_not_read_again(self):
+        allowed = ["x"]
+        schema = ColumnSchema(allowed=allowed)
+        assert cell_problem("y", schema) == "'y' is not one of ['x']"
+        allowed.append("y")
+        assert cell_problem("y", schema) == "'y' is not one of ['x']"
+
+    def test_they_are_no_part_of_equality_or_repr(self):
+        checked, fresh = ColumnSchema(allowed=("x",)), ColumnSchema(allowed=("x",))
+        cell_problem("x", checked)
+        assert checked == fresh
+        assert hash(checked) == hash(fresh)
+        assert repr(checked) == repr(fresh)
+
+    def test_a_replaced_schema_builds_its_own(self):
+        schema = ColumnSchema(allowed=["x"])
+        cell_problem("x", schema)
+        assert replace(schema, allowed=["y"]).allowed_cells == ("y",)
 
 
 class TestColumnPattern:

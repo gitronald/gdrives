@@ -18,7 +18,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from functools import cache
+from functools import cache, cached_property
 from types import MappingProxyType
 from typing import Any
 
@@ -455,7 +455,9 @@ class ColumnSchema:
 
     ``allowed`` lists the permitted values, compared as canonical strings; a
     blank cell is checked by ``required``, never by ``allowed``. ``type`` is
-    the type's name; :meth:`of` takes a class as well.
+    the type's name; :meth:`of` takes a class as well. The strings are built
+    on the first check and kept (:attr:`allowed_cells`), not once per cell, so
+    an ``allowed`` that is a list changed after that check is not read again.
 
     ``present`` and ``strict`` are checked outside :func:`cell_problem`'s
     per-cell rules, by a caller that has the column's header to check against
@@ -514,6 +516,24 @@ class ColumnSchema:
                 f"not {self.type!r}"
             )
 
+    @cached_property
+    def allowed_cells(self) -> tuple[str, ...]:
+        """``allowed`` as canonical cell strings, in its order; empty with none.
+
+        Built on first use and kept. It is no field: it takes no part in a
+        schema's equality, its hash, or its ``repr``.
+        """
+        return tuple(to_cell(value) for value in self.allowed or ())
+
+    @cached_property
+    def _allowed_texts(self) -> frozenset[str]:
+        return frozenset(self.allowed_cells)
+
+    @cached_property
+    def _allowed_values(self) -> frozenset[str]:
+        """The allowed cells as :func:`normalize_cell` writes them."""
+        return frozenset(normalize_cell(cell, self.type) for cell in self.allowed_cells)
+
     @classmethod
     def of(
         cls,
@@ -564,20 +584,21 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
-def _is_allowed(text: str, allowed: Sequence[str], type_: ColumnType) -> bool:
-    """True when ``text`` is one of the ``allowed`` cell strings.
+def _is_allowed(text: str, schema: ColumnSchema) -> bool:
+    """True when ``text`` is one of the cell strings ``schema`` allows.
 
     In a ``date`` or ``datetime`` column the two sides are compared as
     :func:`normalize_cell` writes them, since one moment has more than one
     spelling: a ``datetime`` read from its serial arrives as
     ``2026-01-01 09:00:00.000``, and :func:`to_cell` writes the same moment as
-    ``2026-01-01 09:00:00``. Other columns compare the text as it is.
+    ``2026-01-01 09:00:00``. Other columns compare the text as it is. Both
+    sets are the schema's, built once for a column and not once for a cell.
     """
-    if text in allowed:
+    if text in schema._allowed_texts:
         return True
-    if column_type(type_) not in SERIAL_TYPES:
+    if schema.type not in SERIAL_TYPES:
         return False
-    return normalize_cell(text, type_) in {normalize_cell(a, type_) for a in allowed}
+    return normalize_cell(text, schema.type) in schema._allowed_values
 
 
 def cell_problem(text: str, schema: ColumnSchema) -> str | None:
@@ -602,10 +623,8 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
             return f"{text!r} is not TRUE or FALSE, and the column is strict"
         if schema.type == "date" and not _STRICT_DATE.fullmatch(text):
             return f"{text!r} is not YYYY-MM-DD, and the column is strict"
-    if schema.allowed is not None:
-        allowed = [to_cell(value) for value in schema.allowed]
-        if not _is_allowed(text, allowed, schema.type):
-            return f"{text!r} is not one of {allowed}"
+    if schema.allowed is not None and not _is_allowed(text, schema):
+        return f"{text!r} is not one of {list(schema.allowed_cells)}"
     if schema.pattern is not None and not _compiled(schema.pattern).fullmatch(text):
         return f"{text!r} does not match the pattern {schema.pattern!r}"
     return None
