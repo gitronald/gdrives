@@ -326,8 +326,9 @@ class TabReport:
         The tab to create, or a header to write to an empty one (a sync writes
         that; a push writes every row it replaces); columns to add or drop;
         the cell writes of a merge, the pushes and new rows to the sheet and
-        the folded cells and rows to the local file; the local file rewritten
-        in another order; and a replacement (a pull or a push) that differs.
+        the folded cells and rows to the local file; a local file whose rows
+        the merge completes (a column they lacked); and a replacement (a pull
+        or a push) that differs.
         """
         if self.replacement is not None:
             return not self.replacement.unchanged
