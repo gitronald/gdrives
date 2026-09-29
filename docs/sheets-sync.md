@@ -982,6 +982,54 @@ set_url_links(service, "<spreadsheet-id>", "Members", color="#1155cc")
 The colour is compared with the one the API returns, a fraction per channel,
 to the nearest of 255 steps. A tab with no problem gets no write.
 
+### Checking a whole spreadsheet
+
+`link_urls` formats the cells a run wrote. The cells a person typed or pasted
+are never touched by it, and a sheet that people edit collects URL cells with
+the API's blue and underline, or a link to somewhere else. `sheets-links`
+sweeps them: it applies the rule above to every tab of a spreadsheet, or to
+the tabs of a config target, and touches no other cell.
+
+```bash
+gdrives sheets-links <spreadsheet-id> --color "#1155cc"           # Check every tab
+gdrives sheets-links roster                                        # A target's tabs, in their link_urls colour
+gdrives sheets-links roster --tab Members --color "#1155cc" --apply  # Fix one tab
+```
+
+- **The source** is a spreadsheet (a URL, a file ID, or a Drive path) or a
+  target name. With `--config`, it is a target. Without it, a URL or a path
+  is a spreadsheet, and a bare word is a target when the config found from the
+  working directory upward has a target of that name, and otherwise a
+  spreadsheet ID. A directory with no config has only spreadsheets, and a
+  config file that cannot be read is an error. The config's hooks and schemas
+  are not imported.
+- **The tabs** are every tab of a spreadsheet, or the `--tab`s. For a target
+  they default to the tabs that set `link_urls`, or every tab of the target
+  when `--color` is given. A tab without `link_urls` is left out with a note
+  on stderr, and one named with `--tab` is refused unless `--color` is given.
+  A pull tab has no `link_urls`, so it is swept when it is named or when
+  `--color` is given.
+- **The colour** is `--color` (`#rrggbb`), which a spreadsheet needs and which
+  overrides a target's `link_urls` for every tab swept.
+- **A preview** reads with the read-only scope, lists each URL cell that
+  breaks the rule with its reasons, and exits 2 when it found any, with the
+  usual hint on stderr. `--apply` prints the credential line, requests the
+  `spreadsheets` scope, fixes each tab in one request and reads it back, and
+  exits 0.
+- **A tab that cannot hold a URL cell in a named column**, one with no header
+  row or a header of blank cells (a notes tab, a chart tab, an empty tab), is
+  reported as skipped and is no error. A tab that fails, because its header
+  repeats a name, the API refuses a request, or the read-back finds a cell
+  still wrong, is reported with its message and the sweep goes on to the next;
+  the exit code is then 1. To leave such a tab out, name the tabs to check.
+
+As a library, `sweep_url_links(service, spreadsheet_id, tabs=None, *, color,
+apply=False)` returns a `LinkSweep`, whose `tabs` are `TabLinks` (the
+`problems`, whether they were `applied`, and any `skipped` or `error`), with
+`pending` and `exit_code`. `color` is one colour, or a mapping of tab title to
+colour that has an entry for each tab swept. `format_sweep(sweep)` renders what
+the command prints.
+
 ## Keeping a tab in order
 
 A sync keeps the sheet's row order: a row typed on the sheet stays where it
@@ -1287,6 +1335,7 @@ gdrives sheets-pull roster --apply                 # Replace local files for the
 gdrives sheets-push roster --apply                 # Replace the push tabs from local files
 gdrives sheets-pull <spreadsheet-id> --all-tabs -o out/  # One-off dump, no config
 gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSON for the config
+gdrives sheets-links <spreadsheet-id> --color "#1155cc"  # Check the links of URL cells on every tab
 ```
 
 | Option | Commands | Meaning |
@@ -1304,6 +1353,7 @@ gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSO
 | `--skip TITLE` | `sheets-pull` | With `--all-tabs`, leave this tab out; repeat for several |
 | `--format csv\|tsv\|json` | `sheets-pull` | With `--all-tabs`, the file format. Default `csv` |
 | `--bom` | `sheets-pull` | With `--all-tabs`, start each `.csv` or `.tsv` file with a byte-order mark. Not with `--format json` |
+| `--color #rrggbb` | `sheets-links` | The colour a URL cell's link text is to have. Needed for a spreadsheet; for a target, it overrides each tab's `link_urls` |
 | `--slug` | `sheets-pull` | With `--all-tabs`, name each file by its title in lower case, with each run of other characters than letters and digits as one hyphen: `Form responses 1` is `form-responses-1` |
 
 Refused before any request, with exit code 1: an unknown target, a `--tab`
@@ -1315,6 +1365,12 @@ a target with no tabs of the command's mode, `--all-tabs` combined with
 
 The report goes to stdout. The spreadsheet ID, the credential line, retry
 notices, and error messages go to stderr.
+
+**`sheets-links`** checks the URL cells of a spreadsheet's tabs, or of a
+target's, and with `--apply` fixes them; see
+[checking a whole spreadsheet](#checking-a-whole-spreadsheet). It exits 0 when
+every URL cell follows the rule or was fixed, 2 when a preview found cells to
+fix, and 1 on an error.
 
 **`sheets-widths`** prints a tab's column widths in pixels as a JSON object
 by header name, ready to paste under the tab's `widths`. It takes a Sheet

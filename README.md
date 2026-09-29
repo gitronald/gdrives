@@ -378,6 +378,8 @@ gdrives sheets-push roster --apply                 # Replace the push tabs from 
 gdrives sheets-pull <sheet-url> --all-tabs -o out/ --apply  # Dump every tab, no config
 gdrives sheets-pull <sheet-url> --all-tabs -o out/ --slug --bom --apply  # Slug file names, with a byte-order mark
 gdrives sheets-widths <sheet-url> --tab Members    # Column widths as JSON, for a tab's "widths"
+gdrives sheets-links <sheet-url> --color "#1155cc" # Check the links of URL cells on every tab
+gdrives sheets-links roster --tab Members --apply  # A target's tab, in its link_urls colour, fixed
 ```
 
 A `sync` tab is merged three ways by row key against a **base snapshot** (one
@@ -418,7 +420,10 @@ and ownership rules, the first sync, and the exit codes.
 The sheet links a URL as it is written. A `sync` or `push` tab's
 `clear_links: true` leaves the cells a run writes with no link, and its
 `link_urls`, `{"color": "#1155cc"}`, gives each URL cell a run writes a link to
-its own text, in that colour, not underlined. See
+its own text, in that colour, not underlined. `link_urls` never touches the
+cells a person typed or pasted; `sheets-links` sweeps those, over every tab of
+a spreadsheet or the tabs of a target, and with `--apply` fixes them (in
+code, `sweep_url_links` and `format_sweep`). See
 [links](docs/sheets-sync.md#links).
 
 To read a tab into Python instead of a file, `pull_records(service,
