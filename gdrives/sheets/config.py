@@ -107,7 +107,7 @@ _TAB_FIELDS = frozenset(
 )
 _STRICT_LOCAL = "local"
 _SCHEMA_FIELDS = frozenset(
-    {"type", "required", "allowed", "present", "strict", "pattern"}
+    {"type", "required", "allowed", "present", "strict", "pattern", "description"}
 )
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
@@ -545,6 +545,7 @@ def _column_problems(
     present: Any,
     strict: Any,
     pattern: Any = None,
+    description: Any = None,
 ) -> list[str]:
     """What is wrong with one schema column's fields; ``at`` names the column.
 
@@ -589,6 +590,8 @@ def _column_problems(
                 f"{at}: 'pattern' is only for a column of "
                 f"{sorted(PATTERN_TYPES)}, not {type_!r}"
             )
+    if description is not None and not isinstance(description, str):
+        found.append(f"{at}: 'description' must be a string")
     return found
 
 
@@ -655,6 +658,7 @@ def _checked_schema(
             spec.present,
             spec.strict,
             spec.pattern,
+            spec.description,
         )
         found.extend(problems)
         if not problems:
@@ -1248,8 +1252,9 @@ class _Checker:
             present = spec.get("present", False)
             strict = spec.get("strict", False)
             pattern = spec.get("pattern")
+            description = spec.get("description")
             found = _column_problems(
-                at, type_, required, allowed, present, strict, pattern
+                at, type_, required, allowed, present, strict, pattern, description
             )
             problems.extend(found)
             if not unknown and not found:
@@ -1260,6 +1265,7 @@ class _Checker:
                     present=bool(present),
                     strict=bool(strict),
                     pattern=pattern,
+                    description=description,
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)

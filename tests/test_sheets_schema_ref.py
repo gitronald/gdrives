@@ -413,6 +413,13 @@ SAME_CHECKS = {
         "object.__setattr__(spec, 'pattern', 5)\n"
         "SCHEMA = {'link': spec}",
     ),
+    "description not a string": (
+        {},
+        {"link": {"description": 5}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'description', 5)\n"
+        "SCHEMA = {'link': spec}",
+    ),
     "pattern does not compile": (
         {},
         {"link": {"pattern": "[0-9"}},

@@ -40,6 +40,8 @@ pull_values`` works regardless of which submodule defines a name:
   ``FileStore``, ``JsonEntryStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
+- ``schema``: a target's schemas as rows of documentation (``schema_rows``,
+  ``format_schema``)
 - ``links``: ``sweep_url_links`` and ``format_sweep``, the links of URL cells
   over a spreadsheet's tabs
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
@@ -104,6 +106,7 @@ from gdrives.sheets.commands import (
     run_pull,
     run_push,
     run_rules,
+    run_schema,
     run_set,
     run_sync,
     run_update,
@@ -142,7 +145,13 @@ from gdrives.sheets.files import (
     write_records,
     write_values_csv,
 )
-from gdrives.sheets.hooks import resolve_hooks, resolve_tab, resolve_target, tab_hooks
+from gdrives.sheets.hooks import (
+    resolve_hooks,
+    resolve_schemas,
+    resolve_tab,
+    resolve_target,
+    tab_hooks,
+)
 from gdrives.sheets.links import LinkSweep, TabLinks, format_sweep, sweep_url_links
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
@@ -178,6 +187,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.schema import format_schema, schema_rows
 from gdrives.sheets.stores import FileStore, JsonEntryStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
@@ -388,6 +398,7 @@ __all__ = [
     "find_rows",
     "first_tab",
     "format_report",
+    "format_schema",
     "format_rules",
     "format_sweep",
     "format_values",
@@ -428,6 +439,7 @@ __all__ = [
     "read_values_csv",
     "reorder_rows",
     "resolve_hooks",
+    "resolve_schemas",
     "resolve_tab",
     "resolve_target",
     "row_key",
@@ -441,6 +453,7 @@ __all__ = [
     "run_pull",
     "run_push",
     "run_rules",
+    "run_schema",
     "run_set",
     "run_sync",
     "run_target",
@@ -456,6 +469,7 @@ __all__ = [
     "strip_links",
     "styled_cells",
     "sweep_url_links",
+    "schema_rows",
     "sync_tab",
     "tab_grid",
     "tab_hooks",

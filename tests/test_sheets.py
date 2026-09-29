@@ -976,6 +976,7 @@ SUBMODULES = (
     "retry",
     "retype",
     "rules",
+    "schema",
     "stores",
     "structure",
     "sync",

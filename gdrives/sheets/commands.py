@@ -23,8 +23,8 @@ from gdrives.sheets.create import (
     name_tabs,
     spreadsheet_url,
 )
-from gdrives.sheets.files import read_values_csv, write_values_csv
-from gdrives.sheets.hooks import resolve_target
+from gdrives.sheets.files import read_values_csv, write_records, write_values_csv
+from gdrives.sheets.hooks import resolve_schemas, resolve_target
 from gdrives.sheets.links import format_sweep, sweep_url_links
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import retry_notices
@@ -40,6 +40,7 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.schema import SCHEMA_COLUMNS, format_schema, schema_rows
 from gdrives.sheets.structure import get_column_widths
 from gdrives.sheets.sync import (
     SyncReport,
@@ -835,6 +836,34 @@ def _links_plan(
                 f"no tab of target {target.name!r} has link_urls; pass --color"
             )
     return named or list(colors), colors
+
+
+def run_schema(
+    name: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    output: str | None = None,
+) -> int:
+    """Print the schemas of config target ``name`` as CSV, or write them to ``output``.
+
+    One row per declared column of the target's tabs (or just ``tabs``): see
+    :func:`~gdrives.sheets.schema.schema_rows`. Reads the config alone, with no
+    request and no credential. A tab whose ``schema`` names a
+    ``module:attribute`` is resolved, which imports that module, as a run does;
+    hooks are neither imported nor checked. ``output`` is a ``.csv``, ``.tsv``,
+    or ``.json`` file, written atomically with LF line endings; without it the
+    rows go to stdout as CSV. Returns 0; a config, tab, or schema problem raises.
+    """
+    target = load_config(config).target(name)
+    titles = list(dict.fromkeys(tabs)) or None
+    rows = schema_rows(resolve_schemas(target, titles), titles)
+    if output:
+        write_records(output, SCHEMA_COLUMNS, rows)
+        print(f"Wrote {len(rows)} column(s) to {output}", file=sys.stderr)
+    else:
+        print(format_schema(rows), end="")
+    return 0
 
 
 @_noticed

@@ -474,6 +474,11 @@ class ColumnSchema:
     ``required``'s, never the pattern's. A failure is a problem from
     :func:`cell_problem` like the rest. The expression is compiled once per
     distinct string, not once per cell.
+
+    ``description`` is text for a person: what the column holds. No check of a
+    cell reads it; :func:`~gdrives.sheets.schema.schema_rows` and
+    ``gdrives sheets-schema`` carry it into a documentation export. It is
+    part of a schema's equality, like its other fields.
     """
 
     type: str = "str"
@@ -482,9 +487,14 @@ class ColumnSchema:
     present: bool = False
     strict: bool = False
     pattern: str | None = None
+    description: str | None = None
 
     def __post_init__(self) -> None:
         _check_type(self.type)
+        if self.description is not None and not isinstance(self.description, str):
+            raise ValueError(
+                f"description must be a string, not {type(self.description).__name__}"
+            )
         if self.pattern is not None:
             if self.type not in PATTERN_TYPES:
                 raise ValueError(
@@ -511,6 +521,7 @@ class ColumnSchema:
         present: bool = False,
         strict: bool = False,
         pattern: str | None = None,
+        description: str | None = None,
     ) -> "ColumnSchema":
         """A schema whose type is given by name or by class (``int``, ``date``).
 
@@ -524,6 +535,7 @@ class ColumnSchema:
             present=present,
             strict=strict,
             pattern=pattern,
+            description=description,
         )
 
 

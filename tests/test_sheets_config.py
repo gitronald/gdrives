@@ -1312,6 +1312,26 @@ class TestSchemaPattern:
         )
 
 
+class TestSchemaDescription:
+    def test_accepted(self):
+        schema = {"id": {"description": "The member's number."}}
+        data = config({"Members": members(schema=schema)})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].description == "The member's number."
+
+    def test_defaults_to_none(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].description is None
+
+    def test_must_be_a_string(self):
+        refused(
+            config({"Members": members(schema={"id": {"description": 5}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'description' must be a string",
+        )
+
+
 class TestSchemaStrict:
     @pytest.mark.parametrize("type_", ["bool", "date"])
     def test_accepted_for_bool_and_date(self, type_):

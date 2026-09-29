@@ -97,6 +97,25 @@ def resolve_target(target: Target, tabs: Sequence[str] | None = None) -> Target:
     were. Makes no request, and imports nothing for a tab with no hooks and
     no ``schema_ref``.
     """
+    return _resolved(target, tabs, _resolve)
+
+
+def resolve_schemas(target: Target, tabs: Sequence[str] | None = None) -> Target:
+    """:func:`resolve_target` for the schema references alone.
+
+    For a caller that reads the schemas and runs nothing else, such as a
+    documentation export: it imports the modules the ``schema_ref`` of the
+    tabs asked for name, and neither imports nor checks their hooks.
+    """
+    return _resolved(target, tabs, _resolve_schema)
+
+
+def _resolved(
+    target: Target,
+    tabs: Sequence[str] | None,
+    resolve: Callable[[TabConfig], tuple[TabConfig, list[str]]],
+) -> Target:
+    """``target`` with each tab asked for through ``resolve``, or a ConfigError."""
     chosen = [target.tab(title) for title in tabs] if tabs is not None else target.tabs
     found: list[TabConfig] = []
     problems: list[str] = []
@@ -104,7 +123,7 @@ def resolve_target(target: Target, tabs: Sequence[str] | None = None) -> Target:
         if not any(tab is wanted for wanted in chosen):
             found.append(tab)
             continue
-        resolved, tab_problems = _resolve(tab)
+        resolved, tab_problems = resolve(tab)
         found.append(resolved)
         problems.extend(f"tab {tab.title!r}: {problem}" for problem in tab_problems)
     if problems:

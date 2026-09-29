@@ -864,6 +864,34 @@ def sheets_push(
     raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
 
 
+@app.command(name="sheets-schema")
+def sheets_schema(
+    target: Annotated[str, typer.Argument(help=_TARGET_HELP)],
+    config: ConfigOption = None,
+    tab: TabsOption = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Write to this .csv, .tsv, or .json file (default: CSV to stdout)",
+        ),
+    ] = None,
+):
+    """List the schema columns of a target: type, rules, and description.
+
+    One row per declared column of every tab (or the --tab ones), from the
+    config alone: no request to Google and no credential. A tab whose schema
+    is a module:attribute runs that module, as a sync does. Exit code 0, or
+    1 on a config error. See docs/sheets-sync.md.
+    """
+    from gdrives.sheets import run_schema
+
+    with _cli_errors():
+        code = run_schema(target, config=config, tabs=tab or [], output=output)
+    raise typer.Exit(code)
+
+
 @app.command(name="sheets-links")
 def sheets_links(
     source: Annotated[

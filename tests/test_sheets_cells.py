@@ -755,6 +755,30 @@ class TestColumnPattern:
         assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
 
 
+class TestColumnDescription:
+    def test_it_defaults_to_none_and_is_read_by_no_check(self):
+        assert ColumnSchema().description is None
+        described = ColumnSchema("int", description="Whole dollars.")
+        assert cell_problem("12", described) is None
+        assert cell_problem("x", described) == cell_problem("x", ColumnSchema("int"))
+
+    def test_it_is_part_of_equality_and_hashing(self):
+        assert ColumnSchema(description="a") == ColumnSchema(description="a")
+        assert ColumnSchema(description="a") != ColumnSchema()
+        assert hash(ColumnSchema(description="a")) == hash(
+            ColumnSchema(description="a")
+        )
+
+    def test_it_must_be_a_string(self):
+        with pytest.raises(ValueError, match="description must be a string, not int"):
+            ColumnSchema(description=5)  # pyrefly: ignore[bad-argument-type]
+
+    def test_of_takes_it(self):
+        assert ColumnSchema.of(int, description="x") == ColumnSchema(
+            "int", description="x"
+        )
+
+
 class TestColumnSchemaOf:
     @pytest.mark.parametrize(("cls", "name"), CLASSES)
     def test_a_class_is_stored_as_its_name(self, cls, name):
