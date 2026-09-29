@@ -1291,6 +1291,28 @@ class TestSchemaPattern:
             "target 'roster', tab 'Members': schema 'link': 'pattern' must be a string",
         )
 
+    def test_a_hint_is_accepted_with_it(self):
+        spec = {"pattern": self.URL, "pattern_hint": "a member page link"}
+        data = config({"Members": members(schema={"link": spec})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["link"].pattern_hint == "a member page link"
+
+    def test_a_hint_is_refused_without_it(self):
+        refused(
+            config({"Members": members(schema={"link": {"pattern_hint": "a link"}})}),
+            "target 'roster', tab 'Members': schema 'link': "
+            "'pattern_hint' is only for a column with a 'pattern'",
+        )
+
+    @pytest.mark.parametrize("hint", ["", 5])
+    def test_a_hint_must_be_a_string_that_is_not_empty(self, hint):
+        spec = {"pattern": self.URL, "pattern_hint": hint}
+        refused(
+            config({"Members": members(schema={"link": spec})}),
+            "target 'roster', tab 'Members': schema 'link': "
+            "'pattern_hint' must be a string that is not empty",
+        )
+
     def test_must_not_be_empty(self):
         refused(
             config({"Members": members(schema={"link": {"pattern": ""}})}),

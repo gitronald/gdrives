@@ -478,6 +478,12 @@ class ColumnSchema:
     :func:`cell_problem` like the rest. The expression is compiled once per
     distinct string, not once per cell.
 
+    ``pattern_hint`` says what a cell of the column is, for a person who does
+    not read regular expressions: a noun phrase such as ``"a member page
+    link"``. With one, a cell that fails the pattern is reported as ``'x' is
+    not a member page link``, where it would name the expression. It is
+    refused without a ``pattern``, and when it is empty or not a string.
+
     ``description`` is text for a person: what the column holds. No check of a
     cell reads it; :func:`~gdrives.sheets.schema.schema_rows` and
     ``gdrives sheets-schema`` carry it into a documentation export. It is
@@ -491,9 +497,15 @@ class ColumnSchema:
     strict: bool = False
     pattern: str | None = None
     description: str | None = None
+    pattern_hint: str | None = None
 
     def __post_init__(self) -> None:
         _check_type(self.type)
+        if self.pattern_hint is not None:
+            if not isinstance(self.pattern_hint, str) or not self.pattern_hint:
+                raise ValueError("pattern_hint must be a string that is not empty")
+            if self.pattern is None:
+                raise ValueError("pattern_hint is only for a column with a pattern")
         if self.description is not None and not isinstance(self.description, str):
             raise ValueError(
                 f"description must be a string, not {type(self.description).__name__}"
@@ -545,6 +557,7 @@ class ColumnSchema:
         strict: bool = False,
         pattern: str | None = None,
         description: str | None = None,
+        pattern_hint: str | None = None,
     ) -> "ColumnSchema":
         """A schema whose type is given by name or by class (``int``, ``date``).
 
@@ -559,6 +572,7 @@ class ColumnSchema:
             strict=strict,
             pattern=pattern,
             description=description,
+            pattern_hint=pattern_hint,
         )
 
 
@@ -609,7 +623,8 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     ``date`` cell must be ``YYYY-MM-DD``, both exactly; a cell that parses as
     the type but not in that exact form is a problem under ``strict`` and
     passes without it. With ``schema.pattern``, a cell that does not match it
-    in full is a problem, checked last. A ``date`` cell read from its serial number
+    in full is a problem, checked last, and named by ``schema.pattern_hint``
+    when the schema has one. A ``date`` cell read from its serial number
     (:func:`serial_to_cell`) already arrives in that form.
     """
     if text == "":
@@ -626,6 +641,8 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     if schema.allowed is not None and not _is_allowed(text, schema):
         return f"{text!r} is not one of {list(schema.allowed_cells)}"
     if schema.pattern is not None and not _compiled(schema.pattern).fullmatch(text):
+        if schema.pattern_hint is not None:
+            return f"{text!r} is not {schema.pattern_hint}"
         return f"{text!r} does not match the pattern {schema.pattern!r}"
     return None
 

@@ -3,7 +3,7 @@
 All pure functions, so the tests are exhaustive over the documented cases.
 """
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -836,6 +836,42 @@ class TestColumnPattern:
 
     def test_of_takes_it(self):
         assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
+
+
+class TestPatternHint:
+    SCHEMA = ColumnSchema(
+        pattern="https://example\\.com/members/[0-9]+",
+        pattern_hint="a member page link",
+    )
+
+    def test_a_failure_is_named_by_the_hint(self):
+        assert cell_problem("x", self.SCHEMA) == "'x' is not a member page link"
+        assert cell_problem("https://example.com/members/7", self.SCHEMA) is None
+
+    def test_a_blank_cell_is_still_required_s(self):
+        assert cell_problem("", self.SCHEMA) is None
+
+    def test_it_reaches_the_problem_of_a_row(self):
+        (found,) = problems([{"link": "x"}], {"link": self.SCHEMA}, tab="Members")
+        assert (
+            str(found) == "Members: row 1, column 'link': 'x' is not a member page link"
+        )
+
+    def test_it_is_the_last_field_and_part_of_equality(self):
+        assert [f.name for f in fields(ColumnSchema)][-1] == "pattern_hint"
+        assert self.SCHEMA != ColumnSchema(pattern=self.SCHEMA.pattern)
+        assert ColumnSchema.of(str, pattern="a", pattern_hint="an a") == ColumnSchema(
+            pattern="a", pattern_hint="an a"
+        )
+
+    def test_it_is_refused_without_a_pattern(self):
+        with pytest.raises(ValueError, match="only for a column with a pattern"):
+            ColumnSchema(pattern_hint="a member page link")
+
+    @pytest.mark.parametrize("hint", ["", 5])
+    def test_it_must_be_a_string_that_is_not_empty(self, hint):
+        with pytest.raises(ValueError, match="pattern_hint must be a string"):
+            ColumnSchema(pattern="a", pattern_hint=hint)
 
 
 class TestColumnDescription:

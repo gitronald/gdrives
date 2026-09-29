@@ -432,6 +432,20 @@ SAME_CHECKS = {
         "object.__setattr__(spec, 'description', 5)\n"
         "SCHEMA = {'link': spec}",
     ),
+    "pattern hint without a pattern": (
+        {},
+        {"link": {"pattern_hint": "a link"}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'pattern_hint', 'a link')\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern hint empty": (
+        {},
+        {"link": {"pattern": "[0-9]+", "pattern_hint": ""}},
+        "spec = ColumnSchema(pattern='[0-9]+')\n"
+        "object.__setattr__(spec, 'pattern_hint', '')\n"
+        "SCHEMA = {'link': spec}",
+    ),
     "pattern empty": (
         {},
         {"link": {"pattern": ""}},

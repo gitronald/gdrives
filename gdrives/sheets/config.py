@@ -108,7 +108,16 @@ _TAB_FIELDS = frozenset(
 )
 _STRICT_LOCAL = "local"
 _SCHEMA_FIELDS = frozenset(
-    {"type", "required", "allowed", "present", "strict", "pattern", "description"}
+    {
+        "type",
+        "required",
+        "allowed",
+        "present",
+        "strict",
+        "pattern",
+        "description",
+        "pattern_hint",
+    }
 )
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
@@ -569,6 +578,7 @@ def _column_problems(
     strict: Any,
     pattern: Any = None,
     description: Any = None,
+    pattern_hint: Any = None,
 ) -> list[str]:
     """What is wrong with one schema column's fields; ``at`` names the column.
 
@@ -617,6 +627,11 @@ def _column_problems(
             )
     if description is not None and not isinstance(description, str):
         found.append(f"{at}: 'description' must be a string")
+    if pattern_hint is not None:
+        if not isinstance(pattern_hint, str) or not pattern_hint:
+            found.append(f"{at}: 'pattern_hint' must be a string that is not empty")
+        if pattern is None:
+            found.append(f"{at}: 'pattern_hint' is only for a column with a 'pattern'")
     return found
 
 
@@ -684,6 +699,7 @@ def _checked_schema(
             spec.strict,
             spec.pattern,
             spec.description,
+            spec.pattern_hint,
         )
         found.extend(problems)
         if not problems:
@@ -1278,8 +1294,17 @@ class _Checker:
             strict = spec.get("strict", False)
             pattern = spec.get("pattern")
             description = spec.get("description")
+            hint = spec.get("pattern_hint")
             found = _column_problems(
-                at, type_, required, allowed, present, strict, pattern, description
+                at,
+                type_,
+                required,
+                allowed,
+                present,
+                strict,
+                pattern,
+                description,
+                hint,
             )
             problems.extend(found)
             if not unknown and not found:
@@ -1291,6 +1316,7 @@ class _Checker:
                     strict=bool(strict),
                     pattern=pattern,
                     description=description,
+                    pattern_hint=hint,
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)
