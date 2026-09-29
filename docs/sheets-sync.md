@@ -138,7 +138,7 @@ to keep in step with local files:
 | `insert_above` | `sync` | One `{column: value}` or `{column: [values]}` pair: new rows go above the first sheet row whose column holds one of the values, instead of at the end. See [where new rows go](#where-new-rows-go) |
 | `on_invalid` | `sync` | What a sync does with a sheet value that fails the `schema`: `refuse` (the default) writes nothing for the tab, and `hold` keeps that value out and writes the rest. See [holding invalid sheet values](#holding-invalid-sheet-values) |
 | `bootstrap` | `sync` | How a tab with no base starts. `local` (the default) is the only value; `--adopt` is a flag, not a config value. See [the first sync](#the-first-sync) |
-| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
+| `strict_schema` | all | `true` makes it a problem for a column of either side to have no `schema` entry, and `"local"` does so for the local side only. Default `false`. See [requiring every column to be declared](#requiring-every-column-to-be-declared) |
 | `hooks` | all | Functions that run as the tab's `validate`, `check`, `warn`, and `transform`, each named as `"module:function"`. **Naming a function runs it**: see [hooks in the config](#hooks-in-the-config). No `transform` on a `push` tab |
 
 The loader checks the whole file before any request is made and reports every
@@ -312,7 +312,39 @@ one a run is dropping, to have no `schema` entry:
 
 With `strict_schema`, `schema` may also name a column outside `columns`,
 which is refused otherwise: a carried or excluded column has to be declared
-somewhere.
+somewhere. `"local"` gets the same allowance, since a carried local column is
+one it checks.
+
+#### Only the local side
+
+On a shared sheet, collaborators may keep columns of their own outside the
+projection, and `strict_schema: true` refuses every run because of them.
+`strict_schema: "local"` checks the local side only: every local column must be
+declared, and a sheet column outside the projection is left alone.
+
+```json
+"Members": {
+  "mode": "sync", "local": "data/members.csv", "key": ["member_id"],
+  "columns": ["member_id", "name", "paid"],
+  "schema": {"member_id": {}, "name": {}, "paid": {"type": "bool"}},
+  "strict_schema": "local"
+}
+```
+
+What it checks depends on the mode:
+
+- A `sync` runs the `local` stage as `true` does, and skips the `sheet` stage.
+- A `pull` has no local file to check before the read. Under `true` it checks
+  every named header column, read or not; under `"local"` it checks the
+  columns it reads, which become the local file's columns, and leaves the other
+  header columns alone. With no `columns`, that is every named header column
+  less `exclude`, so the two agree.
+- A `push` replaces the whole tab and has only a local side, so `"local"` and
+  `true` check the same columns. It is accepted there, not refused, as a
+  `blank_keys` is accepted in every mode.
+
+Any other value is a config problem. `true` and `false` read and report as
+before.
 
 ### Column presence and strict forms
 
