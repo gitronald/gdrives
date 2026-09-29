@@ -124,9 +124,7 @@ def export(
     from gdrives.export import run
 
     with _cli_errors():
-        # Only an asked-for newline is passed, so a call without one is unchanged.
-        options = {} if newline is None else {"newline": newline}
-        run(source, output, **options)
+        run(source, output, newline=newline)
 
 
 @app.command()

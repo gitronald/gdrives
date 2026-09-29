@@ -56,7 +56,8 @@ class TestExport:
     def test_delegates_to_run(self, monkeypatch):
         rec = {}
         monkeypatch.setattr(
-            "gdrives.export.run", lambda source, output: rec.update(s=source, o=output)
+            "gdrives.export.run",
+            lambda source, output, newline=None: rec.update(s=source, o=output),
         )
         cli.export("https://docs.google.com/document/d/X/edit", "out.docx")
         assert rec == {
@@ -77,7 +78,7 @@ class TestExport:
         assert rec == {"n": "lf"}
 
     def test_value_error_exits_1(self, monkeypatch, capsys):
-        def boom(source, output):
+        def boom(source, output, newline=None):
             raise ValueError("Unsupported output extension '.bad'")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -95,7 +96,7 @@ class TestExport:
             status = 404
             reason = "Not Found"
 
-        def boom(source, output):
+        def boom(source, output, newline=None):
             raise HttpError(FakeResp(), b"")
 
         monkeypatch.setattr("gdrives.export.run", boom)

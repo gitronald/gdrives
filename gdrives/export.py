@@ -119,6 +119,4 @@ def run(source: str, output: str, newline: str | None = None):
     print(f"File ID: {file_id}", file=sys.stderr)
 
     service = build_drive_service()
-    # Only an asked-for newline is passed, so a call without one is unchanged.
-    options = {} if newline is None else {"newline": newline}
-    export_file(service, file_id, output, **options)
+    export_file(service, file_id, output, newline=newline)

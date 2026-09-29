@@ -320,7 +320,7 @@ class TestRun:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.export_file",
-            lambda service, file_id, output: rec.update(
+            lambda service, file_id, output, newline=None: rec.update(
                 svc=service, fid=file_id, out=output
             ),
         )
