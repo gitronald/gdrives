@@ -514,9 +514,10 @@ def _skipped_rows(
     positions: Mapping[str, int], rows: Sequence[int] | None, left: Sequence[LinkedCell]
 ) -> dict[int, frozenset[int]]:
     """The 0-based rows to leave, by column index, among the wanted ones."""
+    wanted = None if rows is None else set(rows)
     skipped: dict[int, set[int]] = {}
     for cell in left:
-        if rows is None or cell.row in rows:
+        if wanted is None or cell.row in wanted:
             skipped.setdefault(positions[cell.column], set()).add(cell.row - 1)
     return {column: frozenset(held) for column, held in skipped.items()}
 
@@ -583,6 +584,7 @@ def _link_clears(
         for down in _row_spans(rows, gap, row_count)
     ]
     kept = {(cell.column, cell.row) for cell in left}
+    wanted = None if rows is None else set(rows)
     requests.extend(
         link_clear(
             sheet_id,
@@ -592,7 +594,7 @@ def _link_clears(
         )
         for cell in partial
         if cell.in_runs
-        and (rows is None or cell.row in rows)
+        and (wanted is None or cell.row in wanted)
         and (cell.column, cell.row) not in kept
     )
     return requests
@@ -619,11 +621,13 @@ def strip_links(
     returned.
     """
 
+    wanted = None if rows is None else set(rows)
+
     def found() -> list[LinkedCell]:
         cells = linked_cells(
             service, spreadsheet_id, tab, columns=columns, header=header
         )
-        return [cell for cell in cells if rows is None or cell.row in rows]
+        return [cell for cell in cells if wanted is None or cell.row in wanted]
 
     linked = found()
     if not linked:
