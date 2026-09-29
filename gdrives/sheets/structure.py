@@ -432,8 +432,7 @@ def clear_link_format(
     skipped cell of its columns is passed (an open range, to the end of the
     tab). The cells are found by the same grid read as the runs,
     ``linked_cells(..., detail=True)``, so ``formulas=False`` costs that
-    read even with ``runs=False``. ``formulas`` is named beside ``runs`` and
-    ``style`` for what the clear also takes: the formula cells, by default.
+    read even with ``runs=False``.
 
     With ``runs``, a cell that holds a link on part of its text has its text
     format runs cleared whole, in the same request. The API cannot take a
