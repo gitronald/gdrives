@@ -97,6 +97,7 @@ PROMISED = {
     ],
     "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
     "report and run seams": ["print_retry"],
+    "schema by reference": ["resolve_tab", "resolve_target"],
     "typed writes": [
         "DATE_FORMATS",
         "NUMBER_FORMAT_FIELD",
@@ -131,6 +132,8 @@ PROMISED_ATTRIBUTES = [
     (TabReport, ["pending", "exit_code"]),
     (gdrives.sheets.SyncReport, ["pending"]),
     (Target, ["spreadsheet_id"]),
+    (TabConfig, ["schema_ref"]),
+    (Target, ["base_file"]),
 ]
 
 
@@ -203,8 +206,8 @@ class TestGuideConfigs:
             assert config.targets
 
     def test_the_guide_has_the_examples_this_reads(self):
-        assert len(blocks(GUIDE, "json")) == 13
-        assert len(blocks(GUIDE, "python")) == 13
+        assert len(blocks(GUIDE, "json")) == 14
+        assert len(blocks(GUIDE, "python")) == 14
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError

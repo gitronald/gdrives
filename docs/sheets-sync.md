@@ -123,7 +123,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), and `strict` (true or false, `bool` and `date` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -149,7 +149,9 @@ owned columns outside `columns`, a column both `local_owned` and
 `USER_ENTERED` on a target with a `sync` tab, and two tabs that would write the
 same file (a local file or a base file, compared case-insensitively, across
 the whole config), the same entry of a file, or a whole file and an entry of
-it.
+it. A `schema` named as `module:attribute` is checked by its form alone when
+the file is read; the checks that need its columns run when a command
+resolves it, before its first request (see [a schema in code](#a-schema-in-code)).
 
 Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
@@ -1777,3 +1779,81 @@ the hook and the function, and the run goes on to the next tab. `run_target`
 runs a tab's config hooks too, before the ones given in code: the messages
 are the config hook's, then the code hook's, and a config `transform` runs
 first, the code's cleaning what it returns.
+
+### A schema in code
+
+**Running a command on a config runs the schema module it names**, as it runs
+the hooks. A `schema` given as `"module:attribute"` is code: `sheets-sync`,
+`sheets-pull`, and `sheets-push`, a preview included, import the module, and
+call its function when the attribute is one.
+
+A caller that declares its columns in Python, for its own checks and its own
+docs, names that declaration in the config instead of restating it as JSON:
+
+```json
+{
+  "roster": {
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/<spreadsheet-id>",
+    "base": "sheets-base/roster",
+    "tabs": {
+      "Members": {
+        "local": "data/members.csv",
+        "key": ["id"],
+        "schema": "clubtools.schema:MEMBERS",
+        "strict_schema": true
+      }
+    }
+  }
+}
+```
+
+The attribute is a mapping of column name to `ColumnSchema`, or a function
+that is given the tab's title and returns one, for a module that serves
+several tabs. Here `clubtools/schema.py` holds both:
+
+```python
+from gdrives.sheets import ColumnSchema
+
+MEMBERS = {
+    "id": ColumnSchema("str", required=True),
+    "name": ColumnSchema("str", required=True),
+    "joined": ColumnSchema("date", strict=True),
+    "paid": ColumnSchema("bool"),
+}
+
+DUES = {
+    "id": ColumnSchema("str", required=True),
+    "amount": ColumnSchema("float", required=True),
+}
+
+
+def by_title(title):
+    """The schema of the tab titled ``title``: ``"schema": "clubtools.schema:by_title"``."""
+    return {"Members": MEMBERS, "Dues": DUES}[title]
+```
+
+The module is found as a hook's is: as `import` finds it, installed where
+`gdrives` runs or on `PYTHONPATH`, and never in the config's directory.
+
+Reading a config imports nothing: `load_config` checks only that the string
+has the form `module:attribute`. The checks a `schema` object gets when the
+file is read, and that need its columns, wait for the run: each column's
+fields, a column outside `columns` (unless `strict_schema`), and a column
+that `exclude` names. A command resolves the reference before its first
+request, in the same pass that finds the hooks, and lists every problem at
+once, each in the words the loader uses for a `schema` object, naming the tab
+and the reference, and exits 1. A module that does not import, an attribute
+it lacks, a value that is neither a mapping nor a function, a function that
+raises or returns something else, a column name that is not a string, and a
+value that is not a `ColumnSchema` are problems too.
+
+From code, `resolve_target(target)` resolves every tab's reference and checks
+every hook name the same way, and returns the target with each tab's
+`schema` filled; `resolve_tab(tab)` does it for one tab. `run_target`,
+`plan_tab`, `sync_tab`, `pull_tab`, and `push_tab` resolve a tab they are
+given, so a tab built in code may name its schema too:
+`TabConfig("Members", Path("data/members.csv"), key=("id",),
+schema_ref="clubtools.schema:MEMBERS")`. It takes `schema` or `schema_ref`,
+not both. Until it is resolved, a tab has no types: its `types` and
+`local_store`, and a `base_file` entry for it, raise rather than read the
+file untyped.

@@ -441,6 +441,15 @@ The module is found as `import` finds it, never beside the config, and every
 name is checked before the first request. See
 [hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
 
+A tab's `schema` may name a schema written in Python instead of giving one,
+as `"module:attribute"`: `"schema": "clubtools.schema:MEMBERS"`, a mapping of
+column name to `ColumnSchema`, or a function given the tab's title that
+returns one. It is imported as a hook is, when a run starts and never when
+the config is read, so **running a command on the config runs that module**,
+a preview included. The schema found is checked as a `schema` object in the
+config is, before the first request. See
+[a schema in code](docs/sheets-sync.md#a-schema-in-code).
+
 ### Read and edit Google Docs content
 
 Operate on the live document via the Docs API — distinct from `export`, which
