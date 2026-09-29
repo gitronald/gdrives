@@ -251,7 +251,23 @@ gdrives export <doc-url> -o output.md       # Google Doc -> Markdown (.txt for p
 gdrives export <sheet-url> -o output.xlsx   # Google Sheet -> .xlsx
 gdrives export <sheet-url> -o output.csv    # Google Sheet -> .csv (first tab only)
 gdrives export <slides-url> -o output.pptx  # Google Slides -> .pptx
+gdrives export <sheet-url> -o output.csv --newline lf  # Rewrite the row endings to LF
 ```
+
+Drive sends a sheet's CSV with CRLF row endings, so a file that is committed is
+rewritten by every export. `--newline lf` or `--newline crlf` rewrites the line
+endings of a text export (`.csv`, `.txt`, `.md`) before the file appears under
+its name; without it the bytes are written as Drive sent them. It is refused,
+before any request, with a binary format (`.docx`, `.xlsx`, `.pptx`) and with
+any other value. The rewrite works on the bytes, so an export that is not valid
+UTF-8 is neither corrupted nor refused. A line ending is CRLF, LF, or a lone CR
+(Drive sends none). In a CSV file a line break inside a quoted cell is part of
+the cell's value and is kept as the cell holds it: only the row endings change,
+and which cells are quoted, and every other byte, stay as they were. From code,
+`export_file(service, file_id, output_path, newline=None)` takes the same
+value, and `gdrives.export.set_line_endings(content, extension, newline)`
+rewrites bytes already in hand. The names are those of `newline` on the sheets
+side (`gdrives.local.NEWLINES`).
 
 ### Read and write Google Sheet cell values
 
