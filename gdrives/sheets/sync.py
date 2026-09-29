@@ -88,7 +88,13 @@ from gdrives.sheets.config import (
     Target,
 )
 from gdrives.sheets.files import Records, read_records, write_records
-from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
+from gdrives.sheets.hooks import (
+    _chained,
+    _joined,
+    resolve_tab,
+    resolve_target,
+    tab_hooks,
+)
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
@@ -678,6 +684,16 @@ def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
 
 
+def _resolved(tab: TabConfig) -> TabConfig:
+    """``tab`` with its ``schema_ref`` resolved, before anything reads its schema.
+
+    :func:`~gdrives.sheets.hooks.resolve_tab` checks the tab's hooks in the
+    same pass, so one ConfigError lists both. A tab with no ``schema_ref`` is
+    returned as it is, and its hooks are found where they always were.
+    """
+    return resolve_tab(tab) if tab.schema_ref is not None else tab
+
+
 def _with_tab_hooks(
     tab: TabConfig,
     validate: Validate | None,
@@ -871,6 +887,7 @@ def plan_tab(
         raise ValueError(
             f"prefer must be one of {sorted(SIDES)} or None, not {prefer!r}"
         )
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="sync")
     _started(report, tab)
     _refuse_exclude(tab)
@@ -1507,6 +1524,7 @@ def pull_tab(
     that makes a key blank or makes two equal is refused, and the local
     side is left alone.
     """
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
@@ -1728,6 +1746,7 @@ def push_tab(
     has, or every local column), before the "no rows" refusal, so a local
     side with no rows is still checked for it.
     """
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
     _refuse_exclude(tab)
@@ -2302,11 +2321,13 @@ def run_target(
     selected tab of another mode, a sync-only option on another mode, or a
     ``transform`` on a push.
 
-    The hooks a selected tab's config names are found first
-    (:func:`~gdrives.sheets.hooks.resolve_hooks`), and a
+    The hooks a selected tab's config names, and the schema its
+    ``schema_ref`` names, are found first
+    (:func:`~gdrives.sheets.hooks.resolve_target`), and a
     :class:`~gdrives.sheets.config.ConfigError` lists every name that does
-    not resolve, before any request. Each tab runs its config's hooks, then
-    the ones given here.
+    not resolve and every problem of a schema found, before any request.
+    Each tab runs with its schema resolved, and runs its config's hooks,
+    then the ones given here.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
@@ -2333,7 +2354,13 @@ def run_target(
         selected = [tab for tab in target.tabs if tab.mode == mode]
         if not selected:
             raise ValueError(f"target {target.name!r} has no {mode} tabs")
-    resolve_hooks(target, [tab.title for tab in selected])
+    target = resolve_target(target, [tab.title for tab in selected])
+    # The same tabs again, now with any schema_ref resolved.
+    selected = (
+        [target.tab(title) for title in tabs]
+        if tabs
+        else [tab for tab in target.tabs if tab.mode == mode]
+    )
 
     report = SyncReport(target=target.name)
     listing: TabListing | None = None

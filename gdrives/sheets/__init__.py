@@ -22,8 +22,9 @@ pull_values`` works regardless of which submodule defines a name:
 - ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder,
   and ``name_tabs``
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
-- ``hooks``: the hooks a config names, found when a run starts
-  (``resolve_hooks``, ``tab_hooks``)
+- ``hooks``: the hooks and schema references a config names, found when a
+  run starts (``resolve_target``, ``resolve_tab``, ``resolve_hooks``,
+  ``tab_hooks``)
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
   records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
@@ -133,7 +134,7 @@ from gdrives.sheets.files import (
     write_records,
     write_values_csv,
 )
-from gdrives.sheets.hooks import resolve_hooks, tab_hooks
+from gdrives.sheets.hooks import resolve_hooks, resolve_tab, resolve_target, tab_hooks
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
     OVERRIDE_REASONS,
@@ -399,6 +400,8 @@ __all__ = [
     "read_values_csv",
     "reorder_rows",
     "resolve_hooks",
+    "resolve_tab",
+    "resolve_target",
     "row_key",
     "run_add_rule",
     "run_append",
