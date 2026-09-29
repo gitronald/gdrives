@@ -11,18 +11,20 @@ pull_values`` works regardless of which submodule defines a name:
 
 - ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
   lookups, and the structural ``spreadsheets.batchUpdate``
-- ``retry``: ``with_retry``, the retryable status sets, and ``retry_notices``
+- ``retry``: ``with_retry``, the retryable status sets, ``retry_notices``, and
+  ``print_retry``
 - ``cells``: canonical cell strings, column types, typed rows, row keys, and
   schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
-- ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder,
-  and ``name_tabs``
+- ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder
+  (empty, or converted from a local workbook), and ``name_tabs``
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
-- ``hooks``: the hooks a config names, found when a run starts
-  (``resolve_hooks``, ``tab_hooks``)
+- ``hooks``: the hooks and schema references a config names, found when a
+  run starts (``resolve_target``, ``resolve_tab``, ``resolve_hooks``,
+  ``tab_hooks``)
 - ``table``: ``read_tab`` and ``parse_tab``, a whole tab as header-named, keyed
   records, with declared date columns read from their serial numbers
 - ``merge``: ``merge``, the pure three-way merge of local records and a tab
@@ -38,12 +40,18 @@ pull_values`` works regardless of which submodule defines a name:
   ``FileStore``, ``JsonEntryStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
+- ``schema``: a target's schemas as rows of documentation (``schema_rows``,
+  ``format_schema``)
+- ``links``: ``sweep_url_links`` and ``format_sweep``, the links of URL cells
+  over a spreadsheet's tabs
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
-  ``pull_tab``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
+  ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
   ``run_target``) and report it
+- ``transforms``: stock ``transform`` hooks (``trim_cells``)
 - ``commands``: the ``run_*`` CLI entry points
 """
 
+from gdrives.local import NEWLINES
 from gdrives.sheets.a1 import (
     a1_quote,
     a1_to_grid_range,
@@ -65,6 +73,7 @@ from gdrives.sheets.cells import (
     BLANK_KEYS,
     COLUMN_TYPES,
     DATE_FORMATS,
+    PATTERN_TYPES,
     SERIAL_TYPES,
     STRICT_TYPES,
     ColumnSchema,
@@ -93,9 +102,11 @@ from gdrives.sheets.commands import (
     run_create,
     run_delete_rule,
     run_get,
+    run_links,
     run_pull,
     run_push,
     run_rules,
+    run_schema,
     run_set,
     run_sync,
     run_update,
@@ -109,6 +120,7 @@ from gdrives.sheets.config import (
     LOCAL_EXTENSIONS,
     MODES,
     ON_INVALID,
+    TARGET_DEFAULTS,
     Config,
     ConfigError,
     TabConfig,
@@ -118,21 +130,29 @@ from gdrives.sheets.config import (
     parse_config,
 )
 from gdrives.sheets.create import (
+    SOURCE_MIMES,
     SPREADSHEET_MIME,
+    check_source,
     check_tabs,
     create_spreadsheet,
     name_tabs,
     spreadsheet_url,
 )
 from gdrives.sheets.files import (
-    NEWLINES,
     Records,
     read_records,
     read_values_csv,
     write_records,
     write_values_csv,
 )
-from gdrives.sheets.hooks import resolve_hooks, tab_hooks
+from gdrives.sheets.hooks import (
+    resolve_hooks,
+    resolve_schemas,
+    resolve_tab,
+    resolve_target,
+    tab_hooks,
+)
+from gdrives.sheets.links import LinkSweep, TabLinks, format_sweep, sweep_url_links
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
     OVERRIDE_REASONS,
@@ -151,6 +171,7 @@ from gdrives.sheets.retry import (
     IDEMPOTENT_STATUSES,
     RATE_LIMIT_STATUSES,
     RetryNotice,
+    print_retry,
     retry_notices,
     with_retry,
 )
@@ -166,14 +187,20 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.schema import SCHEMA_COLUMNS, format_schema, schema_rows
 from gdrives.sheets.stores import FileStore, JsonEntryStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
+    CELL_STYLE_FIELDS,
+    LINK_COLOR,
+    LINK_DETAIL_FIELDS,
     LINK_FIELDS,
+    LINK_STYLE_REASONS,
     RUNS_FIELD,
     URL_LINK_REASONS,
     WIDTH_FIELDS,
     LinkedCell,
+    StyledCell,
     UrlLinkProblem,
     add_columns,
     clear_link_format,
@@ -186,11 +213,13 @@ from gdrives.sheets.structure import (
     set_column_widths,
     set_url_links,
     strip_links,
+    styled_cells,
     url_link_problems,
 )
 from gdrives.sheets.sync import (
     STAGES,
     CheckContext,
+    PullError,
     Replacement,
     SyncReport,
     TabPlan,
@@ -199,6 +228,7 @@ from gdrives.sheets.sync import (
     format_report,
     plan_tab,
     pull_all_tabs,
+    pull_records,
     pull_tab,
     push_rows,
     push_tab,
@@ -212,6 +242,7 @@ from gdrives.sheets.table import (
     pull_serials,
     read_tab,
 )
+from gdrives.sheets.transforms import trim_cells
 from gdrives.sheets.typed import (
     NUMBER_FORMAT_FIELD,
     dated_cells,
@@ -262,6 +293,7 @@ __all__ = [
     "ApplyResult",
     "BOOTSTRAPS",
     "CELL_LINK_FIELD",
+    "CELL_STYLE_FIELDS",
     "COLUMN_TYPES",
     "CONFIG_NAME",
     "Cell",
@@ -280,8 +312,12 @@ __all__ = [
     "HeldCell",
     "HOOKS",
     "INPUT_OPTIONS",
+    "LINK_COLOR",
+    "LINK_DETAIL_FIELDS",
     "LINK_FIELDS",
+    "LINK_STYLE_REASONS",
     "LOCAL_EXTENSIONS",
+    "LinkSweep",
     "LinkedCell",
     "MODES",
     "MemoryStore",
@@ -291,7 +327,9 @@ __all__ = [
     "ON_INVALID",
     "OVERRIDE_REASONS",
     "Override",
+    "PATTERN_TYPES",
     "Problem",
+    "PullError",
     "RATE_LIMIT_STATUSES",
     "RAW",
     "RENDERS",
@@ -303,17 +341,22 @@ __all__ = [
     "Records",
     "Replacement",
     "RowFlag",
+    "SCHEMA_COLUMNS",
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
+    "SOURCE_MIMES",
     "SPREADSHEET_MIME",
     "STAGES",
     "STRICT_TYPES",
     "SheetChangedError",
     "Store",
+    "StyledCell",
     "SyncReport",
+    "TARGET_DEFAULTS",
     "TabConfig",
     "TabGrid",
+    "TabLinks",
     "TabListing",
     "TabPlan",
     "TabReport",
@@ -336,6 +379,7 @@ __all__ = [
     "build_formula_rule",
     "cell_problem",
     "check_blank_keys",
+    "check_source",
     "check_tabs",
     "clear_link_format",
     "clear_values",
@@ -355,7 +399,9 @@ __all__ = [
     "find_rows",
     "first_tab",
     "format_report",
+    "format_schema",
     "format_rules",
+    "format_sweep",
     "format_values",
     "from_cell",
     "get_column_widths",
@@ -377,10 +423,12 @@ __all__ = [
     "parse_tab",
     "place_columns",
     "plan_tab",
+    "print_retry",
     "problems",
     "pull_all_tabs",
     "pull_grid",
     "pull_many",
+    "pull_records",
     "pull_serials",
     "pull_tab",
     "pull_values",
@@ -392,6 +440,9 @@ __all__ = [
     "read_values_csv",
     "reorder_rows",
     "resolve_hooks",
+    "resolve_schemas",
+    "resolve_tab",
+    "resolve_target",
     "row_key",
     "run_add_rule",
     "run_append",
@@ -399,9 +450,11 @@ __all__ = [
     "run_create",
     "run_delete_rule",
     "run_get",
+    "run_links",
     "run_pull",
     "run_push",
     "run_rules",
+    "run_schema",
     "run_set",
     "run_sync",
     "run_target",
@@ -415,12 +468,16 @@ __all__ = [
     "split_a1",
     "spreadsheet_url",
     "strip_links",
+    "styled_cells",
+    "sweep_url_links",
+    "schema_rows",
     "sync_tab",
     "tab_grid",
     "tab_hooks",
     "tab_listing",
     "tab_sheet_ids",
     "to_cell",
+    "trim_cells",
     "update_values",
     "url_link_problems",
     "verify",

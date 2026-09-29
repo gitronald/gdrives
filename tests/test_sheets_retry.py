@@ -19,6 +19,7 @@ from gdrives.sheets import (
     batch_update_values,
     clear_values,
     list_tabs,
+    print_retry,
     pull_many,
     pull_values,
     retry_notices,
@@ -283,3 +284,29 @@ class TestWrappersRetry:
             pull_values(svc, "sid", "A1")
         assert len(svc.calls) == 1
         assert no_wait == []
+
+
+class TestPrintRetry:
+    def test_print_retry_says_the_wait_on_stderr(self, capsys):
+        print_retry(RetryNotice(status=429, delay=2.0, attempt=3, attempts=5))
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == (
+            "Sheets API returned 429; retrying in 2s (attempt 3 of 5)\n"
+        )
+
+    def test_retry_notices_with_no_callback_prints_each_wait(self, capsys):
+        flaky = Flaky([http_error(503, "unavailable")])
+        with retry_notices():
+            assert with_retry(flaky, sleep=lambda s: None, jitter=lambda: 0.0) == "ok"
+        assert capsys.readouterr().err == (
+            "Sheets API returned 503; retrying in 1s (attempt 2 of 5)\n"
+        )
+
+    def test_a_callback_given_still_replaces_the_printer(self, capsys):
+        seen: list[RetryNotice] = []
+        flaky = Flaky([http_error(503, "unavailable")])
+        with retry_notices(seen.append):
+            with_retry(flaky, sleep=lambda s: None, jitter=lambda: 0.0)
+        assert len(seen) == 1
+        assert capsys.readouterr().err == ""

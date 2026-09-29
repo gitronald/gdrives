@@ -56,7 +56,8 @@ class TestExport:
     def test_delegates_to_run(self, monkeypatch):
         rec = {}
         monkeypatch.setattr(
-            "gdrives.export.run", lambda source, output: rec.update(s=source, o=output)
+            "gdrives.export.run",
+            lambda source, output, newline=None: rec.update(s=source, o=output),
         )
         cli.export("https://docs.google.com/document/d/X/edit", "out.docx")
         assert rec == {
@@ -64,8 +65,20 @@ class TestExport:
             "o": "out.docx",
         }
 
+    def test_newline_option_is_passed_on(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.export.run",
+            lambda source, output, newline: rec.update(n=newline),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["export", "SHEET", "-o", "out.csv", "--newline", "lf"]
+        )
+        assert result.exit_code == 0
+        assert rec == {"n": "lf"}
+
     def test_value_error_exits_1(self, monkeypatch, capsys):
-        def boom(source, output):
+        def boom(source, output, newline=None):
             raise ValueError("Unsupported output extension '.bad'")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -83,7 +96,7 @@ class TestExport:
             status = 404
             reason = "Not Found"
 
-        def boom(source, output):
+        def boom(source, output, newline=None):
             raise HttpError(FakeResp(), b"")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -1048,7 +1061,20 @@ class TestUpload:
             "name": None,
             "mime_type": None,
             "dry_run": True,
+            "replace": True,
         }
+
+    def test_no_replace_is_passed_as_replace_false(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.upload.run",
+            lambda local, dest, **options: rec.update(options),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["upload", "out.pdf", "My Drive/reports", "--no-replace"]
+        )
+        assert result.exit_code == 0
+        assert rec["replace"] is False
 
     def test_a_file_that_reads_back_different_exits_1(self, monkeypatch, capsys):
         from gdrives.upload import UploadError
@@ -1095,8 +1121,31 @@ class TestSheetsCreate:
             "folder": "My Drive/reports",
             "folder_id": None,
             "tabs": ["Members", "Dues"],
+            "source": None,
             "dry_run": True,
         }
+
+    def test_from_stands_in_for_the_title(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_create",
+            lambda title, **options: rec.update(t=title, **options),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["sheets-create", "--from", "book.xlsx", "--folder-id", "D"]
+        )
+        assert result.exit_code == 0
+        assert rec["t"] is None
+        assert rec["source"] == "book.xlsx"
+
+    def test_no_title_and_no_from_is_a_usage_error(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("ran")
+
+        monkeypatch.setattr("gdrives.sheets.run_create", boom)
+        result = CliRunner().invoke(cli.app, ["sheets-create", "--folder-id", "D"])
+        assert result.exit_code == 2
+        assert "--title" in plain(result.output)
 
     def test_no_tab_is_no_tabs(self, monkeypatch):
         rec = {}

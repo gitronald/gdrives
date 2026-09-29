@@ -660,6 +660,28 @@ def describe_credentials(
     return found("adc", consent_skipped=consent_skipped)
 
 
+_FALLBACK_REASON = (
+    "OAuth is configured, but no cached token serves these scopes and there "
+    "is no terminal for a consent; run gdrives login"
+)
+
+
+def credential_line(info: CredentialInfo) -> str:
+    """The line announce_credentials prints for ``info``, without a newline.
+
+    ``Credential: `` and ``str(info)``, followed by ``, since`` and the reason
+    when ``info.consent_skipped`` is True (a service account or ADC used
+    because OAuth is configured and no consent could run), so the line stays
+    one sentence after the parenthesised key path. ``str(info)`` itself is
+    unchanged, so a caller printing describe_credentials() by hand gets the
+    same text by calling this.
+    """
+    line = f"Credential: {info}"
+    if info.consent_skipped:
+        line += f", since {_FALLBACK_REASON}"
+    return line
+
+
 # The scope sets whose credential line this run has printed, or None when
 # authentication announces nothing on its own (see announcing_credentials).
 _announced: ContextVar[set[frozenset[str]] | None] = ContextVar(
@@ -689,8 +711,10 @@ def announce_credentials(
     """Say on stderr which credential requests with ``scopes`` will use.
 
     Printed when describe_credentials() reports a consent or a refresh, so a
-    run waiting on a browser consent does not look hung; with ``always``
-    whatever it reports, so a write is not made as an unexpected identity.
+    run waiting on a browser consent does not look hung, or a consent skipped
+    for lack of a terminal (the line then says why, see credential_line); with
+    ``always`` whatever it reports, so a write is not made as an unexpected
+    identity.
     Inside announcing_credentials() a scope set's line is printed once.
     """
     key = frozenset(scopes or SCOPES)
@@ -698,8 +722,8 @@ def announce_credentials(
     if seen is not None and key in seen:
         return
     info = describe_credentials(scopes, force=force)
-    if always or info.consent or info.refresh:
-        print(f"Credential: {info}", file=sys.stderr)
+    if always or info.consent or info.refresh or info.consent_skipped:
+        print(credential_line(info), file=sys.stderr)
         if seen is not None:
             seen.add(key)
 

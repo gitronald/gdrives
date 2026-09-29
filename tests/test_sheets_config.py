@@ -1183,8 +1183,37 @@ class TestStrictSchema:
     def test_must_be_a_boolean(self):
         refused(
             config({"Members": members(strict_schema="yes")}),
-            "target 'roster', tab 'Members': 'strict_schema' must be true or false",
+            "target 'roster', tab 'Members': 'strict_schema' must be true, false, "
+            "or 'local'",
         )
+
+    def test_local_is_accepted_and_kept(self):
+        data = config({"Members": members(strict_schema="local")})
+        assert (
+            parse_config(data, PATH).target("roster").tabs[0].strict_schema == "local"
+        )
+
+    def test_code_refuses_another_value(self):
+        with pytest.raises(ValueError, match="'strict_schema' must be true, false"):
+            TabConfig("T", Path("m.csv"), strict_schema="both")
+
+    def test_another_string_is_refused(self):
+        refused(
+            config({"Members": members(strict_schema="both")}),
+            "target 'roster', tab 'Members': 'strict_schema' must be true, false, "
+            "or 'local'",
+        )
+
+    def test_local_lets_a_schema_name_a_column_outside_columns(self):
+        data = config(
+            {
+                "Members": members(
+                    columns=["id"], schema={"id": {}, "a": {}}, strict_schema="local"
+                )
+            }
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert set(tab.schema) == {"id", "a"}
 
     def test_a_schema_column_outside_columns_is_accepted(self):
         data = config(
@@ -1240,6 +1269,66 @@ class TestSchemaPresent:
             ),
             "target 'roster', tab 'Members': 'exclude' names schema column(s) "
             "['a'], which would be read anyway",
+        )
+
+
+class TestSchemaPattern:
+    URL = "https://example\\.com/members/[0-9]+"
+
+    def test_accepted(self):
+        data = config({"Members": members(schema={"link": {"pattern": self.URL}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["link"].pattern == self.URL
+
+    def test_defaults_to_none(self):
+        data = config({"Members": members(schema={"link": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["link"].pattern is None
+
+    def test_must_be_a_string(self):
+        refused(
+            config({"Members": members(schema={"link": {"pattern": 5}})}),
+            "target 'roster', tab 'Members': schema 'link': 'pattern' must be a string",
+        )
+
+    def test_must_compile(self):
+        (found,) = problems_of(
+            config({"Members": members(schema={"link": {"pattern": "[0-9"}})})
+        )
+        assert found.startswith(
+            "target 'roster', tab 'Members': schema 'link': "
+            "'pattern' is not a regular expression: "
+        )
+        assert "unterminated character set" in found
+
+    @pytest.mark.parametrize("type_", ["int", "float", "bool", "date", "datetime"])
+    def test_is_refused_for_any_other_type(self, type_):
+        refused(
+            config(
+                {"Members": members(schema={"n": {"type": type_, "pattern": "[0-9]+"}})}
+            ),
+            "target 'roster', tab 'Members': schema 'n': "
+            f"'pattern' is only for a column of ['str'], not {type_!r}",
+        )
+
+
+class TestSchemaDescription:
+    def test_accepted(self):
+        schema = {"id": {"description": "The member's number."}}
+        data = config({"Members": members(schema=schema)})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].description == "The member's number."
+
+    def test_defaults_to_none(self):
+        data = config({"Members": members(schema={"id": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["id"].description is None
+
+    def test_must_be_a_string(self):
+        refused(
+            config({"Members": members(schema={"id": {"description": 5}})}),
+            "target 'roster', tab 'Members': schema 'id': "
+            "'description' must be a string",
         )
 
 

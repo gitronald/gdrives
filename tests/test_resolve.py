@@ -5,12 +5,15 @@ from unittest.mock import patch
 import pytest
 from helpers import make_file, make_folder, mock_list_response
 
+from gdrives.files import SPREADSHEET_MIME
 from gdrives.resolve import (
     DrivePathError,
+    check_spreadsheet,
     resolve_and_report,
     resolve_file_id,
     resolve_path,
     resolve_shared_path,
+    resolve_spreadsheet_id,
     walk_segments,
 )
 
@@ -262,3 +265,108 @@ def test_slash_source_is_an_empty_path(monkeypatch, source):
     )
     with pytest.raises(DrivePathError, match="Drive path must not be empty"):
         resolve_file_id(source)
+
+
+# -- resolve_spreadsheet_id --
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_DRIVES = [{"id": "drive_id", "type": "personal", "name": "My Drive", "url": ""}]
+
+
+class TestResolveSpreadsheetId:
+    @patch("gdrives.resolve.load", return_value=_DRIVES)
+    def test_path_to_a_native_spreadsheet_costs_one_listing_per_segment(
+        self, _load, mock_service
+    ):
+        folder = make_folder("clubs", id="clubs_id")
+        sheet = make_file("Roster", id="sheet_id", mime=SPREADSHEET_MIME)
+        mock_service.files().list().execute.side_effect = [
+            mock_list_response([folder]),
+            mock_list_response([sheet]),
+        ]
+        mock_service.reset_mock()
+        assert (
+            resolve_spreadsheet_id("My Drive/clubs/Roster", mock_service) == "sheet_id"
+        )
+        # The same requests resolve_path makes: one listing per segment, and no
+        # files.get for the type.
+        assert mock_service.files().list.call_count == 2
+        mock_service.files().get.assert_not_called()
+
+    @patch("gdrives.resolve.load", return_value=_DRIVES)
+    def test_path_costs_what_resolve_path_costs(self, _load, mock_service):
+        sheet = make_file("Roster", id="sheet_id", mime=SPREADSHEET_MIME)
+        mock_service.files().list().execute.return_value = mock_list_response([sheet])
+        mock_service.reset_mock()
+        resolve_path("My Drive/Roster", mock_service, allow_files=True)
+        before = mock_service.files().list.call_count
+        mock_service.reset_mock()
+        resolve_spreadsheet_id("My Drive/Roster", mock_service)
+        assert mock_service.files().list.call_count == before == 1
+
+    @patch("gdrives.resolve.load", return_value=_DRIVES)
+    def test_uploaded_workbook_is_refused_with_the_way_to_convert_it(
+        self, _load, mock_service
+    ):
+        book = make_file("Roster.xlsx", id="book_id", mime=_XLSX)
+        mock_service.files().list().execute.return_value = mock_list_response([book])
+        with pytest.raises(ValueError) as caught:
+            resolve_spreadsheet_id("My Drive/Roster.xlsx", mock_service)
+        message = str(caught.value)
+        assert message.startswith("'Roster.xlsx' is an Excel workbook (" + _XLSX + ")")
+        assert "sheets-create --from" in message
+
+    @pytest.mark.parametrize(
+        ("mime", "words", "advice"),
+        [
+            ("text/csv", "a CSV file", True),
+            ("application/vnd.ms-excel", "an Excel workbook", False),
+            ("application/vnd.google-apps.folder", "a folder", False),
+            ("application/vnd.google-apps.document", "a Google Doc", False),
+            ("application/vnd.google-apps.presentation", "a Google Slides file", False),
+            ("application/pdf", "of type application/pdf", False),
+            ("", "of type unknown", False),
+        ],
+    )
+    def test_type_words(self, mime, words, advice):
+        file = {"id": "f", "name": "Roster\x1b[2J", "mimeType": mime}
+        if not mime:
+            del file["mimeType"]
+        with pytest.raises(ValueError) as caught:
+            check_spreadsheet(file)
+        message = str(caught.value)
+        assert message.startswith(f"'Roster\\x1b[2J' is {words}")
+        assert message.endswith("not a Google spreadsheet") is not advice
+        assert ("sheets-create --from" in message) is advice
+
+    def test_every_type_sheets_create_converts_is_refused_with_the_advice(
+        self, monkeypatch
+    ):
+        from gdrives.sheets import create
+
+        mimes = {**create.SOURCE_MIMES, ".ods": "application/x-synthetic-sheet"}
+        monkeypatch.setattr(create, "SOURCE_MIMES", mimes)
+        for mime in mimes.values():
+            file = {"id": "f", "name": "Roster", "mimeType": mime}
+            with pytest.raises(ValueError, match="sheets-create --from"):
+                check_spreadsheet(file)
+
+    @patch("gdrives.resolve.load", return_value=_DRIVES)
+    def test_a_drive_alone_is_not_a_spreadsheet(self, _load, mock_service):
+        with pytest.raises(ValueError, match="'My Drive' is a folder"):
+            resolve_spreadsheet_id("My Drive/", mock_service)
+
+    def test_url_and_id_are_not_checked(self, mock_service):
+        url = "https://docs.google.com/spreadsheets/d/SHEET1/edit"
+        assert resolve_spreadsheet_id(url, mock_service) == "SHEET1"
+        assert resolve_spreadsheet_id("SHEET1", mock_service) == "SHEET1"
+        mock_service.files.assert_not_called()
+
+    def test_resolve_and_report_can_check(self, monkeypatch, mock_service, capsys):
+        monkeypatch.setattr(
+            "gdrives.resolve.resolve_spreadsheet_id",
+            lambda source, service=None: f"S:{source}",
+        )
+        got = resolve_and_report("x", "Spreadsheet", mock_service, spreadsheet=True)
+        assert got == "S:x"
+        assert capsys.readouterr().err == "Spreadsheet ID: S:x\n"

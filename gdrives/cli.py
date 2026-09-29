@@ -111,12 +111,20 @@ def export(
             help="Output: .docx/.txt/.md (Docs), .xlsx/.csv (Sheets), .pptx (Slides)",
         ),
     ],
+    newline: Annotated[
+        str | None,
+        typer.Option(
+            "--newline",
+            help="Rewrite a text export's line endings: lf or crlf "
+            "(default: as Drive sends them)",
+        ),
+    ] = None,
 ):
     """Export a Doc to .docx/.txt/.md, a Sheet to .xlsx/.csv, or Slides to .pptx."""
     from gdrives.export import run
 
     with _cli_errors():
-        run(source, output)
+        run(source, output, newline=newline)
 
 
 @app.command()
@@ -546,7 +554,13 @@ def sheets_widths(
 
 @app.command(name="sheets-create")
 def sheets_create(
-    title: Annotated[str, typer.Option("--title", help="Title of the new spreadsheet")],
+    title: Annotated[
+        str | None,
+        typer.Option(
+            "--title",
+            help="Title of the new spreadsheet (default with --from: the file's stem)",
+        ),
+    ] = None,
     folder: Annotated[
         str | None,
         typer.Option(
@@ -561,6 +575,13 @@ def sheets_create(
         list[str] | None,
         typer.Option("--tab", help="A tab to name, in order (repeatable)"),
     ] = None,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Local .xlsx or .csv file that Drive converts (names its own tabs)",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Print what would be created, create nothing"),
@@ -570,14 +591,27 @@ def sheets_create(
 
     Prints the new spreadsheet's URL. With --tab, its one tab is renamed to
     the first title and the others are added after it; with none, the tab
-    is left as it is. A file of the same name in the folder is noted, not
-    refused.
+    is left as it is. With --from, a local .xlsx or .csv file is uploaded and
+    converted by Drive, --title defaults to the file's stem, and --tab is
+    refused. A file of the same name in the folder is noted, not refused.
     """
     from gdrives.sheets import run_create
 
+    if title is None and source is None:
+        # --title is required unless --from stands in for it, which Typer's
+        # own required flag cannot say.
+        raise typer.BadParameter(
+            "required unless --from is given", param_hint="'--title'"
+        )
+
     with _cli_errors():
         run_create(
-            title, folder=folder, folder_id=folder_id, tabs=tab or (), dry_run=dry_run
+            title,
+            folder=folder,
+            folder_id=folder_id,
+            tabs=tab or (),
+            source=source,
+            dry_run=dry_run,
         )
 
 
@@ -830,6 +864,94 @@ def sheets_push(
     raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
 
 
+@app.command(name="sheets-schema")
+def sheets_schema(
+    target: Annotated[str, typer.Argument(help=_TARGET_HELP)],
+    config: ConfigOption = None,
+    tab: TabsOption = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Write to this .csv, .tsv, or .json file (default: CSV to stdout)",
+        ),
+    ] = None,
+    escape_formulas: Annotated[
+        bool,
+        typer.Option(
+            "--escape-formulas",
+            help="Prefix ' to cells starting with =, +, -, @, a tab, or a carriage "
+            "return, so a spreadsheet app opening the output shows them as text",
+        ),
+    ] = False,
+):
+    """List the schema columns of a target: type, rules, and description.
+
+    One row per declared column of every tab (or the --tab ones), from the
+    config alone: no request to Google and no credential. A tab whose schema
+    is a module:attribute runs that module, as a sync does. Values are exact
+    unless --escape-formulas is given (for CSV or TSV a spreadsheet app will
+    open; a .json file refuses it). Exit code 0, or 1 on a config error. See
+    docs/sheets-sync.md.
+    """
+    from gdrives.sheets import run_schema
+
+    with _cli_errors():
+        code = run_schema(
+            target,
+            config=config,
+            tabs=tab or [],
+            output=output,
+            escape_formulas=escape_formulas,
+        )
+    raise typer.Exit(code)
+
+
+@app.command(name="sheets-links")
+def sheets_links(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="Sheet URL, file ID, or Drive path; or a target name in the "
+            "config file (gdrives-sheets.json). A bare word is a target when "
+            "the config found from the working directory has one of that name"
+        ),
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option("--config", help="Config file; SOURCE is then a target in it"),
+    ] = None,
+    tab: TabsOption = None,
+    color: Annotated[
+        str | None,
+        typer.Option(
+            "--color",
+            help="Link colour, #rrggbb (required for a spreadsheet; for a "
+            "target, overrides each tab's link_urls)",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Fix the links (default: preview only)"),
+    ] = False,
+):
+    """Check that each URL cell links to its own text, and fix it with --apply.
+
+    Sweeps every tab of a spreadsheet (or the --tab ones), or the tabs of a
+    config target in their link_urls colour. Previews by default. Exit code
+    0: every URL cell follows the rule or was fixed; 1: an error; 2: a
+    preview found cells to fix. See docs/sheets-sync.md.
+    """
+    from gdrives.sheets import run_links
+
+    with _cli_errors():
+        code = run_links(
+            source, config=config, tabs=tab or [], color=color, apply=apply
+        )
+    raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
+
+
 # A document target accepted by every docs command: a Doc URL, a bare file ID,
 # or a Drive path (e.g. 'My Drive/notes'). Shared help strings.
 _DOC_SOURCE_HELP = "Doc URL, file ID, or Drive path (e.g. 'My Drive/notes')"
@@ -1059,13 +1181,22 @@ def upload(
         bool,
         typer.Option("--dry-run", help="Print the intended upload without making it"),
     ] = False,
+    no_replace: Annotated[
+        bool,
+        typer.Option(
+            "--no-replace",
+            help="Refuse, listing the IDs, if the folder holds a file of that name",
+        ),
+    ] = False,
 ):
     """Upload a local file to Drive (write access, except --dry-run).
 
     A file of that name in the folder has its content replaced in place, so
     its ID and links stay the same; with none, the file is created. Several
-    files of that name are refused: name one with --file-id. Prints the
-    file's URL. Examples:
+    files of that name are refused: name one with --file-id. With
+    --no-replace, any file of that name is refused instead (one listing just
+    before the write; another writer can still create the name in between).
+    Prints the file's URL. Examples:
     gdrives upload report.pdf "My Drive/reports";
     gdrives upload out.pdf "My Drive/reports/report.pdf" --dry-run
     """
@@ -1080,4 +1211,5 @@ def upload(
             name=name,
             mime_type=mime_type,
             dry_run=dry_run,
+            replace=not no_replace,
         )

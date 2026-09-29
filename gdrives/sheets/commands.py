@@ -9,22 +9,25 @@ import csv
 import functools
 import json
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from gdrives.local import escape_formula, printable, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
-from gdrives.sheets.config import Target, load_config
+from gdrives.sheets.config import ConfigError, Target, find_config, load_config
 from gdrives.sheets.create import (
+    check_source,
     check_tabs,
     create_spreadsheet,
     name_tabs,
     spreadsheet_url,
 )
-from gdrives.sheets.files import read_values_csv, write_values_csv
-from gdrives.sheets.hooks import resolve_hooks
+from gdrives.sheets.files import read_values_csv, write_records, write_values_csv
+from gdrives.sheets.hooks import resolve_schemas, resolve_target
+from gdrives.sheets.links import _colors, format_sweep, sweep_url_links
 from gdrives.sheets.match import set_by_match
-from gdrives.sheets.retry import RetryNotice, retry_notices
+from gdrives.sheets.retry import retry_notices
 from gdrives.sheets.rules import (
     _flatten_rules,
     _rule_tabs,
@@ -37,17 +40,27 @@ from gdrives.sheets.rules import (
     list_conditional_rules,
     read_rule_json,
 )
+from gdrives.sheets.schema import SCHEMA_COLUMNS, format_schema, schema_rows
 from gdrives.sheets.structure import get_column_widths
-from gdrives.sheets.sync import format_report, pull_all_tabs, run_target
+from gdrives.sheets.sync import (
+    SyncReport,
+    TabReport,
+    _sheet_title,
+    format_report,
+    pull_all_tabs,
+    run_target,
+)
 from gdrives.sheets.values import (
     RAW,
     USER_ENTERED,
+    TabListing,
     _lookup_tab,
     _tab_ids,
     append_values,
     clear_values,
     first_tab,
     pull_values,
+    tab_listing,
     tab_sheet_ids,
     update_values,
 )
@@ -75,35 +88,50 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def _print_retry(notice: RetryNotice) -> None:
-    """Say on stderr that a call is being retried, so a wait does not look hung."""
-    print(
-        f"Sheets API returned {notice.status}; retrying in {notice.delay:.0f}s "
-        f"(attempt {notice.attempt} of {notice.attempts})",
-        file=sys.stderr,
-    )
-
-
 def _noticed(run: Callable[_P, _R]) -> Callable[_P, _R]:
     """Run a command inside :func:`retry_notices`, printing each wait."""
 
     @functools.wraps(run)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        with retry_notices(_print_retry):
+        with retry_notices():
             return run(*args, **kwargs)
 
     return wrapped
 
 
+def _print_report(report: SyncReport) -> int:
+    """Print a sync command's report; return its exit code.
+
+    The report goes to stdout. A preview that ``apply`` would change adds a
+    hint on stderr, so stdout stays the report alone.
+    """
+    print(format_report(report))
+    _hint_pending(report.pending, report.base_only)
+    return report.exit_code
+
+
+def _hint_pending(pending: bool, base_only: bool = False) -> None:
+    """Say on stderr that a preview left something for ``--apply`` to write.
+
+    ``base_only`` says the base is all it would write, which the report text
+    does not: it can end ``in sync: nothing to write``.
+    """
+    if pending:
+        what = "save the base" if base_only else "write"
+        print(f"Preview only; rerun with --apply to {what}.", file=sys.stderr)
+
+
 def _resolve_and_report(source: str) -> str:
     """Resolve ``source`` to a spreadsheet ID and echo it to stderr.
+
+    A Drive path must name a native spreadsheet; a URL or ID is taken as given.
 
     Every command opens the same way, so the resolve-then-announce step lives
     here once instead of in each ``run_*`` entry point.
     """
     from gdrives.resolve import resolve_and_report
 
-    return resolve_and_report(source, "Spreadsheet")
+    return resolve_and_report(source, "Spreadsheet", spreadsheet=True)
 
 
 @_noticed
@@ -256,12 +284,23 @@ def run_set(
     )
 
 
-def _describe_new(title: str, folder: dict[str, Any], tabs: Sequence[str]) -> str:
-    """Phrase a spreadsheet's creation for the dry run and the result message."""
+def _describe_new(
+    title: str,
+    folder: dict[str, Any],
+    tabs: Sequence[str],
+    source: tuple[Path, int] | None = None,
+) -> str:
+    """Phrase a spreadsheet's creation for the dry run and the result message.
+
+    ``source`` is the workbook it is made from, and that file's size.
+    """
     text = (
         f"create spreadsheet '{printable(title)}' in "
         f"'{printable(folder['name'])}' ({folder['id']})"
     )
+    if source is not None:
+        path, size = source
+        text += f" from '{printable(str(path))}' ({size} bytes)"
     if tabs:
         text += f" with tabs: {', '.join(printable(tab) for tab in tabs)}"
     return text
@@ -269,11 +308,12 @@ def _describe_new(title: str, folder: dict[str, Any], tabs: Sequence[str]) -> st
 
 @_noticed
 def run_create(
-    title: str,
+    title: str | None = None,
     *,
     folder: str | None = None,
     folder_id: str | None = None,
     tabs: Sequence[str] = (),
+    source: str | None = None,
     dry_run: bool = False,
 ) -> None:
     """Create a native spreadsheet in a folder, printing its URL.
@@ -283,6 +323,11 @@ def run_create(
     noted on stderr and is no obstacle, since Drive permits duplicates. The
     URL goes to stdout and the ID to stderr. ``dry_run`` reads and prints,
     on the read-only scope, and creates nothing.
+
+    ``source`` is a local ``.xlsx`` or ``.csv`` file that Drive converts into
+    the spreadsheet; ``title`` is then the file's stem by default, and is
+    required otherwise. The workbook names its own tabs, so ``tabs`` is
+    refused with it.
     """
     from gdrives.auth import (
         DRIVE_WRITE_SCOPES,
@@ -292,6 +337,10 @@ def run_create(
     from gdrives.files import find_named, get_folder
     from gdrives.resolve import resolve_path
 
+    if title is None:
+        if source is None:
+            raise ValueError("--title is required unless --from is given")
+        title = Path(source).stem
     if not title.strip():
         raise ValueError("--title must not be empty")
     if folder is not None and folder_id is not None:
@@ -300,6 +349,14 @@ def run_create(
         if value is not None and not value.strip():
             raise ValueError(f"{label} must not be empty")
     titles = check_tabs(tabs)
+    workbook: tuple[Path, int] | None = None
+    if source is not None:
+        if titles:
+            raise ValueError(
+                "--from names its own tabs; pass --from or --tab, not both"
+            )
+        path, _ = check_source(source)
+        workbook = (path, path.stat().st_size)
 
     # A dry run only reads, so it keeps the read-only default scope.
     drive = build_drive_service(None if dry_run else DRIVE_WRITE_SCOPES)
@@ -317,15 +374,23 @@ def run_create(
             file=sys.stderr,
         )
 
-    action = _describe_new(title, parent, titles)
+    action = _describe_new(title, parent, titles, workbook)
     if dry_run:
         print(f"Would {action}")
         return
 
     # The drive scope serves the Sheets API too, so one consent covers both.
     sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
-    spreadsheet_id = create_spreadsheet(drive, sheets, title, folder_id=parent["id"])
+    spreadsheet_id = create_spreadsheet(
+        drive,
+        sheets,
+        title,
+        folder_id=parent["id"],
+        source=source,
+    )
     # Said before the tabs are named, so a failure there still names the file.
+    # A converted workbook has no tabs to name, and a failed conversion names
+    # the file in its own error.
     print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
     name_tabs(sheets, spreadsheet_id, titles)
     print(f"Done: {action}", file=sys.stderr)
@@ -526,8 +591,9 @@ def _run_config(
 ) -> int:
     """Run the ``mode`` tabs of config target ``name``; return the exit code.
 
-    The config, the target, the tabs, and the hooks the config names (found
-    with :func:`~gdrives.sheets.hooks.resolve_hooks`) are checked before any
+    The config, the target, the tabs, and the hooks and schema references
+    the config names (found with
+    :func:`~gdrives.sheets.hooks.resolve_target`) are checked before any
     request. A preview reads with the read-only scope; ``apply`` on a sync or
     push tab needs the Sheets write scope, and announces the credential first
     (as does a pull, which writes only local files and stays read-only).
@@ -540,9 +606,10 @@ def _run_config(
 
     target = load_config(config).target(name)
     wanted = _config_tabs(target, mode, tabs)
-    # The config's hooks are imported before any request (and found again,
-    # from sys.modules, by run_target).
-    resolve_hooks(
+    # The config's hooks and schema references are imported before any
+    # request. run_target is given the resolved target, and finds the hooks
+    # again from sys.modules.
+    target = resolve_target(
         target, wanted or [tab.title for tab in target.tabs if tab.mode == mode]
     )
     scopes = SHEETS_WRITE_SCOPES if apply and mode != "pull" else None
@@ -559,8 +626,7 @@ def _run_config(
         apply=apply,
         **options,
     )
-    print(format_report(report))
-    return report.exit_code
+    return _print_report(report)
 
 
 @_noticed
@@ -704,5 +770,187 @@ def _run_all_tabs(
         bom=bom,
         name=slug if slugs else None,
     )
-    print(format_report(report))
-    return report.exit_code
+    return _print_report(report)
+
+
+# -- links --
+
+
+def _links_target(source: str, config: str | None) -> Target | None:
+    """The config target ``source`` names, or None when it is a spreadsheet.
+
+    With ``config``, ``source`` is a target. Without it, a URL or a Drive
+    path (anything with a ``/``) is a spreadsheet, and a bare word is a target
+    when the config found from the working directory upward has one of that
+    name, and otherwise a spreadsheet ID. A working directory with no config
+    file has only spreadsheets; a config file that cannot be read is an
+    error, since it may be the one meant.
+    """
+    if config is None:
+        if "/" in source or source.startswith(("http://", "https://")):
+            return None
+        try:
+            found = find_config()
+        except ConfigError:
+            return None
+        loaded = load_config(found)
+        return loaded.targets.get(source)
+    return load_config(config).target(source)
+
+
+def _links_plan(
+    target: Target | None, tabs: Sequence[str], color: str | None
+) -> tuple[list[str] | None, str | Mapping[str, str]]:
+    """The tabs to sweep and their colour, checked before any request.
+
+    A spreadsheet needs ``color``, and sweeps ``tabs`` or every tab. A target
+    sweeps ``tabs`` (each must be one of its tabs), or, with none, every tab
+    when ``color`` is given and otherwise the tabs that have ``link_urls``;
+    each takes its ``link_urls`` colour unless ``color`` overrides it. A tab
+    with no colour is skipped, with a note on stderr, when it was not named,
+    and refused when it was.
+    """
+    if target is None:
+        if color is None:
+            raise ValueError(
+                "a spreadsheet needs --color; a target's tabs may set link_urls"
+            )
+        return list(dict.fromkeys(tabs)) or None, color
+    known = {tab.title: tab for tab in target.tabs}
+    named = list(dict.fromkeys(tabs))
+    unknown = [title for title in named if title not in known]
+    if unknown:
+        raise ValueError(
+            f"target {target.name!r} has no tab(s) {unknown}\ntabs: {list(known)}"
+        )
+    if color is not None:
+        return named or list(known), color
+    colors = {title: tab.link_urls for title, tab in known.items() if tab.link_urls}
+    lacking = [title for title in named if title not in colors]
+    if lacking:
+        raise ValueError(
+            f"tab(s) {lacking} of target {target.name!r} have no link_urls; "
+            "pass --color"
+        )
+    if not named:
+        for title in known:
+            if title not in colors:
+                print(
+                    f"Skipping tab {printable(repr(title))}: no link_urls; "
+                    "pass --color to check it",
+                    file=sys.stderr,
+                )
+        if not colors:
+            raise ValueError(
+                f"no tab of target {target.name!r} has link_urls; pass --color"
+            )
+    return named or list(colors), colors
+
+
+def _links_on_sheet(
+    target: Target,
+    titles: Sequence[str],
+    colors: str | Mapping[str, str],
+    listing: TabListing,
+) -> tuple[list[str], str | Mapping[str, str]]:
+    """The tabs to sweep and their colours, by the titles they have on the sheet.
+
+    A tab of the target with a ``sheet_id`` is found by it, as a sync finds
+    it, and a title that differs from the config's is noted on stderr. A
+    ``sheet_id`` the spreadsheet lacks raises ValueError, before any tab is
+    swept. A tab with none keeps its title, which the sweep looks for.
+    """
+    found: dict[str, str] = {}
+    for title in titles:
+        report = TabReport(tab=title, mode=target.tab(title).mode)
+        on_sheet = _sheet_title(title, target.tab(title).sheet_id, listing, report)
+        found[title] = title if on_sheet is None else on_sheet
+        for note in report.notes:
+            print(f"Tab {printable(repr(title))}: {printable(note)}", file=sys.stderr)
+    if not isinstance(colors, str):
+        colors = {found[title]: colors[title] for title in titles}
+    return list(found.values()), colors
+
+
+def run_schema(
+    name: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    output: str | None = None,
+    escape_formulas: bool = False,
+) -> int:
+    """Print the schemas of config target ``name`` as CSV, or write them to ``output``.
+
+    One row per declared column of the target's tabs (or just ``tabs``): see
+    :func:`~gdrives.sheets.schema.schema_rows`. Reads the config alone, with no
+    request and no credential. A tab whose ``schema`` names a
+    ``module:attribute`` is resolved, which imports that module, as a run does;
+    hooks are neither imported nor checked. ``output`` is a ``.csv``, ``.tsv``,
+    or ``.json`` file, written atomically with LF line endings; without it the
+    rows go to stdout as CSV. ``escape_formulas`` passes every cell of that CSV
+    or delimited file through :func:`escape_formula`, as :func:`run_get` does,
+    since a ``pattern`` or a ``description`` may start with ``=``, ``+``,
+    ``-``, or ``@``; a ``.json`` output refuses it, as it does a byte-order
+    mark. Returns 0; a config, tab, or schema problem raises.
+    """
+    target = load_config(config).target(name)
+    titles = list(dict.fromkeys(tabs)) or None
+    rows = schema_rows(resolve_schemas(target, titles), titles)
+    if output:
+        write_records(output, SCHEMA_COLUMNS, rows, escape_formulas=escape_formulas)
+        print(f"Wrote {len(rows)} column(s) to {output}", file=sys.stderr)
+    else:
+        print(format_schema(rows, escape_formulas=escape_formulas), end="")
+    return 0
+
+
+@_noticed
+def run_links(
+    source: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    color: str | None = None,
+    apply: bool = False,
+) -> int:
+    """Check the URL cells of a spreadsheet's tabs, and with ``apply`` fix them.
+
+    ``source`` is a spreadsheet (URL, file ID, or Drive path) or a config
+    target: see :func:`_links_target` for how the two are told apart. A
+    spreadsheet needs ``color`` (``#rrggbb``); a target's tabs take their
+    ``link_urls`` colour, or ``color`` when given, which applies to every tab
+    swept. A target's tab with a ``sheet_id`` is found by it, under whatever
+    title it has now, as a sync finds it. No hooks or schema of the config are
+    imported. Previews on the
+    read-only scope unless ``apply``. Prints the report and returns its exit
+    code: 0 when every URL cell follows the rule or was fixed, 1 for an
+    error, 2 when a preview found cells to fix.
+    """
+    from gdrives.auth import (
+        SHEETS_WRITE_SCOPES,
+        announce_credentials,
+        build_sheets_service,
+    )
+
+    target = _links_target(source, config)
+    titles, colors = _links_plan(target, tabs, color)
+    scopes = SHEETS_WRITE_SCOPES if apply else None
+    if apply:
+        announce_credentials(scopes, always=True)
+    spreadsheet_id = _resolve_and_report(
+        source if target is None else target.spreadsheet
+    )
+    service = build_sheets_service(scopes)
+    listing: TabListing | None = None
+    if target is not None and titles is not None:
+        # The colours are checked before the listing, the first request.
+        _colors(colors, titles)
+        listing = tab_listing(service, spreadsheet_id)
+        titles, colors = _links_on_sheet(target, titles, colors, listing)
+    sweep = sweep_url_links(
+        service, spreadsheet_id, titles, color=colors, apply=apply, listing=listing
+    )
+    print(format_sweep(sweep))
+    _hint_pending(sweep.pending)
+    return sweep.exit_code

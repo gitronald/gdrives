@@ -82,15 +82,23 @@ from gdrives.sheets.cells import (
     to_cell,
 )
 from gdrives.sheets.config import (
+    _STRICT_LOCAL,
     LOCAL_EXTENSIONS,
     MODES,
     TabConfig,
     Target,
+    _is_strict_schema,
 )
 from gdrives.sheets.files import Records, read_records, write_records
-from gdrives.sheets.hooks import _chained, _joined, resolve_hooks, tab_hooks
+from gdrives.sheets.hooks import (
+    _chained,
+    _joined,
+    resolve_tab,
+    resolve_target,
+    tab_hooks,
+)
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
-from gdrives.sheets.stores import FileStore, Store
+from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
     CELL_LINK_FIELD,
     UrlLinkProblem,
@@ -255,6 +263,10 @@ class TabReport:
     says what failed.
 
     ``linked`` is each URL cell a run with ``link_urls`` gave a link.
+    ``stale_base`` and ``stale_local`` are set when a sync tab is planned: an
+    apply would save the base again, or write the local file, whether or not
+    it has anything to write to the sheet. They are not printed by
+    :func:`format_report`.
     """
 
     tab: str
@@ -283,6 +295,8 @@ class TabReport:
     wrote_base: bool = False
     wrote_widths: bool = False
     linked: list[UrlLinkProblem] = field(default_factory=list)
+    stale_base: bool = False
+    stale_local: bool = False
 
     @property
     def failed(self) -> bool:
@@ -296,10 +310,60 @@ class TabReport:
 
     @property
     def exit_code(self) -> int:
-        """1 for an error or problems, 2 for work left to a person, else 0."""
+        """1 for an error or problems, 2 for work left to a person, else 0.
+
+        :attr:`SyncReport.exit_code` of a run of this one tab is the same
+        number: it takes the worst of its tabs' codes.
+        """
         if self.failed:
             return 1
         return 2 if self.needs_attention else 0
+
+    @property
+    def _changes(self) -> bool:
+        """True when an apply would write more than the base.
+
+        The tab to create, or a header to write to an empty one (a sync writes
+        that; a push writes every row it replaces); columns to add or drop;
+        the cell writes of a merge, the pushes and new rows to the sheet and
+        the folded cells and rows to the local file; a local file whose rows
+        the merge completes (a column they lacked); and a replacement (a pull
+        or a push) that differs.
+        """
+        if self.replacement is not None:
+            return not self.replacement.unchanged
+        if self.plan is None:
+            return False
+        created = self.tab_state == "missing" or self.tab_state == "empty"
+        return bool(
+            created
+            or self.add_columns
+            or self.drop_columns
+            or self.plan.has_writes
+            or self.stale_local
+        )
+
+    @property
+    def pending(self) -> bool:
+        """True when a preview found something ``apply`` would write.
+
+        That is exactly when an apply of the same run would write the sheet,
+        the local file, or the base, or change the tab's columns or create it:
+        what :attr:`_changes` counts, or a sync whose base would be saved
+        (:attr:`stale_base`, which a first sync has). A preview whose only
+        change is a column is pending, and so is one whose only change is the
+        base. A report of a run that applied has nothing pending, and neither
+        has one that stopped on an error or found problems, since ``apply``
+        writes nothing then.
+        """
+        if self.apply or self.failed:
+            return False
+        return self._changes or (self.stale_base and self.plan is not None)
+
+    @property
+    def base_only(self) -> bool:
+        """True when :attr:`pending` and the base is all an apply would write."""
+        return self.pending and not self._changes
 
 
 @dataclass
@@ -318,6 +382,17 @@ class SyncReport:
         """
         codes = {tab.exit_code for tab in self.tabs}
         return 1 if 1 in codes else 2 if 2 in codes else 0
+
+    @property
+    def pending(self) -> bool:
+        """True when any tab is :attr:`TabReport.pending`."""
+        return any(tab.pending for tab in self.tabs)
+
+    @property
+    def base_only(self) -> bool:
+        """True when the tabs :attr:`pending` are all pending for the base alone."""
+        pending = [tab for tab in self.tabs if tab.pending]
+        return bool(pending) and all(tab.base_only for tab in pending)
 
 
 @dataclass(frozen=True)
@@ -576,7 +651,7 @@ def _problems(
     validate: Validate | None,
     check: Check | None,
     *,
-    strict_schema: bool = False,
+    strict_schema: bool | str = False,
     strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
     """Every schema, ``validate``, and ``check`` problem at one stage, as messages.
@@ -637,6 +712,16 @@ def _sheet_title(
 
 def _nonblank(rows: Iterable[Mapping[str, str]], column: str) -> int:
     return sum(1 for row in rows if row.get(column, "") != "")
+
+
+def _resolved(tab: TabConfig) -> TabConfig:
+    """``tab`` with its ``schema_ref`` resolved, before anything reads its schema.
+
+    :func:`~gdrives.sheets.hooks.resolve_tab` checks the tab's hooks in the
+    same pass, so one ConfigError lists both. A tab with no ``schema_ref`` is
+    returned as it is, and its hooks are found where they always were.
+    """
+    return tab if tab.resolved else resolve_tab(tab)
 
 
 def _with_tab_hooks(
@@ -832,6 +917,7 @@ def plan_tab(
         raise ValueError(
             f"prefer must be one of {sorted(SIDES)} or None, not {prefer!r}"
         )
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="sync")
     _started(report, tab)
     _refuse_exclude(tab)
@@ -876,6 +962,7 @@ def _plan(
         report.warnings = list[str]()
     report.deferred = list[Cell]()
     report.plan, report.bootstrapped = None, False
+    report.stale_base = report.stale_local = False
     report.insert_row, report.last_row = None, None
     report.add_columns, report.drop_columns = list[str](), dict[str, int]()
     local = _read_local(tab)
@@ -1039,7 +1126,7 @@ def _plan(
         # there already stopped the plan, so a column that reaches here is
         # never one the local side also carries: reported once, at "local".
         report.problems = _check(tab, merged, *hooks, strict_columns=())
-        if tab.strict_schema and sheet_columns is not None:
+        if tab.strict_schema is True and sheet_columns is not None:
             sheet_extra = [
                 column
                 for column in sheet_columns
@@ -1066,7 +1153,19 @@ def _plan(
             *_respelling_problems(tab.title, local.rows, remote, tab.schema, tab.key),
         ]
         _warn(report, merged, options["warn"])
+    report.stale_base = _base_stale(base, columns, plan)
+    report.stale_local = _local_stale(local, plan)
     return planned(table, plan, base)
+
+
+def _base_stale(base: Records | None, columns: Sequence[str], plan: MergePlan) -> bool:
+    """True when an apply saves the base: none yet, or it differs from the plan's."""
+    return base is None or base.columns != columns or base.rows != plan.new_base
+
+
+def _local_stale(local: Records, plan: MergePlan) -> bool:
+    """True when an apply writes the local file: the plan's rows differ from it."""
+    return plan.new_local != local.rows
 
 
 def _sheet_side(
@@ -1229,11 +1328,11 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     if result.pushed or result.appended:
         report.wrote_sheet = True
 
-    if plan.new_local != planned.local.rows:
+    if _local_stale(planned.local, plan):
         tab.local_store.write(planned.local.columns, plan.new_local)
         report.wrote_local = True
     base = planned.base
-    if base is None or base.columns != planned.columns or base.rows != plan.new_base:
+    if _base_stale(base, planned.columns, plan):
         planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:
@@ -1468,6 +1567,7 @@ def pull_tab(
     that makes a key blank or makes two equal is refused, and the local
     side is left alone.
     """
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="pull")
     store = _started(report, tab)
     report.apply = apply
@@ -1540,7 +1640,15 @@ def pull_tab(
         sheet_columns=tuple(name for name in table.header if name),
     )
     report.warnings = list[str]()
-    report.problems = _check(tab, context, validate, check, strict_columns=checked)
+    # "local" checks the columns read, which become the local file's; true
+    # checks every named header column, read or not.
+    report.problems = _check(
+        tab,
+        context,
+        validate,
+        check,
+        strict_columns=checked if tab.strict_schema is True else None,
+    )
     if report.problems:
         return report
     _warn(report, context, warn)
@@ -1550,6 +1658,101 @@ def pull_tab(
         store.write(table.columns, table.rows)
         report.wrote_local = True
     return report
+
+
+class PullError(ValueError):
+    """A pull of :func:`pull_records` that was refused or found problems.
+
+    ``report`` is the tab's :class:`TabReport`, and the message is
+    ``format_report(report)``, so printing the error prints what the commands
+    would.
+    """
+
+    def __init__(self, report: TabReport) -> None:
+        super().__init__(format_report(report))
+        self.report = report
+
+
+def pull_records(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    *,
+    columns: Sequence[str] | None = None,
+    key: Sequence[str] = (),
+    blank_keys: str = "refuse",
+    schema: Mapping[str, ColumnSchema] | None = None,
+    strict_schema: bool | str = False,
+    exclude: Sequence[str] = (),
+    render: str = "unformatted",
+    sheet_id: int | None = None,
+    validate: Validate | None = None,
+    check: Check | None = None,
+    warn: Check | None = None,
+    transform: Transform | None = None,
+    listing: TabListing | None = None,
+    report: TabReport | None = None,
+) -> Records:
+    """Read the tab titled ``tab`` into memory, checked as a pull checks it.
+
+    This is :func:`pull_tab` with ``apply`` on and the tab's local side a
+    :class:`~gdrives.sheets.stores.MemoryStore`, so nothing is read from or
+    written to a file, and a pull tab in a config and this call refuse the
+    same things. The arguments are those of a pull tab (``columns``, ``key``,
+    ``blank_keys``, ``schema``, ``strict_schema``, ``exclude``, ``render``,
+    ``sheet_id``) and of :func:`pull_tab` (the hooks, ``transform``, and
+    ``listing``). A combination of them a tab refuses, such as ``exclude``
+    with ``columns``, raises the ValueError :class:`TabConfig` raises, before
+    any request.
+
+    Returns the rows as the store holds them: :class:`Records` of the columns
+    read and their rows, as canonical cell strings. :func:`decode_rows`
+    turns them into typed values.
+
+    Raises :class:`PullError` when the pull was refused (a ValueError: no such
+    tab, no header row, no rows) or found ``problems`` (schema,
+    ``validate``, ``check``), which is when ``report.failed`` is true and a
+    pull's exit code is 1. Its ``report`` and message are the tab's
+    :class:`TabReport` and its rendering. An ``HttpError`` or an ``OSError``
+    is not caught: it propagates as it was raised, with the retries of the
+    value calls already made, so a caller's handling of them needs no change.
+    What ``warn`` says fails nothing; pass a ``report`` of your own and read
+    its ``warnings`` afterwards.
+    """
+    report = report if report is not None else TabReport(tab=tab, mode="pull")
+    store = MemoryStore()
+    pull = TabConfig(
+        title=tab,
+        store=store,
+        mode="pull",
+        key=tuple(key),
+        columns=tuple(columns) if columns is not None else None,
+        exclude=tuple(exclude),
+        schema=schema if schema is not None else {},
+        blank_keys=blank_keys,
+        render=render,
+        sheet_id=sheet_id,
+        strict_schema=strict_schema,
+    )
+    try:
+        pull_tab(
+            service,
+            spreadsheet_id,
+            pull,
+            apply=True,
+            validate=validate,
+            check=check,
+            warn=warn,
+            listing=listing,
+            report=report,
+            transform=transform,
+        )
+    except ValueError as e:
+        report.error = str(e)
+        raise PullError(report) from e
+    if report.failed:
+        raise PullError(report)
+    return store.read()
 
 
 def _sheet_records(title: str, grid: Sequence[Sequence[Any]]) -> Records | None:
@@ -1597,6 +1800,7 @@ def push_tab(
     has, or every local column), before the "no rows" refusal, so a local
     side with no rows is still checked for it.
     """
+    tab = _resolved(tab)
     report = report if report is not None else TabReport(tab=tab.title, mode="push")
     store = _started(report, tab)
     _refuse_exclude(tab)
@@ -1660,7 +1864,7 @@ def push_rows(
     link_urls: str | None = None,
     label: str = "rows",
     sheet_id: int | None = None,
-    strict_schema: bool = False,
+    strict_schema: bool | str = False,
     listing: TabListing | None = None,
     report: TabReport | None = None,
     render: str = "unformatted",
@@ -1752,6 +1956,11 @@ def push_rows(
     if typed_writes and render != "unformatted":
         raise ValueError(
             f"tab {title!r}: typed writes need the tab read unformatted, not {render!r}"
+        )
+    if not _is_strict_schema(strict_schema):
+        raise ValueError(
+            f"tab {title!r}: 'strict_schema' must be true, false, or "
+            f"{_STRICT_LOCAL!r}, not {strict_schema!r}"
         )
     if link_urls is not None:
         if clear_links:
@@ -2140,7 +2349,7 @@ def _dump_tab(
 
 def run_target(
     service: Service,
-    spreadsheet_id: str,
+    spreadsheet_id: str | None,
     target: Target,
     mode: str = "sync",
     *,
@@ -2162,21 +2371,27 @@ def run_target(
     that needs the tab closes over it, or runs a function per tab). The
     spreadsheet's tabs are listed once, and again only after a tab was
     created, so a run of N tabs makes one listing and not N.
-    ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
-    that fails (a refusal, an API error, a failed guard) is reported with its
-    error and the run goes on to the next tab, since tabs are independent.
+    ``spreadsheet_id`` is the target's spreadsheet, already resolved, or None
+    for :attr:`~gdrives.sheets.config.Target.spreadsheet_id`, which is
+    refused for a Drive path. A tab that fails (a refusal, an API error, a
+    failed guard) is reported with its error and the run goes on to the next
+    tab, since tabs are independent.
     Raises ValueError, before any request, for an unknown mode or tab, a
     selected tab of another mode, a sync-only option on another mode, or a
     ``transform`` on a push.
 
-    The hooks a selected tab's config names are found first
-    (:func:`~gdrives.sheets.hooks.resolve_hooks`), and a
+    The hooks a selected tab's config names, and the schema its
+    ``schema_ref`` names, are found first
+    (:func:`~gdrives.sheets.hooks.resolve_target`), and a
     :class:`~gdrives.sheets.config.ConfigError` lists every name that does
-    not resolve, before any request. Each tab runs its config's hooks, then
-    the ones given here.
+    not resolve and every problem of a schema found, before any request.
+    Each tab runs with its schema resolved, and runs its config's hooks,
+    then the ones given here.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
+    if spreadsheet_id is None:
+        spreadsheet_id = target.spreadsheet_id
     if mode != "sync" and (adopt or add_missing or drop_extra or prefer is not None):
         raise ValueError(
             "adopt, add_missing, drop_extra, and prefer apply only to sync tabs"
@@ -2198,7 +2413,13 @@ def run_target(
         selected = [tab for tab in target.tabs if tab.mode == mode]
         if not selected:
             raise ValueError(f"target {target.name!r} has no {mode} tabs")
-    resolve_hooks(target, [tab.title for tab in selected])
+    target = resolve_target(target, [tab.title for tab in selected])
+    # The same tabs again, now with any schema_ref resolved.
+    selected = (
+        [target.tab(title) for title in tabs]
+        if tabs
+        else [tab for tab in target.tabs if tab.mode == mode]
+    )
 
     report = SyncReport(target=target.name)
     listing: TabListing | None = None
@@ -2283,13 +2504,17 @@ def _names(names: Iterable[str]) -> str:
     return ", ".join(_q(name) for name in names)
 
 
-def format_report(report: SyncReport) -> str:
+def format_report(report: SyncReport | TabReport) -> str:
     """Render ``report`` as text, one block per tab. Pure: prints nothing.
+
+    A :class:`TabReport`, as :func:`pull_tab` and :func:`push_rows` return,
+    renders as the one block a run of that tab would.
 
     Every string that came from the sheet or a file (values, keys, titles,
     column names, paths) goes through :func:`~gdrives.local.printable`.
     """
-    blocks = ["\n".join(_format_tab(tab)) for tab in report.tabs]
+    tabs = [report] if isinstance(report, TabReport) else report.tabs
+    blocks = ["\n".join(_format_tab(tab)) for tab in tabs]
     return "\n\n".join(blocks)
 
 

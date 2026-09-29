@@ -865,6 +865,94 @@ def test_push_with_clear_links_leaves_no_link(tab, shared_tab):
     ]
 
 
+def test_link_audit_reads_a_formula_link_and_styling_with_no_link(tab, shared_tab):
+    # What the wider audit rests on: a HYPERLINK formula's link is the cell's
+    # link and its formula is in userEnteredValue, with the label as the
+    # displayed text; a cell underlined and coloured as a link is holds no
+    # link; and a reset of the link, underline, and colour leaves both cells
+    # plain, the formula still in its cell.
+    service, sid, name = tab
+    header = ["id", "site"]
+    formula = '=HYPERLINK("https://example.com/b","label")'
+    sheets.update_values(
+        service, sid, f"'{name}'!A1:B3", [header, ["a", formula], ["b", "styled"]]
+    )
+    blue = {"red": 17 / 255, "green": 85 / 255, "blue": 204 / 255}
+    styled = {
+        "updateCells": {
+            "start": {"sheetId": shared_tab.sheet_id, "rowIndex": 2, "columnIndex": 1},
+            "rows": [
+                {
+                    "values": [
+                        {
+                            "userEnteredValue": {"stringValue": "styled"},
+                            "userEnteredFormat": {
+                                "textFormat": {
+                                    "underline": True,
+                                    "foregroundColorStyle": {"rgbColor": blue},
+                                }
+                            },
+                        }
+                    ]
+                }
+            ],
+            "fields": "userEnteredValue,"
+            "userEnteredFormat.textFormat.underline,"
+            "userEnteredFormat.textFormat.foregroundColorStyle",
+        }
+    }
+    _patiently(service, sid, {"requests": [styled]})
+    assert sheets.linked_cells(service, sid, name, header=header, detail=True) == [
+        sheets.LinkedCell(
+            2, "site", ("https://example.com/b",), False, "label", formula=True
+        )
+    ]
+    assert sheets.styled_cells(service, sid, name, header=header) == [
+        sheets.StyledCell(3, "site", "styled", ("underline", "color"), True)
+    ]
+
+    sheets.clear_link_format(
+        service, sid, name, header=header, sheet_id=shared_tab.sheet_id, style=True
+    )
+    assert sheets.linked_cells(service, sid, name, header=header, detail=True) == []
+    assert sheets.styled_cells(service, sid, name, header=header) == []
+    assert sheets.pull_values(service, sid, f"'{name}'!B2:B3") == [
+        ["label"],
+        ["styled"],
+    ]
+
+
+def test_clear_link_format_can_leave_a_formula_cell_its_link(tab, shared_tab):
+    # What formulas=False rests on: the cells around a HYPERLINK formula's are
+    # cleared by blocks that stop short of it, so it keeps its link while a
+    # format link beside it loses its own.
+    service, sid, name = tab
+    header = ["id", "site"]
+    formula = '=HYPERLINK("https://example.com/b","label")'
+    sheets.update_values(
+        service,
+        sid,
+        f"'{name}'!A1:B3",
+        [header, ["a", formula], ["b", "https://own.example.com"]],
+    )
+    found = sheets.linked_cells(service, sid, name, header=header, detail=True)
+    assert [(cell.row, cell.formula) for cell in found] == [(2, True), (3, False)]
+
+    sheets.clear_link_format(
+        service,
+        sid,
+        name,
+        header=header,
+        sheet_id=shared_tab.sheet_id,
+        runs=False,
+        formulas=False,
+    )
+    left = sheets.linked_cells(service, sid, name, header=header, detail=True)
+    assert [(cell.row, cell.targets, cell.formula) for cell in left] == [
+        (2, ("https://example.com/b",), True)
+    ]
+
+
 def test_push_that_shrinks_the_tab_clears_the_old_cells(seeded, tmp_path):
     service, sid, name = seeded(
         [

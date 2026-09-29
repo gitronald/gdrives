@@ -1,4 +1,4 @@
-# gdrives v0.14.0
+# gdrives v0.15.0
 
 Command-line tools for Google Drive.
 
@@ -51,10 +51,16 @@ gdrives/
 │   ├── table.py      # Read a whole tab as header-named, keyed records
 │   ├── merge.py      # The pure three-way merge by row key
 │   ├── apply.py      # Write a merge plan to a tab, guarded and read back
+│   ├── typed.py      # Typed writes: typed columns as values, and date formats
+│   ├── retype.py     # Rewrite the text a typed column holds as values
 │   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
-│   ├── structure.py  # Add and delete columns, create tabs, set column widths
+│   ├── structure.py  # Add and delete columns, create tabs, set column widths, and find, clear, and set links
+│   ├── links.py      # Check or fix the links of URL cells over a spreadsheet's tabs
 │   ├── create.py     # Create a native spreadsheet in a folder, and name its tabs
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
+│   ├── hooks.py      # Hooks and schema references a config names as module:name
+│   ├── transforms.py # Stock transform hooks (trim_cells)
+│   ├── schema.py     # A target's declared schema columns as rows of documentation
 │   ├── stores.py     # Stores for the local side and the base (FileStore, JsonEntryStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
 │   └── commands.py   # run_* entry points for the sheets-* commands
@@ -189,7 +195,11 @@ use. When a cached token already serves the scope, nothing is asked. It exits 1
 when the time runs out, or when the token could not be saved. It is also the
 way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
-starting `Credential:`.
+starting `Credential:`. The line is also printed when OAuth is configured but no
+cached token serves and there is no terminal for a consent, so the run goes on
+as the service account or ADC; it then ends with the reason and `run gdrives login`.
+It stays quiet when OAuth is not configured. `gdrives.auth.credential_line(info)`
+is that line for a `CredentialInfo`, for a caller printing it by hand.
 
 A caller that wants to say more can build on `gdrives.auth.describe_credentials()`,
 whose `CredentialInfo` names why a credential was chosen without a network call:
@@ -247,7 +257,23 @@ gdrives export <doc-url> -o output.md       # Google Doc -> Markdown (.txt for p
 gdrives export <sheet-url> -o output.xlsx   # Google Sheet -> .xlsx
 gdrives export <sheet-url> -o output.csv    # Google Sheet -> .csv (first tab only)
 gdrives export <slides-url> -o output.pptx  # Google Slides -> .pptx
+gdrives export <sheet-url> -o output.csv --newline lf  # Rewrite the row endings to LF
 ```
+
+Drive sends a sheet's CSV with CRLF row endings, so a file that is committed is
+rewritten by every export. `--newline lf` or `--newline crlf` rewrites the line
+endings of a text export (`.csv`, `.txt`, `.md`) before the file appears under
+its name; without it the bytes are written as Drive sent them. It is refused,
+before any request, with a binary format (`.docx`, `.xlsx`, `.pptx`) and with
+any other value. The rewrite works on the bytes, so an export that is not valid
+UTF-8 is neither corrupted nor refused. A line ending is CRLF, LF, or a lone CR
+(Drive sends none). In a CSV file a line break inside a quoted cell is part of
+the cell's value and is kept as the cell holds it: only the row endings change,
+and which cells are quoted, and every other byte, stay as they were. From code,
+`export_file(service, file_id, output_path, newline=None)` takes the same
+value, and `gdrives.export.set_line_endings(content, extension, newline)`
+rewrites bytes already in hand. The names are those of `newline` on the sheets
+side (`gdrives.local.NEWLINES`).
 
 ### Read and write Google Sheet cell values
 
@@ -255,6 +281,19 @@ Operate on live cell ranges via the Sheets API — distinct from `export`, which
 downloads a whole spreadsheet to a local file. The target is a Sheet URL, a bare
 file ID, or a Drive path; the range is an A1 range like `Sheet1!A1:C10` (a bare
 `A1:C10` targets the first tab).
+
+A Drive path must name a native Google spreadsheet. One that names an uploaded
+workbook (an `.xlsx`, a CSV file) or any other file exits 1 naming the file and
+its type, and for an `.xlsx` or a `.csv` file points to `sheets-create --from`
+(see "Create a spreadsheet") to convert a local copy, where the Sheets API would
+answer with an error that does not say what is wrong. The check reads the type
+from the listing that found the file, so a path makes no request it did not
+make before. A URL or a bare ID is not checked, since that would cost a request
+the commands do not make. The same holds for the `spreadsheet` of a config
+target, in `sheets-sync`, `sheets-pull`, `sheets-push`, and `sheets-links`. From
+code, `gdrives.resolve.resolve_spreadsheet_id(source, service=None)` resolves a
+source and makes the check, and `check_spreadsheet(file)` checks a file the
+caller resolved itself.
 
 ```bash
 gdrives sheets-get <sheet-url> "Sheet1!A1:C10"          # Print a range (aligned columns)
@@ -374,6 +413,9 @@ gdrives sheets-push roster --apply                 # Replace the push tabs from 
 gdrives sheets-pull <sheet-url> --all-tabs -o out/ --apply  # Dump every tab, no config
 gdrives sheets-pull <sheet-url> --all-tabs -o out/ --slug --bom --apply  # Slug file names, with a byte-order mark
 gdrives sheets-widths <sheet-url> --tab Members    # Column widths as JSON, for a tab's "widths"
+gdrives sheets-links <sheet-url> --color "#1155cc" # Check the links of URL cells on every tab
+gdrives sheets-links roster --tab Members --apply  # A target's tab, in its link_urls colour, fixed
+gdrives sheets-schema roster -o schema.csv         # A target's schema columns, with types, rules, and descriptions (--escape-formulas for a spreadsheet app)
 ```
 
 A `sync` tab is merged three ways by row key against a **base snapshot** (one
@@ -392,12 +434,16 @@ tab. A tab reads a number as its value (`0.5` for a cell showing `50%`);
 `render: "formatted"` reads every cell as the sheet displays it, for local
 files that hold the displayed text. A tab's `strict_schema` makes it a problem
 for a column of either side to have no `schema` entry, so a column added later
-does not silently sync as text. A `schema` column's `present: true` makes it a
-problem for the header to lack it, and its `strict: true` narrows a `bool` or
-`date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`).
+does not silently sync as text; `"local"` checks the local side only, and leaves
+a sheet column outside the projection alone. A `schema` column's `present: true`
+makes it a problem for the header to lack it, its `strict: true` narrows a
+`bool` or `date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`),
+and a `str` column's `pattern` is a regular expression a non-blank cell must
+match in full.
 
 Every command previews by default and writes only with `--apply`. The report
-goes to stdout, and the exit code is 0 when in sync or applied, 1 for an
+goes to stdout, a preview that `--apply` would change ends with `Preview only;
+rerun with --apply to write.` on stderr (`to save the base.` when the base is all it would write), and the exit code is 0 when in sync or applied, 1 for an
 error, and 2 when conflicts, row flags, or held sheet values are left for a
 person. A preview uses
 the read-only scope; `--apply` first prints the credential it will use to
@@ -410,8 +456,25 @@ and ownership rules, the first sync, and the exit codes.
 The sheet links a URL as it is written. A `sync` or `push` tab's
 `clear_links: true` leaves the cells a run writes with no link, and its
 `link_urls`, `{"color": "#1155cc"}`, gives each URL cell a run writes a link to
-its own text, in that colour, not underlined. See
+its own text, in that colour, not underlined. `link_urls` never touches the
+cells a person typed or pasted; `sheets-links` sweeps those, over every tab of
+a spreadsheet or the tabs of a target, and with `--apply` fixes them (in
+code, `sweep_url_links` and `format_sweep`). To audit a tab,
+`linked_cells(..., detail=True)` also returns each link cell's `text` and
+whether its link is a `HYPERLINK` formula's (`formula`), and `styled_cells`
+finds the cells underlined or coloured as a link is that hold none.
+`clear_link_format(..., style=True)` clears the underline and the text colour
+with the link; a cell whose link comes from a `HYPERLINK` formula loses the
+link and keeps the formula, which then shows its label as plain text, unless
+the call passes `formulas=False`, which leaves such a cell as it is. See
 [links](docs/sheets-sync.md#links).
+
+To read a tab into Python instead of a file, `pull_records(service,
+spreadsheet_id, "Members", ...)` in `gdrives.sheets` takes a pull tab's
+fields and hooks and returns the checked rows as `Records`, raising
+`PullError` (with the tab's report) when the pull is refused or finds problems. An API error propagates as an `HttpError`.
+`decode_rows` turns the rows into typed values for a dataframe library of your
+own. See [reading a tab into memory](docs/sheets-sync.md#reading-a-tab-into-memory).
 
 A sync keeps the sheet's row order. To put a keyed tab back in an order of
 your own, compute the order in Python, as the rows' keys first to last, and
@@ -428,6 +491,37 @@ preview included, so read a config from somewhere else before running it.
 The module is found as `import` finds it, never beside the config, and every
 name is checked before the first request. See
 [hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
+
+`gdrives.sheets.transforms:trim_cells` is a stock `transform` for the cleaning
+most sheets need: it strips each cell and collapses runs of whitespace inside
+a line, keeping line breaks. Name it in `hooks`, or pass `transform=trim_cells`.
+Whitespace a collaborator typed stays on the sheet, since only the sheet's side
+of the merge is cleaned. See
+[a stock transform](docs/sheets-sync.md#a-stock-transform).
+
+A schema column may carry a `description`, which no check reads.
+`gdrives sheets-schema roster -o schema.csv` lists a target's declared columns
+with their types, rules, and descriptions, from the config alone (no request,
+no credential; a schema named as `module:attribute` is imported), as CSV, TSV,
+or JSON by the file's extension; `--escape-formulas` prefixes a `'` to cells a
+spreadsheet app would run as formulas, as `sheets-get` does, for CSV and TSV.
+`schema_rows` in `gdrives.sheets` returns the
+rows for a caller's own docs. See
+[describing the columns](docs/sheets-sync.md#describing-the-columns).
+
+A target's `defaults` object gives `link_urls`, `strict_schema`, `newline`,
+`render`, and `blank_keys` to every tab that does not set its own, and skips a
+tab it would contradict (a `link_urls` default on a pull tab, say). See
+[defaults for every tab](docs/sheets-sync.md#defaults-for-every-tab).
+
+A tab's `schema` may name a schema written in Python instead of giving one,
+as `"module:attribute"`: `"schema": "clubtools.schema:MEMBERS"`, a mapping of
+column name to `ColumnSchema`, or a function given the tab's title that
+returns one. It is imported as a hook is, when a run starts and never when
+the config is read, so **running a command on the config runs that module**,
+a preview included. The schema found is checked as a `schema` object in the
+config is, before the first request. See
+[a schema in code](docs/sheets-sync.md#a-schema-in-code).
 
 ### Read and edit Google Docs content
 
@@ -557,6 +651,7 @@ gdrives upload out.pdf "My Drive/reports/report.pdf"     # Into a folder, under 
 gdrives upload report.pdf "My Drive/reports" --dry-run   # Print the operation, make none
 gdrives upload report.pdf --dest-id <folder-id> --name q3.pdf  # Skip path resolution
 gdrives upload report.pdf --file-id <file-id>            # Replace that file's content
+gdrives upload report.pdf "My Drive/reports" --no-replace  # Refuse if the name is taken
 gdrives upload notes.md "My Drive/notes" --mime-type text/markdown  # Set the type
 ```
 
@@ -578,6 +673,15 @@ compare without regard to case, as they do when a path is resolved.
 
 A file or a folder in the trash is refused when `--file-id` or `--dest-id`
 names it; a path never resolves to one.
+
+`--no-replace` makes the first three cases one: a file of that name in the
+folder, one or several, exits 1 with each one's ID listed and writes nothing,
+and with none the file is created. It is refused with `--file-id`, which names
+the file to replace, before any request. `--dry-run` reports the same refusal.
+The check is one listing just before the write, so it narrows the window in
+which another writer can create the name and does not close it: Drive has no
+create-if-absent. From code, `plan_upload` and `upload_file` take
+`replace=False`.
 
 After the write, the file is read back and its size and MD5 checksum are
 compared with the local file's; a difference exits 1 and names the file. The
@@ -617,6 +721,8 @@ gdrives sheets-create --title "Roster" --folder "My Drive/clubs"  # In a folder,
 gdrives sheets-create --title "Roster" --folder-id <folder-id>    # In a folder, by ID
 gdrives sheets-create --title "Roster" --tab Members --tab Dues   # Name its tabs
 gdrives sheets-create --title "Roster" --folder "My Drive/clubs" --dry-run  # Create nothing
+gdrives sheets-create --from book.xlsx --folder "My Drive/clubs"  # From a local workbook
+gdrives sheets-create --from members.csv --title "Roster" --folder-id <folder-id>
 ```
 
 Creates a native Google Sheet and prints its URL to stdout, and its ID to
@@ -632,6 +738,33 @@ stderr, with the ID of each, and creates the spreadsheet. `--dry-run` reports
 the same and creates nothing, on the read-only scope. A `--folder-id` that
 names a folder in the trash is refused.
 
+`--from` starts the spreadsheet from a local `.xlsx` or `.csv` file (by
+extension, in any case; anything else is refused before a request) instead of
+an empty one. The file is uploaded as the content of the same `files.create`,
+with the spreadsheet MIME type in the metadata, and Drive converts it. The
+upload is the resumable one `upload` makes, with each chunk retried. `--title`
+defaults to the file's stem, and `--tab` is refused, since the workbook names
+its own tabs. `--dry-run` prints the file, its size, and the folder, and
+uploads nothing. A converted file has no size or checksum to compare with the
+local file's, so the read-back checks its type instead: when Drive left the
+upload unconverted, the command fails naming the file's ID, since the file
+exists either way. What Drive makes of a formula, a date, or a merged cell is
+Drive's conversion, and is not something the command controls.
+
+An `.xlsx` workbook keeps its tabs, by name and in order, its formulas as
+formulas, a `HYPERLINK` formula among them, its merged cells, and its bold. A
+date or a time stays a value, with the workbook's number format, and a cell
+the workbook holds as text stays text, so `007` stays `007`. A `.csv` file is
+read as typed input is: it becomes one tab named after the file, `007` becomes
+the number `7`, and `2026-02-03` becomes a date. Use an `.xlsx` workbook, or
+push the rows with `sheets-push`, for a column whose text must arrive as
+written.
+
+A service account has no storage of its own, so Drive refuses its upload into
+a folder of My Drive with `storageQuotaExceeded`, though the converted file
+would take no space. Create from a workbook with an OAuth credential, or in a
+shared drive.
+
 The file is created through the Drive API, since the Sheets API creates in the
 root of My Drive only, so `sheets-create` needs the full `drive` scope, cached
 in `gdrives_token_drive.json`; `spreadsheets` alone cannot place a file in a
@@ -645,6 +778,11 @@ drive = build_drive_service(DRIVE_WRITE_SCOPES)
 sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
 spreadsheet_id = create_spreadsheet(
     drive, sheets, "Roster", folder_id="<folder-id>", tabs=["Members", "Dues"]
+)
+
+# From a local workbook: the file is converted, and names its own tabs
+spreadsheet_id = create_spreadsheet(
+    drive, sheets, "Roster", folder_id="<folder-id>", source="book.xlsx"
 )
 ```
 

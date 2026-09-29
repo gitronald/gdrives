@@ -5,15 +5,29 @@ spreadsheet MIME type and the folder as its parent), since the Sheets API
 creates in the root of My Drive only. A new spreadsheet has one tab. When
 tabs are named, that tab takes the first title and the others are added
 after it, so nothing is deleted.
+
+A spreadsheet can also start from a local workbook (``.xlsx`` or ``.csv``):
+the file is uploaded as the media body of the same ``files.create``, with the
+spreadsheet MIME type in the metadata, and Drive converts it. The workbook
+names its own tabs, so no tabs are named.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from gdrives.files import Service
+from gdrives.files import SPREADSHEET_MIME, Service
 from gdrives.sheets.values import batch_update_spreadsheet, tab_sheet_ids
+from gdrives.upload import UploadError, check_local, resumable_media, send_upload
 
-SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+# The workbook formats Drive converts here, by extension, with the type sent.
+SOURCE_MIMES: Mapping[str, str] = MappingProxyType(
+    {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".csv": "text/csv",
+    }
+)
 
 
 def spreadsheet_url(spreadsheet_id: str) -> str:
@@ -26,6 +40,22 @@ def check_tabs(tabs: Sequence[str]) -> list[str]:
     if any(not title.strip() for title in tabs):
         raise ValueError(f"blank tab title in {list(tabs)}")
     return list(dict.fromkeys(tabs))
+
+
+def check_source(source: str | Path) -> tuple[Path, str]:
+    """Return a workbook's path and the MIME type it is sent as.
+
+    The extension decides, without regard to case, and only ``.xlsx`` and
+    ``.csv`` are taken. The file is checked as ``upload`` checks its own.
+    """
+    path = Path(source)
+    mime = SOURCE_MIMES.get(path.suffix.lower())
+    if mime is None:
+        taken = ", ".join(SOURCE_MIMES)
+        raise ValueError(
+            f"'{path}' is not a workbook this command converts; use {taken}"
+        )
+    return check_local(str(path)), mime
 
 
 def name_tabs(service: Service, spreadsheet_id: str, tabs: Sequence[str]) -> None:
@@ -64,6 +94,7 @@ def create_spreadsheet(
     *,
     folder_id: str | None = None,
     tabs: Sequence[str] = (),
+    source: str | Path | None = None,
 ) -> str:
     """Create a native spreadsheet and return its file ID.
 
@@ -74,13 +105,38 @@ def create_spreadsheet(
     left as it is. Drive permits duplicate names, so a file of the same name
     in the folder is no obstacle, and none is looked for. The title and the
     tabs are checked before anything is created.
+
+    With ``source``, a local ``.xlsx`` or ``.csv`` file (:func:`check_source`),
+    the workbook is uploaded as the spreadsheet's content, by the resumable
+    upload ``upload`` uses, and Drive converts it. The workbook names its own
+    tabs, so ``tabs`` is refused with it. Drive answers with the file as
+    uploaded when it refuses the conversion, so the created file's type is
+    checked, and an ``UploadError`` names its ID when it is not a spreadsheet.
     """
     if not title.strip():
         raise ValueError("title must not be empty")
     titles = check_tabs(tabs)
+    if source is not None and titles:
+        raise ValueError("a workbook names its own tabs; pass source or tabs, not both")
+    workbook = check_source(source) if source is not None else None
     body: dict[str, Any] = {"name": title, "mimeType": SPREADSHEET_MIME}
     if folder_id is not None:
         body["parents"] = [folder_id]
+    if workbook is not None:
+        path, mime = workbook
+        request = drive.files().create(
+            body=body,
+            media_body=resumable_media(path, mime),
+            fields="id, mimeType",
+            supportsAllDrives=True,
+        )
+        created = send_upload(request)
+        if created.get("mimeType") != SPREADSHEET_MIME:
+            raise UploadError(
+                f"'{title}' ({created['id']}) was created but not converted: "
+                f"its type is {created.get('mimeType')}, not a spreadsheet"
+            )
+        return created["id"]
     created = (
         drive.files().create(body=body, fields="id", supportsAllDrives=True).execute()
     )
