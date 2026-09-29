@@ -68,7 +68,7 @@ class TestExport:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.run",
-            lambda source, output, newline=None: rec.update(s=source, o=output),
+            lambda source, output, **options: rec.update(s=source, o=output),
         )
         cli.export("https://docs.google.com/document/d/X/edit", "out.docx")
         assert rec == {
@@ -80,16 +80,40 @@ class TestExport:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.run",
-            lambda source, output, newline: rec.update(n=newline),
+            lambda source, output, **options: rec.update(options),
         )
         result = CliRunner().invoke(
             cli.app, ["export", "SHEET", "-o", "out.csv", "--newline", "lf"]
         )
         assert result.exit_code == 0
-        assert rec == {"n": "lf"}
+        assert rec == {"newline": "lf", "newline_cells": False}
+
+    def test_newline_cells_is_passed_on(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.export.run",
+            lambda source, output, **options: rec.update(options),
+        )
+        result = CliRunner().invoke(
+            cli.app,
+            ["export", "SHEET", "-o", "out.csv", "--newline", "lf", "--newline-cells"],
+        )
+        assert result.exit_code == 0
+        assert rec == {"newline": "lf", "newline_cells": True}
+
+    def test_newline_cells_without_a_newline_exits_1(self, monkeypatch, capsys):
+        def build():
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        result = CliRunner().invoke(
+            cli.app, ["export", "SHEET", "-o", "out.csv", "--newline-cells"]
+        )
+        assert result.exit_code == 1
+        assert "newline_cells needs a newline" in result.output
 
     def test_value_error_exits_1(self, monkeypatch, capsys):
-        def boom(source, output, newline=None):
+        def boom(source, output, **options):
             raise ValueError("Unsupported output extension '.bad'")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -107,7 +131,7 @@ class TestExport:
             status = 404
             reason = "Not Found"
 
-        def boom(source, output, newline=None):
+        def boom(source, output, **options):
             raise HttpError(FakeResp(), b"")
 
         monkeypatch.setattr("gdrives.export.run", boom)

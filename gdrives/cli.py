@@ -119,12 +119,21 @@ def export(
             "(default: as Drive sends them)",
         ),
     ] = None,
+    newline_cells: Annotated[
+        bool,
+        typer.Option(
+            "--newline-cells",
+            help="With --newline, rewrite the line breaks inside the quoted cells "
+            "of a .csv export too, which changes those cells' values "
+            "(default: only the row endings)",
+        ),
+    ] = False,
 ):
     """Export a Doc to .docx/.txt/.md, a Sheet to .xlsx/.csv, or Slides to .pptx."""
     from gdrives.export import run
 
     with _cli_errors():
-        run(source, output, newline=newline)
+        run(source, output, newline=newline, newline_cells=newline_cells)
 
 
 @app.command()
