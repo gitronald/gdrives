@@ -177,6 +177,28 @@ def _letters_to_index(letters: str) -> int:
     return n - 1
 
 
+def _index_to_letters(index: int) -> str:
+    """A 0-based column index as A1 letters (0 -> A, 26 -> AA)."""
+    letters = ""
+    n = index + 1
+    while n:
+        n, rest = divmod(n - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+
+def _shown_span(title: str, span: dict[str, Any]) -> str:
+    """A GridRange as the API names it in a refusal: ``T!A1001:B`` when open."""
+    start = _index_to_letters(span.get("startColumnIndex", 0))
+    start += str(span.get("startRowIndex", 0) + 1)
+    end = ""
+    if "endColumnIndex" in span:
+        end += _index_to_letters(span["endColumnIndex"] - 1)
+    if "endRowIndex" in span:
+        end += str(span["endRowIndex"])
+    return f"{title}!{start}:{end}"
+
+
 def _split_range(range_: str) -> tuple[str, str]:
     """Split ``'Tab'!A1:B2`` (quoted or not) into the tab title and the span."""
     if range_.startswith("'"):
@@ -474,7 +496,12 @@ class FakeSheetGrid:
       values: a date serial written as a number reads as that number.
     - Any read or write outside a tab's grid raises the 400 ``HttpError`` the
       API returns; so do an unknown tab, a duplicate tab title, inheriting
-      from before row or column 0, and deleting every row or column.
+      from before row or column 0, and deleting every row or column. A
+      ``repeatCell`` is refused when its range starts at or past the grid's
+      last row or column, open-ended or not, in the API's words (``exceeds
+      grid limits``); one that starts inside the grid and ends past it is
+      applied to the cells the grid has, and one that holds no cell does
+      nothing, as the API takes both.
 
     Every ``(method, kwargs)`` call is recorded in ``calls``. ``edit_externally``
     registers a change a collaborator makes just before a given call runs, and
@@ -504,6 +531,7 @@ class FakeSheetGrid:
         self._counts: dict[str, int] = {}
         self._edits: dict[tuple[str, int], Any] = {}
         self._failures: dict[tuple[str, int], BaseException] = {}
+        self._at = 0
 
     # -- test-side access (not recorded as calls) --
 
@@ -824,12 +852,15 @@ class FakeSheetGrid:
         requests = kwargs["body"]["requests"]
         if not requests:
             raise http_error(400, "Must specify at least one request.")
-        replies = self._atomically(lambda: [self._apply(r) for r in requests])
+        replies = self._atomically(
+            lambda: [self._apply(r, at) for at, r in enumerate(requests)]
+        )
         return {"spreadsheetId": kwargs["spreadsheetId"], "replies": replies}
 
-    def _apply(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _apply(self, request: dict[str, Any], at: int) -> dict[str, Any]:
         (kind,) = request
         body = request[kind]
+        self._at = at  # the request's place in its batch, which a refusal names
         handler = getattr(self, f"_req_{kind}", None)
         if handler is None:
             raise http_error(400, f"unsupported request: {kind}")
@@ -1006,8 +1037,17 @@ class FakeSheetGrid:
         r1, r2 = span.get("startRowIndex", 0), span.get("endRowIndex", tab.row_count)
         c1 = span.get("startColumnIndex", 0)
         c2 = span.get("endColumnIndex", tab.column_count)
-        if not (0 <= r1 < r2 <= tab.row_count and 0 <= c1 < c2 <= tab.column_count):
-            raise http_error(400, f"repeatCell: range {span} is outside the grid")
+        # The API refuses a range that starts past the grid, and takes one
+        # that starts inside it and ends past it, or holds no cell.
+        inside = 0 <= r1 < tab.row_count and 0 <= c1 < tab.column_count
+        if not (inside and r1 <= r2 and c1 <= c2):
+            raise http_error(
+                400,
+                f"Invalid requests[{self._at}].repeatCell: Range "
+                f"({_shown_span(tab.title, span)}) exceeds grid limits. Max rows: "
+                f"{tab.row_count}, max columns: {tab.column_count}",
+            )
+        r2, c2 = min(r2, tab.row_count), min(c2, tab.column_count)
         cell = body.get("cell", {})
         if _LINK in named and _RUNS in named:
             # The API drops a link sent in the request that sets the runs.
