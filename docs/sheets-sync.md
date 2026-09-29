@@ -1953,6 +1953,32 @@ local file, once, and the two sides agree from then on. A run that adds or
 deletes columns merges again after doing so, and calls the transform again,
 so it must also return the same rows for the same input.
 
+### A stock transform
+
+`gdrives.sheets.transforms:trim_cells` does the cleaning above, so a caller
+need not write it. It strips each cell and collapses each run of whitespace
+inside a line to one space, keeping the line breaks of a cell that holds
+several lines. It does to every cell what the merge does to a key, line by line
+(`normalize_key`, the function `row_key` uses), and a key cell comes out with
+the key it went in with. Name it in a config, for a tab or as a target's
+default, as `"hooks": {"transform": "gdrives.sheets.transforms:trim_cells"}`
+(see [hooks in the config](#hooks-in-the-config)), or pass it in code as
+`transform=trim_cells`, from `gdrives.sheets`.
+
+It differs from `row_key` in one respect: a key folds a line break into a
+space, and a cell does not, since collapsing the lines of a note would change
+what it says. A carriage return counts as whitespace, so `\r\n` becomes `\n`,
+and a break at either end of a cell is stripped with the rest. It takes the
+tab's title as an optional second argument and ignores it, so it also serves
+`pull_all_tabs`.
+
+**What it costs**: whitespace a collaborator typed stays on the sheet and is
+never pushed away. The transform cleans the sheet's side of the merge only, so
+a cell that differs from the local side and the base only by spacing is in
+sync, and nothing is written to the sheet to tidy it. The local file and the
+base hold the trimmed text. If the spacing matters on the sheet itself, tidy it with a script of
+your own.
+
 ### Hooks in the config
 
 **Running a command on a config runs the functions it names.** A `hooks`

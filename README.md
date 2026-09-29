@@ -484,6 +484,13 @@ The module is found as `import` finds it, never beside the config, and every
 name is checked before the first request. See
 [hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
 
+`gdrives.sheets.transforms:trim_cells` is a stock `transform` for the cleaning
+most sheets need: it strips each cell and collapses runs of whitespace inside
+a line, keeping line breaks. Name it in `hooks`, or pass `transform=trim_cells`.
+Whitespace a collaborator typed stays on the sheet, since only the sheet's side
+of the merge is cleaned. See
+[a stock transform](docs/sheets-sync.md#a-stock-transform).
+
 A target's `defaults` object gives `link_urls`, `strict_schema`, `newline`,
 `render`, and `blank_keys` to every tab that does not set its own, and skips a
 tab it would contradict (a `link_urls` default on a pull tab, say). See
