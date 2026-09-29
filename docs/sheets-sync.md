@@ -392,6 +392,17 @@ after values. A tab is reported `in sync` only when nothing is written and
 nothing is left for a person. A value that came from the sheet or a file is
 shown with control characters escaped, so it cannot drive the terminal.
 
+A preview that `--apply` would change ends, on stderr, with `Preview only;
+rerun with --apply to write.` Stdout stays the report. The hint is left out
+after an apply, after a preview with nothing to write, and after a preview
+whose tabs are all left to a person or refused, since applying those writes
+nothing. `TabReport.pending` and `SyncReport.pending` give the same answer
+to a caller: True when a preview found a cell to write, a tab to create or
+give a header, a column to add or delete, a first sync's base to save, or a
+pull or push whose target differs. A preview whose only change is a column is
+pending. A tab that stopped on an error or found problems is not, and neither
+is the report of a run that applied.
+
 ### Where new rows go
 
 New rows for the sheet go directly after the last row holding a value in any
@@ -1344,6 +1355,34 @@ print(format_report(report))
 raise SystemExit(report.exit_code)
 ```
 
+`spreadsheet_id` may be None, and is then the target's own, when the config
+names the spreadsheet by URL or ID: `run_target(service, None, target, "sync")`.
+A Drive path is refused with a message that names `resolve_file_id`, since
+resolving one needs a Drive service and the drive cache. `target.spreadsheet_id`
+gives the same value to the other calls.
+
+`format_report` takes the report of one tab as well, and `TabReport.exit_code`
+is the code a run of only that tab exits with, so a caller of `pull_tab` or
+`push_rows` prints and exits as the commands do:
+
+```python
+import sys
+
+from gdrives.sheets import format_report, push_rows
+
+one = push_rows(
+    service,
+    "<spreadsheet-id>",
+    "Members",
+    ["member_id", "name"],
+    [{"member_id": "m1", "name": "Ada"}],
+    key=["member_id"],
+)
+print(format_report(one))
+if one.pending:
+    print("Preview only; rerun with apply=True to write.", file=sys.stderr)
+```
+
 `plan_tab` and `apply_tab` split a sync of one tab into its read-and-merge and
 its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
 The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
@@ -1464,7 +1503,8 @@ last `HttpError` is raised as it was, so error handling around the call needs
 no change.
 
 The waits are silent in the library. `retry_notices` reports them to a
-callback, for every call inside its block:
+callback, for every call inside its block, and with no callback it prints the
+message the commands print (`print_retry`) to stderr:
 
 ```python
 from gdrives.sheets import pull_values, retry_notices
@@ -1480,6 +1520,10 @@ def say(notice):
 with retry_notices(say):
     values = pull_values(service, "<spreadsheet-id>", "'Members'!A1:C")
 ```
+
+`with retry_notices():` alone gives the commands' wording, `Sheets API returned
+429; retrying in 1s (attempt 2 of 5)`, and `print_retry` is that function, for a
+caller that wraps it or passes it as `on_retry`.
 
 `with_retry` is the same retry for a call of your own, such as a request the
 library has no wrapper for.

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `TabReport.pending` and `SyncReport.pending` say whether `--apply` would write anything: a cell to push, fold, or add, a tab to create or give a header row, a column to add or delete, a first sync's base to save, or a pull or push whose target differs. A preview whose only change is a column is pending. A report of a run that applied, and one of a tab that stopped on an error or found problems, has nothing pending.
+- `format_report` takes the `TabReport` that `pull_tab`, `push_tab`, and `push_rows` return as well as a `SyncReport`, and renders it as the block a run of that tab would; the output for a `SyncReport` is unchanged. `TabReport.exit_code` was already the rule `SyncReport.exit_code` takes the worst of, and a test now holds the two to the same answer for a run of one tab.
+- `print_retry` in `gdrives.sheets` is the message the commands print when a call is retried, and `retry_notices()` with no callback uses it, so a caller gets the same wording on stderr with one line.
+- `run_target` takes `None` for `spreadsheet_id` and then uses `Target.spreadsheet_id`, the ID a target's URL or bare ID gives. A Drive path is refused with a message naming `resolve_file_id`, since resolving one needs a Drive service and the drive cache. `gdrives.resolve.direct_file_id` is the one place that tells the three forms apart, and `resolve_file_id` uses it.
+
+### Changed
+
+- `sheets-sync`, `sheets-pull`, and `sheets-push` print `Preview only; rerun with --apply to write.` to stderr after a preview that `--apply` would change. Stdout is still the report alone, and nothing is added after an apply, after a preview with nothing to write, or after one whose tabs are all refused or left to a person.
+
 ## [0.14.0] - 2026-09-28
 
 ### Added
