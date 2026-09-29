@@ -1,5 +1,6 @@
 """Tests for gdrives.auth — credential discovery and the fallback chain."""
 
+import dataclasses
 import json
 import os
 import stat
@@ -1315,11 +1316,7 @@ class TestAnnounceCredentials:
         assert capsys.readouterr() == ("", line)
         auth.announce_credentials(always=True)
         assert capsys.readouterr() == ("", line)
-        assert (
-            str(info) in line
-            and str(info)
-            == auth.credential_line(info)[12 : -len(f" ({auth.FALLBACK_REASON})")]
-        )
+        assert str(info) == str(dataclasses.replace(info, consent_skipped=False))
 
     def test_the_reason_reads_as_the_plan_words_it(self):
         info = auth.CredentialInfo(
