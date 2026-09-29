@@ -124,7 +124,9 @@ from gdrives.sheets.config import (
     parse_config,
 )
 from gdrives.sheets.create import (
+    SOURCE_MIMES,
     SPREADSHEET_MIME,
+    check_source,
     check_tabs,
     create_spreadsheet,
     name_tabs,
@@ -329,6 +331,7 @@ __all__ = [
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
+    "SOURCE_MIMES",
     "SPREADSHEET_MIME",
     "STAGES",
     "STRICT_TYPES",
@@ -361,6 +364,7 @@ __all__ = [
     "build_formula_rule",
     "cell_problem",
     "check_blank_keys",
+    "check_source",
     "check_tabs",
     "clear_link_format",
     "clear_values",

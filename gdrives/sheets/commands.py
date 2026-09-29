@@ -10,12 +10,14 @@ import functools
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from gdrives.local import escape_formula, printable, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
 from gdrives.sheets.config import ConfigError, Target, find_config, load_config
 from gdrives.sheets.create import (
+    check_source,
     check_tabs,
     create_spreadsheet,
     name_tabs,
@@ -270,12 +272,23 @@ def run_set(
     )
 
 
-def _describe_new(title: str, folder: dict[str, Any], tabs: Sequence[str]) -> str:
-    """Phrase a spreadsheet's creation for the dry run and the result message."""
+def _describe_new(
+    title: str,
+    folder: dict[str, Any],
+    tabs: Sequence[str],
+    source: tuple[Path, int] | None = None,
+) -> str:
+    """Phrase a spreadsheet's creation for the dry run and the result message.
+
+    ``source`` is the workbook it is made from, and that file's size.
+    """
     text = (
         f"create spreadsheet '{printable(title)}' in "
         f"'{printable(folder['name'])}' ({folder['id']})"
     )
+    if source is not None:
+        path, size = source
+        text += f" from '{printable(str(path))}' ({size} bytes)"
     if tabs:
         text += f" with tabs: {', '.join(printable(tab) for tab in tabs)}"
     return text
@@ -283,11 +296,12 @@ def _describe_new(title: str, folder: dict[str, Any], tabs: Sequence[str]) -> st
 
 @_noticed
 def run_create(
-    title: str,
+    title: str | None = None,
     *,
     folder: str | None = None,
     folder_id: str | None = None,
     tabs: Sequence[str] = (),
+    source: str | None = None,
     dry_run: bool = False,
 ) -> None:
     """Create a native spreadsheet in a folder, printing its URL.
@@ -297,6 +311,11 @@ def run_create(
     noted on stderr and is no obstacle, since Drive permits duplicates. The
     URL goes to stdout and the ID to stderr. ``dry_run`` reads and prints,
     on the read-only scope, and creates nothing.
+
+    ``source`` is a local ``.xlsx`` or ``.csv`` file that Drive converts into
+    the spreadsheet; ``title`` is then the file's stem by default, and is
+    required otherwise. The workbook names its own tabs, so ``tabs`` is
+    refused with it.
     """
     from gdrives.auth import (
         DRIVE_WRITE_SCOPES,
@@ -306,6 +325,10 @@ def run_create(
     from gdrives.files import find_named, get_folder
     from gdrives.resolve import resolve_path
 
+    if title is None:
+        if source is None:
+            raise ValueError("--title is required unless --from is given")
+        title = Path(source).stem
     if not title.strip():
         raise ValueError("--title must not be empty")
     if folder is not None and folder_id is not None:
@@ -314,6 +337,14 @@ def run_create(
         if value is not None and not value.strip():
             raise ValueError(f"{label} must not be empty")
     titles = check_tabs(tabs)
+    workbook: tuple[Path, int] | None = None
+    if source is not None:
+        if titles:
+            raise ValueError(
+                "--from names its own tabs; pass --from or --tab, not both"
+            )
+        path, _ = check_source(source)
+        workbook = (path, path.stat().st_size)
 
     # A dry run only reads, so it keeps the read-only default scope.
     drive = build_drive_service(None if dry_run else DRIVE_WRITE_SCOPES)
@@ -331,15 +362,23 @@ def run_create(
             file=sys.stderr,
         )
 
-    action = _describe_new(title, parent, titles)
+    action = _describe_new(title, parent, titles, workbook)
     if dry_run:
         print(f"Would {action}")
         return
 
     # The drive scope serves the Sheets API too, so one consent covers both.
     sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
-    spreadsheet_id = create_spreadsheet(drive, sheets, title, folder_id=parent["id"])
+    spreadsheet_id = create_spreadsheet(
+        drive,
+        sheets,
+        title,
+        folder_id=parent["id"],
+        source=source,
+    )
     # Said before the tabs are named, so a failure there still names the file.
+    # A converted workbook has no tabs to name, and a failed conversion names
+    # the file in its own error.
     print(f"Spreadsheet ID: {spreadsheet_id}", file=sys.stderr)
     name_tabs(sheets, spreadsheet_id, titles)
     print(f"Done: {action}", file=sys.stderr)

@@ -1482,7 +1482,8 @@ class FakeDriveFiles:
     bytes, and each such request is kept in ``requests``, where ``retries``
     holds the ``num_retries`` of each chunk; with ``corrupt`` set, the stored
     content loses its last byte, so a read-back finds a file that is not the
-    one sent. Every call is recorded
+    one sent; with ``converts`` off, a create that names a native type stores
+    the upload as it came instead of converting it. Every call is recorded
     in ``calls``, and a request does nothing until it is executed. ``root``
     is the ID of the file the alias ``root`` names.
     """
@@ -1498,6 +1499,7 @@ class FakeDriveFiles:
         self.root = root
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.corrupt = False
+        self.converts = True
         self.pages = pages
         self.requests: list[_DriveRequest] = []
 
@@ -1565,7 +1567,11 @@ class FakeDriveFiles:
         item["id"] = f"new{len(self.named('create'))}"
         media = kwargs.get("media_body")
         if media is not None:
-            item["mimeType"] = media.mimetype()
+            # A native type in the metadata is a conversion: Drive keeps it,
+            # unless ``converts`` is off, when the upload is stored as it came.
+            if not self.converts:
+                item["mimeType"] = media.mimetype()
+            item.setdefault("mimeType", media.mimetype())
             item["content"] = self._content(media)
         self.items[item["id"]] = item
         return self._shown(item)

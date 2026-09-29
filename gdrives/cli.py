@@ -546,7 +546,13 @@ def sheets_widths(
 
 @app.command(name="sheets-create")
 def sheets_create(
-    title: Annotated[str, typer.Option("--title", help="Title of the new spreadsheet")],
+    title: Annotated[
+        str | None,
+        typer.Option(
+            "--title",
+            help="Title of the new spreadsheet (default with --from: the file's stem)",
+        ),
+    ] = None,
     folder: Annotated[
         str | None,
         typer.Option(
@@ -561,6 +567,13 @@ def sheets_create(
         list[str] | None,
         typer.Option("--tab", help="A tab to name, in order (repeatable)"),
     ] = None,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Local .xlsx or .csv file that Drive converts (names its own tabs)",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Print what would be created, create nothing"),
@@ -570,14 +583,27 @@ def sheets_create(
 
     Prints the new spreadsheet's URL. With --tab, its one tab is renamed to
     the first title and the others are added after it; with none, the tab
-    is left as it is. A file of the same name in the folder is noted, not
-    refused.
+    is left as it is. With --from, a local .xlsx or .csv file is uploaded and
+    converted by Drive, --title defaults to the file's stem, and --tab is
+    refused. A file of the same name in the folder is noted, not refused.
     """
     from gdrives.sheets import run_create
 
+    if title is None and source is None:
+        # --title is required unless --from stands in for it, which Typer's
+        # own required flag cannot say.
+        raise typer.BadParameter(
+            "required unless --from is given", param_hint="'--title'"
+        )
+
     with _cli_errors():
         run_create(
-            title, folder=folder, folder_id=folder_id, tabs=tab or (), dry_run=dry_run
+            title,
+            folder=folder,
+            folder_id=folder_id,
+            tabs=tab or (),
+            source=source,
+            dry_run=dry_run,
         )
 
 

@@ -1095,8 +1095,31 @@ class TestSheetsCreate:
             "folder": "My Drive/reports",
             "folder_id": None,
             "tabs": ["Members", "Dues"],
+            "source": None,
             "dry_run": True,
         }
+
+    def test_from_stands_in_for_the_title(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.sheets.run_create",
+            lambda title, **options: rec.update(t=title, **options),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["sheets-create", "--from", "book.xlsx", "--folder-id", "D"]
+        )
+        assert result.exit_code == 0
+        assert rec["t"] is None
+        assert rec["source"] == "book.xlsx"
+
+    def test_no_title_and_no_from_is_a_usage_error(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("ran")
+
+        monkeypatch.setattr("gdrives.sheets.run_create", boom)
+        result = CliRunner().invoke(cli.app, ["sheets-create", "--folder-id", "D"])
+        assert result.exit_code == 2
+        assert "--title" in result.output
 
     def test_no_tab_is_no_tabs(self, monkeypatch):
         rec = {}

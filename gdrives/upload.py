@@ -228,7 +228,16 @@ def describe(plan: UploadPlan) -> str:
     return f"create '{name}'{where}: {size}"
 
 
-def _send(request: Any) -> DriveFile:
+def resumable_media(path: Path, mime_type: str) -> Any:
+    """The media body of a resumable upload of ``path``, in ``UPLOAD_CHUNK`` chunks."""
+    from googleapiclient.http import MediaFileUpload
+
+    return MediaFileUpload(
+        str(path), mimetype=mime_type, chunksize=UPLOAD_CHUNK, resumable=True
+    )
+
+
+def send_upload(request: Any) -> DriveFile:
     """Run a resumable upload request to its end, chunk by chunk.
 
     Each chunk is retried, which is what lets an upload outlive a dropped
@@ -244,15 +253,11 @@ def _send(request: Any) -> DriveFile:
 def apply_upload(service: Service, path: Path, plan: UploadPlan) -> DriveFile:
     """Send the upload ``plan`` describes and return the file's metadata.
 
-    The upload is resumable and each chunk is retried (:func:`_send`), so a
+    The upload is resumable and each chunk is retried (:func:`send_upload`), so a
     large file survives a dropped connection. A replace sends no metadata: the
     file keeps its name and its parents.
     """
-    from googleapiclient.http import MediaFileUpload
-
-    media = MediaFileUpload(
-        str(path), mimetype=plan.mime_type, chunksize=UPLOAD_CHUNK, resumable=True
-    )
+    media = resumable_media(path, plan.mime_type)
     kwargs: dict[str, Any] = {
         "media_body": media,
         "fields": UPLOAD_FIELDS,
@@ -265,7 +270,7 @@ def apply_upload(service: Service, path: Path, plan: UploadPlan) -> DriveFile:
         if plan.folder is not None:
             body["parents"] = [plan.folder["id"]]
         request = service.files().create(body=body, **kwargs)
-    return _send(request)
+    return send_upload(request)
 
 
 def verify(service: Service, file_id: str, plan: UploadPlan) -> DriveFile:
