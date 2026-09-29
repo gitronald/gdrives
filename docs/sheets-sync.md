@@ -1851,7 +1851,7 @@ When OAuth is configured but no consent could run for lack of a terminal, the
 line ends with the reason, so a write is not made as an unexpected identity:
 
 ```
-Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json) (OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login)
+Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json), since OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login)
 ```
 
 On a preview that waits, the line follows the spreadsheet ID, since the

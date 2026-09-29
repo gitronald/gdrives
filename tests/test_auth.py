@@ -1311,7 +1311,7 @@ class TestAnnounceCredentials:
     )
     def test_a_skipped_consent_is_said_with_the_reason(self, described, capsys, info):
         described.info = info
-        line = f"Credential: {info} ({auth.FALLBACK_REASON})\n"
+        line = f"Credential: {info}, since {auth._FALLBACK_REASON}\n"
         auth.announce_credentials()
         assert capsys.readouterr() == ("", line)
         auth.announce_credentials(always=True)
@@ -1322,10 +1322,22 @@ class TestAnnounceCredentials:
         info = auth.CredentialInfo(
             kind="service_account", identity="sa@example.com", consent_skipped=True
         )
-        assert auth.credential_line(info).endswith(
-            "(OAuth is configured, but no cached token serves these scopes and "
-            "there is no terminal for a consent; run gdrives login)"
+        assert auth.credential_line(info) == (
+            f"Credential: {info}, since OAuth is "
+            "configured, but no cached token serves these scopes and there is "
+            "no terminal for a consent; run gdrives login"
         )
+
+    def test_a_key_path_and_the_reason_are_not_two_parentheses(self):
+        info = auth.CredentialInfo(
+            kind="service_account",
+            identity="sa@example.com",
+            source=Path("key.json"),
+            consent_skipped=True,
+        )
+        line = auth.credential_line(info)
+        assert line.count("(") == line.count(")") == 1
+        assert line.endswith("run gdrives login")
 
     def test_a_skipped_consent_is_said_once_inside_the_block(self, described, capsys):
         described.info = info = auth.CredentialInfo(kind="adc", consent_skipped=True)
@@ -1349,7 +1361,7 @@ class TestAnnounceCredentials:
         auth.announce_credentials()
         err = capsys.readouterr().err
         assert err.startswith("Credential: service account a@b.c (key ")
-        assert err.endswith(f"({auth.FALLBACK_REASON})\n")
+        assert err.endswith(f"), since {auth._FALLBACK_REASON}\n")
 
     def test_a_library_caller_hears_nothing_from_a_builder(self, described, capsys):
         described.info = auth.CredentialInfo(kind="oauth", consent=True)

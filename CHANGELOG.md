@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `sheets-sync`, `sheets-pull`, and `sheets-push` print `Preview only; rerun with --apply to write.` to stderr after a preview that `--apply` would change. The hint reads `to save the base.` when the base is all that would be written, where the report says `in sync: nothing to write`. Stdout is still the report alone, and nothing is added after an apply, after a preview with nothing to write, or after one whose tabs are all refused or left to a person.
-- The credential line is printed when OAuth is configured, no cached token serves, and there is no terminal for a consent, so the run goes on as a service account or ADC. It ends with the reason, `(OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login)`, on a `--apply` too. Nothing is printed when OAuth is not configured, and `str(CredentialInfo)` is unchanged. `gdrives.auth.credential_line(info)` returns the line for a caller printing it by hand.
+- The credential line is printed when OAuth is configured, no cached token serves, and there is no terminal for a consent, so the run goes on as a service account or ADC. It ends with the reason, `, since OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login`, which keeps the line one sentence after a service account's `(key <path>)`, on a `--apply` too. Nothing is printed when OAuth is not configured, and `str(CredentialInfo)` is unchanged. `gdrives.auth.credential_line(info)` returns the line for a caller printing it by hand.
 
 ## [0.14.0] - 2026-09-28
 

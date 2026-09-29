@@ -660,7 +660,7 @@ def describe_credentials(
     return found("adc", consent_skipped=consent_skipped)
 
 
-FALLBACK_REASON = (
+_FALLBACK_REASON = (
     "OAuth is configured, but no cached token serves these scopes and there "
     "is no terminal for a consent; run gdrives login"
 )
@@ -669,15 +669,16 @@ FALLBACK_REASON = (
 def credential_line(info: CredentialInfo) -> str:
     """The line announce_credentials prints for ``info``, without a newline.
 
-    ``Credential: `` and ``str(info)``, followed by the reason in parentheses
+    ``Credential: `` and ``str(info)``, followed by ``, since`` and the reason
     when ``info.consent_skipped`` is True (a service account or ADC used
-    because OAuth is configured and no consent could run). ``str(info)`` itself
-    is unchanged, so a caller printing describe_credentials() by hand gets the
+    because OAuth is configured and no consent could run), so the line stays
+    one sentence after the parenthesised key path. ``str(info)`` itself is
+    unchanged, so a caller printing describe_credentials() by hand gets the
     same text by calling this.
     """
     line = f"Credential: {info}"
     if info.consent_skipped:
-        line += f" ({FALLBACK_REASON})"
+        line += f", since {_FALLBACK_REASON}"
     return line
 
 
