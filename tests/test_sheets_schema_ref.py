@@ -13,6 +13,7 @@ import itertools
 import json
 import sys
 import textwrap
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -494,6 +495,19 @@ class TestTheSameChecks:
             p.removeprefix(load_prefix) for p in at_load
         ]
 
+    def test_a_referenced_schema_takes_allowed_dates(self, tmp_path, module):
+        name = module(
+            "from datetime import date, datetime\n"
+            "from gdrives.sheets import ColumnSchema\n"
+            "SCHEMA = {\n"
+            "    'joined': ColumnSchema('date', allowed=[date(2026, 1, 1)]),\n"
+            "    'seen': ColumnSchema('datetime', allowed=[datetime(2026, 1, 1, 9)]),\n"
+            "}"
+        )
+        target = target_of(tmp_path, {"T": tab(local="m.csv", schema=f"{name}:SCHEMA")})
+        (resolved,) = resolve_target(target).tabs
+        assert resolved.schema["joined"].allowed == [date(2026, 1, 1)]
+
     @pytest.mark.parametrize("strict", [True, "local"])
     def test_strict_schema_lets_a_schema_name_a_column_outside_columns(
         self, tmp_path, module, strict
@@ -530,6 +544,39 @@ class TestARun:
             {"member_id": "m1", "name": "Ada", "dues": 10},
             {"member_id": "m2", "name": "Bo", "dues": 20},
         ]
+
+    @pytest.mark.parametrize(
+        ("joined", "problems"),
+        [
+            ("2026-01-01", []),
+            (
+                "2026-02-01",
+                [
+                    "Members (local): key ('m1',), column 'joined': "
+                    "'2026-02-01' is not one of ['2026-01-01']"
+                ],
+            ),
+        ],
+    )
+    def test_an_allowed_date_of_a_referenced_schema_is_checked(
+        self, tmp_path, module, joined, problems
+    ):
+        name = module(
+            "from datetime import date\n"
+            "from gdrives.sheets import ColumnSchema\n"
+            "SCHEMA = {'joined': ColumnSchema('date', allowed=[date(2026, 1, 1)])}"
+        )
+        header = ["member_id", "joined"]
+        write_values_csv(tmp_path / "m.csv", [header, ["m1", joined]])
+        tabs = {"Members": tab(schema=f"{name}:SCHEMA")}
+        report = run_target(
+            FakeSheetGrid({"Members": [header, ["m1", joined]]}),
+            "S",
+            target_of(tmp_path, tabs),
+            "sync",
+        )
+        (members,) = report.tabs
+        assert members.problems == problems
 
     def test_a_base_file_is_typed_by_the_referenced_schema(self, tmp_path, module):
         name = module(MEMBERS)

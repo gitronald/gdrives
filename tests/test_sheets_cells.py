@@ -263,6 +263,28 @@ class TestCellProblem:
         assert cell_problem("", ColumnSchema(type="int")) is None
         assert cell_problem("7", ColumnSchema(type="int", allowed=[7])) is None
 
+    def test_an_allowed_date_is_its_iso_form(self):
+        schema = ColumnSchema(type="date", allowed=[date(2026, 1, 1), "2026-02-01"])
+        assert cell_problem("2026-01-01", schema) is None
+        assert cell_problem("2026-02-01", schema) is None
+        assert cell_problem("2026-03-01", schema) == (
+            "'2026-03-01' is not one of ['2026-01-01', '2026-02-01']"
+        )
+
+    @pytest.mark.parametrize(
+        "text", ["2026-01-01 09:00:00", "2026-01-01 09:00:00.000", "2026-01-01T09:00"]
+    )
+    def test_an_allowed_datetime_matches_every_spelling_of_the_moment(self, text):
+        # A serial read spells the moment with milliseconds; to_cell without.
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        assert cell_problem(text, schema) is None
+
+    def test_an_allowed_datetime_rejects_another_moment(self):
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        assert cell_problem("2026-01-01 09:00:00.500", schema) == (
+            "'2026-01-01 09:00:00.500' is not one of ['2026-01-01 09:00:00']"
+        )
+
     @pytest.mark.parametrize("text", ["true", "True"])
     def test_a_respelled_bool_is_a_problem_only_under_strict(self, text):
         assert cell_problem(text, ColumnSchema(type="bool")) is None

@@ -2539,6 +2539,14 @@ it lacks, a value that is neither a mapping nor a function, a function that
 raises or returns something else, a column name that is not a string, and a
 value that is not a `ColumnSchema` are problems too.
 
+A schema written in Python may hold what a JSON file cannot. A column's
+`allowed` may name `date` and `datetime` values, as in
+`ColumnSchema("date", allowed=[date(2026, 1, 1)])`: each is compared as the
+canonical cell string of its value (`2026-01-01`). In a `date` or `datetime`
+column the cell and the allowed values are compared as the same moment, so a
+`datetime` cell read from its serial, `2026-01-01 09:00:00.000`, is allowed by
+`datetime(2026, 1, 1, 9)`.
+
 From code, `resolve_target(target)` resolves every tab's reference and checks
 every hook name the same way, and returns the target with each tab's
 `schema` filled; `resolve_tab(tab)` does it for one tab. `run_target`,

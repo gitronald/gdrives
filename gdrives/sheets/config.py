@@ -28,6 +28,7 @@ import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -508,6 +509,15 @@ def _is_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool))
 
 
+def _is_allowed_value(value: Any) -> bool:
+    """True for a value ``allowed`` may hold: a scalar, or a date or datetime.
+
+    JSON holds no dates, so a config's inline schema only ever has scalars; a
+    ``ColumnSchema`` built in code and named by ``schema`` may hold dates.
+    """
+    return _is_scalar(value) or isinstance(value, date)
+
+
 def _is_hook_name(value: Any) -> bool:
     """True for a string of the form ``module:function``, dotted module allowed."""
     if not isinstance(value, str) or value.count(":") != 1:
@@ -565,7 +575,7 @@ def _column_problems(
     if allowed is not None and not (
         isinstance(allowed, (list, tuple, set, frozenset))
         and allowed
-        and all(_is_scalar(value) for value in allowed)
+        and all(_is_allowed_value(value) for value in allowed)
     ):
         found.append(f"{at}: 'allowed' must be a list of one or more values")
     if not isinstance(present, bool):

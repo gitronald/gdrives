@@ -561,6 +561,22 @@ class Problem:
         return f"{self.tab}: {where}, column {self.column!r}: {self.reason}"
 
 
+def _is_allowed(text: str, allowed: Sequence[str], type_: ColumnType) -> bool:
+    """True when ``text`` is one of the ``allowed`` cell strings.
+
+    In a ``date`` or ``datetime`` column the two sides are compared as
+    :func:`normalize_cell` writes them, since one moment has more than one
+    spelling: a ``datetime`` read from its serial arrives as
+    ``2026-01-01 09:00:00.000``, and :func:`to_cell` writes the same moment as
+    ``2026-01-01 09:00:00``. Other columns compare the text as it is.
+    """
+    if text in allowed:
+        return True
+    if column_type(type_) not in SERIAL_TYPES:
+        return False
+    return normalize_cell(text, type_) in {normalize_cell(a, type_) for a in allowed}
+
+
 def cell_problem(text: str, schema: ColumnSchema) -> str | None:
     """Why ``text`` does not fit ``schema``, or None when it does.
 
@@ -585,7 +601,7 @@ def cell_problem(text: str, schema: ColumnSchema) -> str | None:
             return f"{text!r} is not YYYY-MM-DD, and the column is strict"
     if schema.allowed is not None:
         allowed = [to_cell(value) for value in schema.allowed]
-        if text not in allowed:
+        if not _is_allowed(text, allowed, schema.type):
             return f"{text!r} is not one of {allowed}"
     if schema.pattern is not None and not _compiled(schema.pattern).fullmatch(text):
         return f"{text!r} does not match the pattern {schema.pattern!r}"
