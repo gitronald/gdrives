@@ -16,6 +16,7 @@ from gdrives.sheets import (
     CONFIG_NAME,
     Cell,
     HeldCell,
+    LinkSweep,
     MemoryStore,
     MergePlan,
     NewRow,
@@ -23,10 +24,13 @@ from gdrives.sheets import (
     RowFlag,
     SyncReport,
     TabConfig,
+    TabLinks,
     TabReport,
     Target,
+    UrlLinkProblem,
     format_report,
     parse_config,
+    pending_hint,
     pull_tab,
     push_rows,
     run_target,
@@ -168,6 +172,53 @@ class TestBaseOnly:
         assert SyncReport(tabs=[base, busy]).base_only is False
         assert SyncReport(tabs=[quiet]).base_only is False
         assert SyncReport().base_only is False
+
+
+class TestPendingHint:
+    """The line the commands print after a preview, for a caller's own printing."""
+
+    WRITE = "Preview only; rerun with --apply to write."
+    BASE = "Preview only; rerun with --apply to save the base."
+
+    @pytest.mark.parametrize(
+        ("tab", "hint"),
+        [
+            (report(plan=MergePlan(pushes=[CELL])), WRITE),
+            (report(replacement=Replacement(1, 1)), WRITE),
+            (report(plan=MergePlan(), stale_base=True), BASE),
+            (report(plan=MergePlan(pushes=[CELL]), stale_base=True), WRITE),
+            (report(plan=MergePlan()), None),
+            (report(plan=MergePlan(pushes=[CELL]), apply=True), None),
+            (report(plan=MergePlan(pushes=[CELL]), problems=["bad"]), None),
+            (report(plan=MergePlan(pushes=[CELL]), error="boom"), None),
+        ],
+    )
+    def test_a_tab_and_a_run_of_it_read_alike(self, tab, hint):
+        assert pending_hint(tab) == hint
+        assert pending_hint(SyncReport(tabs=[tab])) == hint
+
+    def test_a_run_writes_when_any_tab_does(self):
+        base = report(plan=MergePlan(), stale_base=True)
+        busy = report(plan=MergePlan(pushes=[CELL]))
+        assert pending_hint(SyncReport(tabs=[base, busy])) == self.WRITE
+        assert pending_hint(SyncReport()) is None
+
+    def test_a_sweep_and_a_tab_of_it(self):
+        found = UrlLinkProblem(2, "link", "https://example.com/a", ("no link",))
+        left = TabLinks("T", "#1155cc", problems=(found,))
+        fixed = TabLinks("T", "#1155cc", problems=(found,), applied=True)
+        assert pending_hint(left) == self.WRITE
+        assert pending_hint(LinkSweep((fixed, left))) == self.WRITE
+        assert pending_hint(fixed) is None
+        assert pending_hint(LinkSweep((fixed,), apply=True)) is None
+
+    def test_it_is_the_line_a_command_prints(self, capsys):
+        from gdrives.sheets.commands import _hint_pending
+
+        run = SyncReport(tabs=[report(plan=MergePlan(), stale_base=True)])
+        _hint_pending(run)
+        assert capsys.readouterr().err == f"{TestPendingHint.BASE}\n"
+        assert pending_hint(run) == TestPendingHint.BASE
 
 
 class TestPendingOfRuns:

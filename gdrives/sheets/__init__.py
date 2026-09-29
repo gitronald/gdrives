@@ -46,7 +46,7 @@ pull_values`` works regardless of which submodule defines a name:
   over a spreadsheet's tabs
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
-  ``run_target``) and report it
+  ``run_target``) and report it (``format_report``, ``pending_hint``)
 - ``transforms``: stock ``transform`` hooks (``trim_cells``)
 - ``commands``: the ``run_*`` CLI entry points
 """
@@ -226,6 +226,7 @@ from gdrives.sheets.sync import (
     TabReport,
     apply_tab,
     format_report,
+    pending_hint,
     plan_tab,
     pull_all_tabs,
     pull_records,
@@ -421,6 +422,7 @@ __all__ = [
     "parse_config",
     "parse_pairs",
     "parse_tab",
+    "pending_hint",
     "place_columns",
     "plan_tab",
     "print_retry",

@@ -97,6 +97,7 @@ from gdrives.sheets.hooks import (
     resolve_target,
     tab_hooks,
 )
+from gdrives.sheets.links import LinkSweep, TabLinks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
@@ -2510,6 +2511,24 @@ def run_target(
 
 
 # -- the text report --
+
+
+def pending_hint(report: "SyncReport | TabReport | LinkSweep | TabLinks") -> str | None:
+    """The line that says a preview left something for ``--apply``, or None.
+
+    It is what the commands print to stderr after a preview, for a caller
+    that prints a report itself: ``Preview only; rerun with --apply to
+    write.`` when ``report.pending``, and None when nothing is pending, as
+    after an apply or for a run that stopped on a problem. A sync whose base
+    is all an apply would write (``base_only``) reads ``to save the base.``
+    instead, which :func:`format_report` does not say: its text can end ``in
+    sync: nothing to write``. The line has no line ending.
+    """
+    if not report.pending:
+        return None
+    base_only = isinstance(report, (SyncReport, TabReport)) and report.base_only
+    what = "save the base" if base_only else "write"
+    return f"Preview only; rerun with --apply to {what}."
 
 
 def _q(text: str) -> str:

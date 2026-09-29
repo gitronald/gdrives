@@ -25,7 +25,7 @@ from gdrives.sheets.create import (
 )
 from gdrives.sheets.files import read_values_csv, write_records, write_values_csv
 from gdrives.sheets.hooks import resolve_schemas, resolve_target
-from gdrives.sheets.links import _colors, format_sweep, sweep_url_links
+from gdrives.sheets.links import LinkSweep, _colors, format_sweep, sweep_url_links
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import retry_notices
 from gdrives.sheets.rules import (
@@ -47,6 +47,7 @@ from gdrives.sheets.sync import (
     TabReport,
     _sheet_title,
     format_report,
+    pending_hint,
     pull_all_tabs,
     run_target,
 )
@@ -106,19 +107,15 @@ def _print_report(report: SyncReport) -> int:
     hint on stderr, so stdout stays the report alone.
     """
     print(format_report(report))
-    _hint_pending(report.pending, report.base_only)
+    _hint_pending(report)
     return report.exit_code
 
 
-def _hint_pending(pending: bool, base_only: bool = False) -> None:
-    """Say on stderr that a preview left something for ``--apply`` to write.
-
-    ``base_only`` says the base is all it would write, which the report text
-    does not: it can end ``in sync: nothing to write``.
-    """
-    if pending:
-        what = "save the base" if base_only else "write"
-        print(f"Preview only; rerun with --apply to {what}.", file=sys.stderr)
+def _hint_pending(report: SyncReport | LinkSweep) -> None:
+    """Print :func:`pending_hint` to stderr, when the preview has one."""
+    hint = pending_hint(report)
+    if hint is not None:
+        print(hint, file=sys.stderr)
 
 
 def _resolve_and_report(source: str) -> str:
@@ -952,5 +949,5 @@ def run_links(
         service, spreadsheet_id, titles, color=colors, apply=apply, listing=listing
     )
     print(format_sweep(sweep))
-    _hint_pending(sweep.pending)
+    _hint_pending(sweep)
     return sweep.exit_code
