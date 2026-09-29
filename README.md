@@ -652,6 +652,8 @@ gdrives sheets-create --title "Roster" --folder "My Drive/clubs"  # In a folder,
 gdrives sheets-create --title "Roster" --folder-id <folder-id>    # In a folder, by ID
 gdrives sheets-create --title "Roster" --tab Members --tab Dues   # Name its tabs
 gdrives sheets-create --title "Roster" --folder "My Drive/clubs" --dry-run  # Create nothing
+gdrives sheets-create --from book.xlsx --folder "My Drive/clubs"  # From a local workbook
+gdrives sheets-create --from members.csv --title "Roster" --folder-id <folder-id>
 ```
 
 Creates a native Google Sheet and prints its URL to stdout, and its ID to
@@ -667,6 +669,19 @@ stderr, with the ID of each, and creates the spreadsheet. `--dry-run` reports
 the same and creates nothing, on the read-only scope. A `--folder-id` that
 names a folder in the trash is refused.
 
+`--from` starts the spreadsheet from a local `.xlsx` or `.csv` file (by
+extension, in any case; anything else is refused before a request) instead of
+an empty one. The file is uploaded as the content of the same `files.create`,
+with the spreadsheet MIME type in the metadata, and Drive converts it. The
+upload is the resumable one `upload` makes, with each chunk retried. `--title`
+defaults to the file's stem, and `--tab` is refused, since the workbook names
+its own tabs. `--dry-run` prints the file, its size, and the folder, and
+uploads nothing. A converted file has no size or checksum to compare with the
+local file's, so the read-back checks its type instead: when Drive left the
+upload unconverted, the command fails naming the file's ID, since the file
+exists either way. What Drive makes of a formula, a date, or a merged cell is
+Drive's conversion, and is not something the command controls.
+
 The file is created through the Drive API, since the Sheets API creates in the
 root of My Drive only, so `sheets-create` needs the full `drive` scope, cached
 in `gdrives_token_drive.json`; `spreadsheets` alone cannot place a file in a
@@ -680,6 +695,11 @@ drive = build_drive_service(DRIVE_WRITE_SCOPES)
 sheets = build_sheets_service(DRIVE_WRITE_SCOPES)
 spreadsheet_id = create_spreadsheet(
     drive, sheets, "Roster", folder_id="<folder-id>", tabs=["Members", "Dues"]
+)
+
+# From a local workbook: the file is converted, and names its own tabs
+spreadsheet_id = create_spreadsheet(
+    drive, sheets, "Roster", folder_id="<folder-id>", source="book.xlsx"
 )
 ```
 

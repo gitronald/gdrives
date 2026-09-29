@@ -19,8 +19,8 @@ pull_values`` works regardless of which submodule defines a name:
 - ``match``: keyed row updates (``find_rows``, ``set_by_match``)
 - ``rules``: conditional format rules
 - ``files``: local CSV/TSV grids, and CSV/TSV/JSON record files
-- ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder,
-  and ``name_tabs``
+- ``create``: ``create_spreadsheet``, a native spreadsheet in a Drive folder
+  (empty, or converted from a local workbook), and ``name_tabs``
 - ``config``: the sync config file (``gdrives-sheets.json``), loaded and checked
 - ``hooks``: the hooks and schema references a config names, found when a
   run starts (``resolve_target``, ``resolve_tab``, ``resolve_hooks``,
