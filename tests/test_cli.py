@@ -1145,7 +1145,7 @@ class TestSheetsCreate:
         monkeypatch.setattr("gdrives.sheets.run_create", boom)
         result = CliRunner().invoke(cli.app, ["sheets-create", "--folder-id", "D"])
         assert result.exit_code == 2
-        assert "--title" in result.output
+        assert "--title" in plain(result.output)
 
     def test_no_tab_is_no_tabs(self, monkeypatch):
         rec = {}
