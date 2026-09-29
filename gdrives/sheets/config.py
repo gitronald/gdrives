@@ -199,7 +199,10 @@ class TabConfig:
     ``schema_ref`` names the schema as ``module:attribute`` instead of giving
     it, and contradicts a non-empty ``schema``. The attribute is a mapping of
     column name to :class:`~gdrives.sheets.cells.ColumnSchema`, or a function
-    given the tab's title that returns one. Nothing is imported until a run
+    given the tab's title that returns one. With a key after it,
+    ``module:attribute[key]``, the attribute is a registry: a mapping whose
+    entry of that key is the schema, or a function given the key in place of
+    the title (:func:`schema_ref_parts`). Nothing is imported until a run
     starts (:func:`~gdrives.sheets.hooks.resolve_tab`), which gives the run a
     tab with ``schema`` filled and ``schema_ref`` None. Until then the tab has
     no schema to read: :attr:`types` and :attr:`local_store` raise ValueError,
@@ -269,9 +272,9 @@ class TabConfig:
         if hook_problems:
             raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
         if self.schema_ref is not None:
-            if not _is_hook_name(self.schema_ref):
+            if schema_ref_parts(self.schema_ref) is None:
                 raise ValueError(
-                    f"tab {self.title!r}: 'schema_ref' must be 'module:attribute', "
+                    f"tab {self.title!r}: 'schema_ref' must be {SCHEMA_REF_FORMS}, "
                     f"not {self.schema_ref!r}"
                 )
             if self.schema:
@@ -548,6 +551,30 @@ def _is_hook_name(value: Any) -> bool:
     return function.isidentifier() and all(
         part.isidentifier() for part in module.split(".")
     )
+
+
+# A schema reference: a name, and after it an optional key in brackets.
+_SCHEMA_REF = re.compile(r"(?P<name>[^\[\]]+)(?:\[(?P<key>[^\[\]]+)\])?")
+
+#: The forms a schema reference takes, as a message names them.
+SCHEMA_REF_FORMS = "'module:attribute' or 'module:attribute[key]'"
+
+
+def schema_ref_parts(value: Any) -> tuple[str, str | None] | None:
+    """The ``module:attribute`` and the key of a schema reference, by form alone.
+
+    ``"clubtools.schema:SCHEMAS[members]"`` is ``("clubtools.schema:SCHEMAS",
+    "members")``, and a reference with no key has None for one. The key is the
+    text between the brackets as written: one or more characters, none of
+    them a bracket. Returns None for anything that is not a reference.
+    Imports nothing.
+    """
+    if not isinstance(value, str):
+        return None
+    match = _SCHEMA_REF.fullmatch(value)
+    if match is None or not _is_hook_name(match["name"]):
+        return None
+    return match["name"], match["key"]
 
 
 def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
@@ -1022,12 +1049,12 @@ class _Checker:
         if isinstance(raw_schema, str):
             # A reference is checked by form only; the checks that need its
             # columns run when a run resolves it (hooks.resolve_tab).
-            if _is_hook_name(raw_schema):
+            if schema_ref_parts(raw_schema) is not None:
                 schema_ref = raw_schema
             else:
                 problems.append(
-                    f"{where}: 'schema' must be an object of columns or "
-                    f"'module:attribute', not {raw_schema!r}"
+                    f"{where}: 'schema' must be an object of columns, "
+                    f"{SCHEMA_REF_FORMS}, not {raw_schema!r}"
                 )
         else:
             schema = self._schema(where, raw_schema, columns, strict_schema)

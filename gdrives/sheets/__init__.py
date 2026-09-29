@@ -121,6 +121,7 @@ from gdrives.sheets.config import (
     LOCAL_EXTENSIONS,
     MODES,
     ON_INVALID,
+    SCHEMA_REF_FORMS,
     TARGET_DEFAULTS,
     Config,
     ConfigError,
@@ -129,6 +130,7 @@ from gdrives.sheets.config import (
     find_config,
     load_config,
     parse_config,
+    schema_ref_parts,
 )
 from gdrives.sheets.create import (
     SOURCE_MIMES,
@@ -344,6 +346,7 @@ __all__ = [
     "Replacement",
     "RowFlag",
     "SCHEMA_COLUMNS",
+    "SCHEMA_REF_FORMS",
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
@@ -464,6 +467,7 @@ __all__ = [
     "retry_notices",
     "run_update",
     "run_widths",
+    "schema_ref_parts",
     "serial_to_cell",
     "set_by_match",
     "set_column_widths",
