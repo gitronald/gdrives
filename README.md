@@ -423,7 +423,13 @@ The sheet links a URL as it is written. A `sync` or `push` tab's
 its own text, in that colour, not underlined. `link_urls` never touches the
 cells a person typed or pasted; `sheets-links` sweeps those, over every tab of
 a spreadsheet or the tabs of a target, and with `--apply` fixes them (in
-code, `sweep_url_links` and `format_sweep`). See
+code, `sweep_url_links` and `format_sweep`). To audit a tab,
+`linked_cells(..., detail=True)` also returns each link cell's `text` and
+whether its link is a `HYPERLINK` formula's (`formula`), and `styled_cells`
+finds the cells underlined or coloured as a link is that hold none.
+`clear_link_format(..., style=True)` clears the underline and the text colour
+with the link; a cell whose link comes from a `HYPERLINK` formula loses the
+link and keeps the formula, which then shows its label as plain text. See
 [links](docs/sheets-sync.md#links).
 
 To read a tab into Python instead of a file, `pull_records(service,

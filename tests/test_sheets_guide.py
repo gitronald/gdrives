@@ -95,6 +95,14 @@ PROMISED = {
         "set_url_links",
         "url_link_problems",
     ],
+    "link audit": [
+        "CELL_STYLE_FIELDS",
+        "LINK_COLOR",
+        "LINK_DETAIL_FIELDS",
+        "LINK_STYLE_REASONS",
+        "StyledCell",
+        "styled_cells",
+    ],
     "config hooks": ["HOOKS", "resolve_hooks", "tab_hooks"],
     "report and run seams": ["print_retry"],
     "schema by reference": ["resolve_tab", "resolve_target"],
@@ -134,6 +142,7 @@ PROMISED_ATTRIBUTES = [
     (Target, ["spreadsheet_id"]),
     (TabConfig, ["schema_ref"]),
     (Target, ["base_file"]),
+    (gdrives.sheets.LinkedCell, ["text", "formula"]),
 ]
 
 
@@ -207,7 +216,7 @@ class TestGuideConfigs:
 
     def test_the_guide_has_the_examples_this_reads(self):
         assert len(blocks(GUIDE, "json")) == 16
-        assert len(blocks(GUIDE, "python")) == 14
+        assert len(blocks(GUIDE, "python")) == 15
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -287,5 +296,27 @@ class TestGuidePython:
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
         # The pull_records example read the Summary tab the typed writes made.
         assert namespace["typed"] == [{"id": 1, "total": 2.5, "paid": True}]
+        # The audit example sorts cells of each kind, on a tab that holds them.
+        assert namespace["kinds"] == {}
+        formats = grid.tab("Members").formats
+        formats[(1, 3)] = {"link": "https://own.io"}
+        grid.tab("Members").cells[1][3] = "https://own.io"
+        formats[(2, 3)] = {"link": "https://x.io"}
+        grid.tab("Members").cells[2][3] = "click"
+        formats[(3, 3)] = {"link": "https://y.io", "formula": "=HYPERLINK(1)"}
+        grid.tab("Members").cells[3][3] = "label"
+        formats[(1, 1)] = {"link": "https://z.io"}
+        grid.tab("Members").cells[1][1] = None
+        formats[(2, 0)] = {"underline": True}
+        grid.tab("Members").cells[2][0] = "m3"
+        (audit,) = [b for b in blocks(GUIDE, "python") if "kinds:" in b]
+        exec(compile(audit, str(GUIDE), "exec"), namespace)  # noqa: S102
+        assert namespace["kinds"] == {
+            "link to its own text": [(2, "website")],
+            "link to somewhere else": [(3, "website")],
+            "formula link": [(4, "website")],
+            "link on an empty cell": [(2, "name")],
+            "link styling with no link": [(3, "member_id")],
+        }
         # The transform example previews a sync of the same tab, in sync.
         assert namespace["cleaned"].exit_code == 0

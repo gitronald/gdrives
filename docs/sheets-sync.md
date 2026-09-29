@@ -917,6 +917,23 @@ API cannot take a link out of a run without rewriting the run, so
 hold no link keeps them. `runs=False` leaves runs alone and saves the read
 that finds them.
 
+`clear_link_format` clears the link and nothing of the look. The API shows a
+link in blue and underlined, and shows a cell that lost its link as plain text
+again, but a cell whose colour and underline were written (as `set_url_links`
+does, or a person did) keeps them: the text stays blue, or underlined, with no
+link. `style=True` clears the underline and the text colour too, in the same
+request, and leaves the bold and the rest of the format. It resets every cell
+of the columns and rows it is given, linked or not, so pass the `rows` of the
+cells you mean. It cannot change a look that comes from conditional
+formatting or the theme, and it does not touch text format runs, which `runs`
+clears.
+
+A link that comes from a `HYPERLINK` formula is the cell's link like any
+other, and `clear_link_format` removes it: the formula stays in the cell and
+shows its label as plain text. To find such cells first, read with
+`linked_cells(..., detail=True)`, whose `formula` is True for them (see
+[auditing links](#auditing-the-links-of-a-tab)).
+
 A link set as the cell's own format (`userEnteredFormat.textFormat.link`,
 sent with `repeatCell`) takes, on plain text and on a cell whose link points
 elsewhere. A link sent as a text format run over the whole text takes too,
@@ -1029,6 +1046,68 @@ apply=False)` returns a `LinkSweep`, whose `tabs` are `TabLinks` (the
 `pending` and `exit_code`. `color` is one colour, or a mapping of tab title to
 colour that has an entry for each tab swept. `format_sweep(sweep)` renders what
 the command prints.
+
+### Auditing the links of a tab
+
+`linked_cells` tells where a link is and where it points. An audit that sorts
+the cells into kinds needs the cell's text too, and to find the cells that
+look linked and are not. Two additions read that:
+
+- `linked_cells(..., detail=True)` reads under `LINK_DETAIL_FIELDS` and fills
+  `LinkedCell.text`, the cell's displayed text (empty for an empty cell, which
+  can hold a link), and `LinkedCell.formula`. Without `detail` the read and
+  the result are those of `linked_cells` before, and `text` and `formula`
+  keep their defaults, `""` and False.
+- `styled_cells` returns each cell that looks like a link and holds none, as
+  a `StyledCell`: its row, its column, its text, its `reasons`, from
+  `LINK_STYLE_REASONS`, and `resettable`.
+
+`formula` is True when the cell holds a link on the whole cell and its
+formula calls `HYPERLINK`, in any case. A format link cannot tell this: the
+API copies a formula's link into the cell's format once any other text
+property is written to it. The rule reads the formula's text, so a
+`HYPERLINK` inside a string, or inside a branch of another function, also
+counts, and a formula that does not call it (`=A1`) does not.
+
+A cell looks like a link when its text is underlined (`underline`) or shown
+in the link colour (`color`), and it holds no link when it has no link on the
+whole cell and none in its text format runs. The look is read from the
+effective format, since a link's own underline and colour have no
+user-entered property, and a theme colour from its resolved colour. The
+colour is `#1155cc`, the one the API gives a link; a tab whose links use
+another colour, such as its `link_urls`, names it with `colors=["#0b57d0"]`
+(which replaces the default, so name both to find both), and `colors=[]`
+finds underlines alone. Colours are compared to the nearest of 255 steps a
+channel. A cell with no text is never returned, and styling inside text
+format runs is not read. `resettable` is False when some of the look is not
+set by the cell itself, and `clear_link_format(..., style=True)` will not
+change it.
+
+```python
+from gdrives.sheets import linked_cells, styled_cells
+
+kinds: dict[str, list[tuple[int, str]]] = {}
+for cell in linked_cells(service, "<spreadsheet-id>", "Members", detail=True):
+    if cell.formula:
+        kind = "formula link"
+    elif not cell.text:
+        kind = "link on an empty cell"
+    elif cell.targets == (cell.text,):
+        kind = "link to its own text"
+    else:
+        kind = "link to somewhere else"
+    kinds.setdefault(kind, []).append((cell.row, cell.column))
+for cell in styled_cells(service, "<spreadsheet-id>", "Members"):
+    kinds.setdefault("link styling with no link", []).append((cell.row, cell.column))
+for kind, where in kinds.items():
+    print(kind, where)
+```
+
+A bare domain (`example.com`) is a link to somewhere else by this rule: its
+target is `http://example.com`. A link on part of a cell's text is sorted by
+its targets, like any other. The cells of one kind can then be passed on:
+`clear_link_format(..., rows=[...], style=True)` for the styling with no
+link, and for the links a caller meant to be plain text.
 
 ## Keeping a tab in order
 
