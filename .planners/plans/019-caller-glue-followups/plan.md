@@ -506,6 +506,47 @@ not `pending`, and that is right, since an apply of it returns before it clears
 anything. Whether `tab.schema` read on an unresolved tab should raise is still the
 owner's.
 
+### 2026-09-29: post mortem
+
+Written at 2026-09-29T10:01:11-07:00, after the merge.
+
+**The last open question, decided.** `tab.schema` read on an unresolved tab does
+not raise. It is a field of a frozen dataclass, so raising would make it a property
+and change the constructor, `replace`, equality, and `repr` for every caller, and
+the load's own checks read unresolved tabs. `types` and `local_store` raise because
+they are derived, and would give an answer that looks right and is not. The risk
+was a caller that reads `schema` for checks of its own and sees no columns, so
+`TabConfig.resolved` tells an empty schema from one not found yet, and the
+library's own tests of `schema_ref` go through it. Made on `dev` (`23891bc`).
+
+**Where the review's findings came from.** Of the four that were faults:
+
+- Two were in code written after the steps, when the owner's questions were
+  decided: the range past the grid (`formulas=False`, `e7393ee`) and the stray
+  parenthesis (the reworded fallback line, `96dc4bf`). Each step was read and rerun
+  before the next began. The decisions were made in one pass, and nothing read them
+  again until the close.
+- Two were in a step's scope as written: `sheets-links` and `sheet_id` (step 7),
+  and a byte-order mark before a quoted cell (step 12). Neither was named by the
+  plan, and the tests followed the plan.
+
+**What went wrong in how the work was run.**
+
+- The question was asked as "should it raise", which has two answers, and neither
+  was the one taken. A question left for the owner should come with the options
+  and a recommendation, as step 10's write-up did.
+- Nine questions were left at once. Each was small, and together they were a
+  second implementation pass with less review than the first.
+- The tests of a split range all used a tab of 1000 rows, the fake's default, so
+  the tab's last row was never near. A fake's defaults decide which edges are
+  tested unless a test sets them.
+
+**Still not verified.** The range past the grid was reproduced against the fake
+grid, which refuses it. What the API answers was not read.
+
+**Still outside git.** The two scratch spreadsheets of step 9 are in the test
+folder until the owner removes them.
+
 ## Retrospective
 
 - **The plan's order held, and its one design question was the right one to name.**
