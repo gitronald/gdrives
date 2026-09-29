@@ -1129,13 +1129,22 @@ def upload(
         bool,
         typer.Option("--dry-run", help="Print the intended upload without making it"),
     ] = False,
+    no_replace: Annotated[
+        bool,
+        typer.Option(
+            "--no-replace",
+            help="Refuse, listing the IDs, if the folder holds a file of that name",
+        ),
+    ] = False,
 ):
     """Upload a local file to Drive (write access, except --dry-run).
 
     A file of that name in the folder has its content replaced in place, so
     its ID and links stay the same; with none, the file is created. Several
-    files of that name are refused: name one with --file-id. Prints the
-    file's URL. Examples:
+    files of that name are refused: name one with --file-id. With
+    --no-replace, any file of that name is refused instead (one listing just
+    before the write; another writer can still create the name in between).
+    Prints the file's URL. Examples:
     gdrives upload report.pdf "My Drive/reports";
     gdrives upload out.pdf "My Drive/reports/report.pdf" --dry-run
     """
@@ -1150,4 +1159,5 @@ def upload(
             name=name,
             mime_type=mime_type,
             dry_run=dry_run,
+            replace=not no_replace,
         )

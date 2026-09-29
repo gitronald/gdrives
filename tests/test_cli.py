@@ -1048,7 +1048,20 @@ class TestUpload:
             "name": None,
             "mime_type": None,
             "dry_run": True,
+            "replace": True,
         }
+
+    def test_no_replace_is_passed_as_replace_false(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.upload.run",
+            lambda local, dest, **options: rec.update(options),
+        )
+        result = CliRunner().invoke(
+            cli.app, ["upload", "out.pdf", "My Drive/reports", "--no-replace"]
+        )
+        assert result.exit_code == 0
+        assert rec["replace"] is False
 
     def test_a_file_that_reads_back_different_exits_1(self, monkeypatch, capsys):
         from gdrives.upload import UploadError
