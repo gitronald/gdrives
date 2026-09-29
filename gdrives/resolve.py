@@ -170,6 +170,22 @@ def resolve_shared_path(
     )
 
 
+def direct_file_id(source: str) -> str | None:
+    """The file ID a Drive URL or a bare ID gives, or None for a Drive path.
+
+    The one place that tells the three forms apart, so a path is the only form
+    that needs a Drive service to resolve. Raises DrivePathError for a blank
+    ``source`` and ValueError for a URL that holds no ID.
+    """
+    if not source.strip():
+        raise DrivePathError("source must not be empty")
+    if source.startswith(("http://", "https://")):
+        return extract_drive_id(source)
+    if "/" in source:
+        return None
+    return source
+
+
 def resolve_file_id(source: str, service: Service | None = None) -> str:
     """Resolve a Drive URL, bare file ID, or Drive path to a file ID.
 
@@ -179,13 +195,10 @@ def resolve_file_id(source: str, service: Service | None = None) -> str:
     allowed. ``service`` is the *Drive* service used for path resolution; when
     omitted, ``resolve_path`` builds a read-only one.
     """
-    if not source.strip():
-        raise DrivePathError("source must not be empty")
-    if source.startswith(("http://", "https://")):
-        return extract_drive_id(source)
-    if "/" in source:
+    file_id = direct_file_id(source)
+    if file_id is None:
         return resolve_path(source, service, allow_files=True)
-    return source
+    return file_id
 
 
 def resolve_and_report(source: str, label: str, service: Service | None = None) -> str:

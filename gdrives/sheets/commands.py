@@ -24,7 +24,7 @@ from gdrives.sheets.create import (
 from gdrives.sheets.files import read_values_csv, write_values_csv
 from gdrives.sheets.hooks import resolve_hooks
 from gdrives.sheets.match import set_by_match
-from gdrives.sheets.retry import RetryNotice, retry_notices
+from gdrives.sheets.retry import retry_notices
 from gdrives.sheets.rules import (
     _flatten_rules,
     _rule_tabs,
@@ -38,7 +38,12 @@ from gdrives.sheets.rules import (
     read_rule_json,
 )
 from gdrives.sheets.structure import get_column_widths
-from gdrives.sheets.sync import format_report, pull_all_tabs, run_target
+from gdrives.sheets.sync import (
+    SyncReport,
+    format_report,
+    pull_all_tabs,
+    run_target,
+)
 from gdrives.sheets.values import (
     RAW,
     USER_ENTERED,
@@ -75,24 +80,27 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def _print_retry(notice: RetryNotice) -> None:
-    """Say on stderr that a call is being retried, so a wait does not look hung."""
-    print(
-        f"Sheets API returned {notice.status}; retrying in {notice.delay:.0f}s "
-        f"(attempt {notice.attempt} of {notice.attempts})",
-        file=sys.stderr,
-    )
-
-
 def _noticed(run: Callable[_P, _R]) -> Callable[_P, _R]:
     """Run a command inside :func:`retry_notices`, printing each wait."""
 
     @functools.wraps(run)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        with retry_notices(_print_retry):
+        with retry_notices():
             return run(*args, **kwargs)
 
     return wrapped
+
+
+def _print_report(report: SyncReport) -> int:
+    """Print a sync command's report; return its exit code.
+
+    The report goes to stdout. A preview that ``apply`` would change adds a
+    hint on stderr, so stdout stays the report alone.
+    """
+    print(format_report(report))
+    if report.pending:
+        print("Preview only; rerun with --apply to write.", file=sys.stderr)
+    return report.exit_code
 
 
 def _resolve_and_report(source: str) -> str:
@@ -559,8 +567,7 @@ def _run_config(
         apply=apply,
         **options,
     )
-    print(format_report(report))
-    return report.exit_code
+    return _print_report(report)
 
 
 @_noticed
@@ -704,5 +711,4 @@ def _run_all_tabs(
         bom=bom,
         name=slug if slugs else None,
     )
-    print(format_report(report))
-    return report.exit_code
+    return _print_report(report)

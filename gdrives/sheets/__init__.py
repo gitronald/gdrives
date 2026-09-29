@@ -11,7 +11,8 @@ pull_values`` works regardless of which submodule defines a name:
 
 - ``values``: ``spreadsheets.values.*`` wrappers, render options, tab
   lookups, and the structural ``spreadsheets.batchUpdate``
-- ``retry``: ``with_retry``, the retryable status sets, and ``retry_notices``
+- ``retry``: ``with_retry``, the retryable status sets, ``retry_notices``, and
+  ``print_retry``
 - ``cells``: canonical cell strings, column types, typed rows, row keys, and
   schema checks
 - ``a1``: A1 notation and ``GridRange`` conversion
@@ -151,6 +152,7 @@ from gdrives.sheets.retry import (
     IDEMPOTENT_STATUSES,
     RATE_LIMIT_STATUSES,
     RetryNotice,
+    print_retry,
     retry_notices,
     with_retry,
 )
@@ -377,6 +379,7 @@ __all__ = [
     "parse_tab",
     "place_columns",
     "plan_tab",
+    "print_retry",
     "problems",
     "pull_all_tabs",
     "pull_grid",

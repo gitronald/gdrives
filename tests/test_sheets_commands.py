@@ -561,3 +561,47 @@ class TestRetryNotices:
         assert "Sheets API returned 429; retrying in 1s (attempt 2 of 5)" in (
             result.stderr
         )
+
+
+class TestPreviewHint:
+    """A preview that ``--apply`` would change says so on stderr, not stdout."""
+
+    HINT = "Preview only; rerun with --apply to write.\n"
+
+    def test_a_pending_sync_preview_ends_with_the_hint(self, env):
+        env.write("data/members.csv", [HEADER, ["m1", "Ada", "closed"], ROWS[1]])
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert result.stderr == "Spreadsheet ID: SHEET\n" + self.HINT
+        assert "Preview only" not in result.stdout
+        assert result.stdout.endswith("'active' -> 'closed'\n")
+
+    def test_a_pending_pull_and_push_preview_end_with_it(self, env):
+        env.write("output/summary.csv", [["total"], ["3"]])
+        pushed = env.invoke("sheets-push", "roster")
+        assert pushed.stderr == "Spreadsheet ID: SHEET\n" + self.HINT
+        pulled = env.invoke("sheets-pull", "roster")
+        assert pulled.stderr == "Spreadsheet ID: SHEET\n" + self.HINT
+
+    def test_all_tabs_ends_with_it(self, env):
+        (env.root / CONFIG_NAME).unlink()
+        result = env.invoke("sheets-pull", "SHEET", "--all-tabs", "-o", "out")
+        assert result.stderr == "Spreadsheet ID: SHEET\n" + self.HINT
+
+    def test_a_preview_in_sync_says_nothing_more(self, env):
+        result = env.invoke("sheets-sync", "roster")
+        assert result.stderr == "Spreadsheet ID: SHEET\n"
+
+    def test_a_preview_left_only_to_a_person_says_nothing_more(self, env):
+        env.write(
+            "data/members.csv", [HEADER, ["m1", "Ada", "closed"], ["m2", "Bo", "x"]]
+        )
+        env.grid.write("Members", [["m1", "Ada", "gone"], ["m2", "Bo", "y"]], row=2)
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 2
+        assert result.stderr == "Spreadsheet ID: SHEET\n"
+
+    def test_an_apply_says_nothing_more(self, env):
+        env.write("data/members.csv", [HEADER, ["m1", "Ada", "closed"], ROWS[1]])
+        result = env.invoke("sheets-sync", "roster", "--apply")
+        assert result.stderr == f"{CREDENTIAL}\nSpreadsheet ID: SHEET\n"

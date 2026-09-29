@@ -10,10 +10,11 @@ which the API returns before doing anything, is retried.
 
 A wait is silent unless someone asks: ``on_retry`` is called before each one,
 and :func:`retry_notices` sets that callback for every call inside a block,
-the wrappers' own included.
+the wrappers' own included. :func:`print_retry` is the callback the CLI uses.
 """
 
 import random
+import sys
 import time
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
@@ -55,16 +56,31 @@ OnRetry = Callable[[RetryNotice], None]
 _notices: ContextVar[OnRetry | None] = ContextVar("gdrives_retry_notices", default=None)
 
 
+def print_retry(notice: RetryNotice) -> None:
+    """Say on stderr that a call is being retried, so a wait does not look hung.
+
+    The message the ``gdrives`` commands print, and the callback
+    :func:`retry_notices` uses when it is given none.
+    """
+    print(
+        f"Sheets API returned {notice.status}; retrying in {notice.delay:.0f}s "
+        f"(attempt {notice.attempt} of {notice.attempts})",
+        file=sys.stderr,
+    )
+
+
 @contextmanager
-def retry_notices(callback: OnRetry) -> Generator[None, None, None]:
+def retry_notices(callback: OnRetry | None = None) -> Generator[None, None, None]:
     """Tell ``callback`` of every wait of a :func:`with_retry` inside the block.
+
+    With no ``callback``, each wait is printed to stderr by :func:`print_retry`.
 
     The value wrappers call :func:`with_retry` themselves, so a caller cannot
     pass them ``on_retry``; this sets it for every call in the block that was
     given none. Blocks nest, the inner one winning, and the callback is unset
     when its block ends.
     """
-    token = _notices.set(callback)
+    token = _notices.set(print_retry if callback is None else callback)
     try:
         yield
     finally:

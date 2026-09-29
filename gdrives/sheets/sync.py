@@ -296,10 +296,44 @@ class TabReport:
 
     @property
     def exit_code(self) -> int:
-        """1 for an error or problems, 2 for work left to a person, else 0."""
+        """1 for an error or problems, 2 for work left to a person, else 0.
+
+        :attr:`SyncReport.exit_code` of a run of this one tab is the same
+        number: it takes the worst of its tabs' codes.
+        """
         if self.failed:
             return 1
         return 2 if self.needs_attention else 0
+
+    @property
+    def pending(self) -> bool:
+        """True when a preview found something ``apply`` would write.
+
+        Counts what the report says a run changes: the tab to create, or a
+        header to write to an empty one (a sync writes that; a push writes
+        every row it replaces); columns to add or drop; the cell writes of a
+        merge, the pushes and new rows to the sheet and the folded cells and
+        rows to the local file; a first sync, which saves the base; and a
+        replacement (a pull or a push) that differs. A preview whose only
+        change is a column is pending. A report of a run that applied has
+        nothing pending, and neither has one that stopped on an error or
+        found problems, since ``apply`` writes nothing then.
+        """
+        if self.apply or self.failed:
+            return False
+        if self.replacement is not None:
+            return not self.replacement.unchanged
+        if self.plan is None:
+            return False
+        created = self.tab_state == "missing" or self.tab_state == "empty"
+        first = self.bootstrapped or self.adopted
+        return bool(
+            created
+            or first
+            or self.add_columns
+            or self.drop_columns
+            or self.plan.has_writes
+        )
 
 
 @dataclass
@@ -318,6 +352,11 @@ class SyncReport:
         """
         codes = {tab.exit_code for tab in self.tabs}
         return 1 if 1 in codes else 2 if 2 in codes else 0
+
+    @property
+    def pending(self) -> bool:
+        """True when any tab is :attr:`TabReport.pending`."""
+        return any(tab.pending for tab in self.tabs)
 
 
 @dataclass(frozen=True)
@@ -2140,7 +2179,7 @@ def _dump_tab(
 
 def run_target(
     service: Service,
-    spreadsheet_id: str,
+    spreadsheet_id: str | None,
     target: Target,
     mode: str = "sync",
     *,
@@ -2162,9 +2201,11 @@ def run_target(
     that needs the tab closes over it, or runs a function per tab). The
     spreadsheet's tabs are listed once, and again only after a tab was
     created, so a run of N tabs makes one listing and not N.
-    ``spreadsheet_id`` is the target's spreadsheet, already resolved. A tab
-    that fails (a refusal, an API error, a failed guard) is reported with its
-    error and the run goes on to the next tab, since tabs are independent.
+    ``spreadsheet_id`` is the target's spreadsheet, already resolved, or None
+    for :attr:`~gdrives.sheets.config.Target.spreadsheet_id`, which is
+    refused for a Drive path. A tab that fails (a refusal, an API error, a
+    failed guard) is reported with its error and the run goes on to the next
+    tab, since tabs are independent.
     Raises ValueError, before any request, for an unknown mode or tab, a
     selected tab of another mode, a sync-only option on another mode, or a
     ``transform`` on a push.
@@ -2177,6 +2218,8 @@ def run_target(
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}, not {mode!r}")
+    if spreadsheet_id is None:
+        spreadsheet_id = target.spreadsheet_id
     if mode != "sync" and (adopt or add_missing or drop_extra or prefer is not None):
         raise ValueError(
             "adopt, add_missing, drop_extra, and prefer apply only to sync tabs"
@@ -2283,13 +2326,17 @@ def _names(names: Iterable[str]) -> str:
     return ", ".join(_q(name) for name in names)
 
 
-def format_report(report: SyncReport) -> str:
+def format_report(report: SyncReport | TabReport) -> str:
     """Render ``report`` as text, one block per tab. Pure: prints nothing.
+
+    A :class:`TabReport`, as :func:`pull_tab` and :func:`push_rows` return,
+    renders as the one block a run of that tab would.
 
     Every string that came from the sheet or a file (values, keys, titles,
     column names, paths) goes through :func:`~gdrives.local.printable`.
     """
-    blocks = ["\n".join(_format_tab(tab)) for tab in report.tabs]
+    tabs = [report] if isinstance(report, TabReport) else report.tabs
+    blocks = ["\n".join(_format_tab(tab)) for tab in tabs]
     return "\n\n".join(blocks)
 
 

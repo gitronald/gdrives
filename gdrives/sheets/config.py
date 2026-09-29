@@ -272,6 +272,25 @@ class Target:
     input_option: str = RAW
     base_stores: Mapping[str, Store] = field(default_factory=dict)
 
+    @property
+    def spreadsheet_id(self) -> str:
+        """The spreadsheet's file ID, when ``spreadsheet`` is a URL or an ID.
+
+        Raises ValueError for a Drive path: resolving one needs a Drive
+        service and the drive cache, so a caller passes
+        :func:`~gdrives.resolve.resolve_file_id` the path and uses its result.
+        """
+        from gdrives.resolve import direct_file_id
+
+        file_id = direct_file_id(self.spreadsheet)
+        if file_id is None:
+            raise ValueError(
+                f"target {self.name!r}: spreadsheet {self.spreadsheet!r} is a "
+                "Drive path, which needs a Drive service to resolve; resolve it "
+                "with gdrives.resolve.resolve_file_id and pass the ID"
+            )
+        return file_id
+
     def tab(self, title: str) -> TabConfig:
         """The tab titled ``title``, raising ValueError naming the others."""
         for tab in self.tabs:
