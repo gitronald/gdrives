@@ -14,9 +14,9 @@ app = typer.Typer(help="Google Drive file management tools.")
 def _version(value: bool) -> None:
     """Print the installed package's version and exit, for ``--version``."""
     if value:
-        from importlib.metadata import version
+        from gdrives import __version__
 
-        print(f"gdrives {version('gdrives')}")
+        print(f"gdrives {__version__}")
         raise typer.Exit()
 
 

@@ -6,7 +6,7 @@ delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
 import json
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,6 +18,7 @@ from httplib2 import ServerNotFoundError
 from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
 from typer.testing import CliRunner
 
+import gdrives
 from gdrives import cli
 from gdrives.files import IncompleteSearchError
 from gdrives.resolve import DrivePathError
@@ -44,6 +45,16 @@ class TestVersion:
         result = CliRunner().invoke(cli.app, ["--version", "show-drives"])
         assert result.exit_code == 0
         assert result.output == f"gdrives {version('gdrives')}\n"
+
+    def test_the_package_holds_the_installed_version(self):
+        assert gdrives.__version__ == version("gdrives")
+
+    def test_a_package_with_no_metadata_has_the_unknown_version(self, monkeypatch):
+        def missing(name):
+            raise PackageNotFoundError(name)
+
+        monkeypatch.setattr(gdrives, "version", missing)
+        assert gdrives._installed_version() == gdrives.UNKNOWN_VERSION == "0+unknown"
 
     def test_help_keeps_the_app_description_and_lists_the_option(self):
         result = CliRunner().invoke(cli.app, ["--help"])
