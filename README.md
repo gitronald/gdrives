@@ -414,6 +414,13 @@ The sheet links a URL as it is written. A `sync` or `push` tab's
 its own text, in that colour, not underlined. See
 [links](docs/sheets-sync.md#links).
 
+To read a tab into Python instead of a file, `pull_records(service,
+spreadsheet_id, "Members", ...)` in `gdrives.sheets` takes a pull tab's
+fields and hooks and returns the checked rows as `Records`, raising
+`PullError` (with the tab's report) when the pull is refused or finds problems.
+`decode_rows` turns the rows into typed values for a dataframe library of your
+own. See [reading a tab into memory](docs/sheets-sync.md#reading-a-tab-into-memory).
+
 A sync keeps the sheet's row order. To put a keyed tab back in an order of
 your own, compute the order in Python, as the rows' keys first to last, and
 call `reorder_rows` from `gdrives.sheets`. It moves whole rows, with their

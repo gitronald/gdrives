@@ -204,7 +204,7 @@ class TestGuideConfigs:
 
     def test_the_guide_has_the_examples_this_reads(self):
         assert len(blocks(GUIDE, "json")) == 13
-        assert len(blocks(GUIDE, "python")) == 12
+        assert len(blocks(GUIDE, "python")) == 13
 
     def test_a_refused_example_fails(self, tmp_path):
         from gdrives.sheets import ConfigError
@@ -282,5 +282,7 @@ class TestGuidePython:
         # links example reads, which the store's tab does not declare.
         (checked,) = namespace["report"].tabs
         assert checked.problems == ["Members (merged): undeclared column 'website'"]
+        # The pull_records example read the Summary tab the typed writes made.
+        assert namespace["typed"] == [{"id": 1, "total": 2.5, "paid": True}]
         # The transform example previews a sync of the same tab, in sync.
         assert namespace["cleaned"].exit_code == 0

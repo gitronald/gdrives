@@ -1388,6 +1388,50 @@ its writes; `pull_tab`, `push_tab`, and `pull_all_tabs` are the other modes.
 The pieces underneath are exported too: `read_tab`, `merge`, `apply_plan`,
 `verify`, `read_records`, and `write_records`.
 
+### Reading a tab into memory
+
+`pull_records` reads a tab's rows into memory, checked as a pull checks them,
+with no local file and nothing to apply. It takes what a `pull` tab takes:
+`columns`, `key`, `blank_keys`, `schema`, `strict_schema`, `exclude`, `render`,
+and `sheet_id`, and the hooks and `transform` that `pull_tab` takes. It is
+`pull_tab` underneath, run on a `MemoryStore` with `apply=True`, so it refuses
+what a `pull` tab refuses, and a combination a tab refuses (`exclude` with
+`columns`, say) raises the same `ValueError` before any request.
+
+```python
+from gdrives.sheets import ColumnSchema, PullError, decode_rows, pull_records
+
+types = {"id": "int", "total": "float", "paid": "bool"}
+try:
+    records = pull_records(
+        service,
+        "<spreadsheet-id>",
+        "Summary",
+        schema={name: ColumnSchema(kind) for name, kind in types.items()},
+    )
+except PullError as e:
+    print(e)  # the report a `sheets-pull` of the tab would print
+    print(e.report.exit_code)
+else:
+    typed = decode_rows(records.rows, types)
+    print(typed[0])
+```
+
+The result is `Records`: `columns` in header order, and `rows` as dicts of
+canonical cell strings, as a local file holds them. `decode_rows(records.rows,
+types)` turns them into Python values (`int`, `float`, `bool`, `date`, and
+`datetime` by the column's type, `None` for a blank cell), and any dataframe
+library takes those rows with a schema of its own. The library depends on
+none.
+
+`PullError` is a `ValueError` whose `report` is the tab's `TabReport` and whose
+message is `format_report(report)`. It is raised when `report.failed`: the pull
+was refused (no such tab, no header row, no rows, an `exclude` name the header
+lacks) or the API failed, which the report holds as its `error`, or the rows
+have `problems` from the schema, `validate`, or `check`. What `warn` says fails
+nothing; to read it, pass `report=TabReport(tab="Summary", mode="pull")` and
+read its `warnings` afterwards.
+
 ### Stores
 
 A run reads and writes the local side of a tab, and its base, through a
