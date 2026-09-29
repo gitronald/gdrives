@@ -406,6 +406,27 @@ SAME_CHECKS = {
         {"paid": {"type": "bool", "strict": "yes"}},
         "SCHEMA = {'paid': ColumnSchema('bool', strict='yes')}",
     ),
+    "pattern not a string": (
+        {},
+        {"link": {"pattern": 5}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'pattern', 5)\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern does not compile": (
+        {},
+        {"link": {"pattern": "[0-9"}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'pattern', '[0-9')\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern type": (
+        {},
+        {"dues": {"type": "int", "pattern": "[0-9]+"}},
+        "spec = ColumnSchema('int')\n"
+        "object.__setattr__(spec, 'pattern', '[0-9]+')\n"
+        "SCHEMA = {'dues': spec}",
+    ),
     "allowed empty": (
         {},
         {"status": {"allowed": []}},

@@ -25,13 +25,20 @@ each naming its target and tab, so a single run shows everything to fix. The
 
 import json
 import os
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from gdrives.local import safe_filename
-from gdrives.sheets.cells import BLANK_KEYS, COLUMN_TYPES, STRICT_TYPES, ColumnSchema
+from gdrives.sheets.cells import (
+    BLANK_KEYS,
+    COLUMN_TYPES,
+    PATTERN_TYPES,
+    STRICT_TYPES,
+    ColumnSchema,
+)
 from gdrives.sheets.files import NEWLINES
 from gdrives.sheets.stores import FileStore, JsonEntryStore, Store
 from gdrives.sheets.structure import _rgb
@@ -96,7 +103,9 @@ _TAB_FIELDS = frozenset(
     }
 )
 _STRICT_LOCAL = "local"
-_SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
+_SCHEMA_FIELDS = frozenset(
+    {"type", "required", "allowed", "present", "strict", "pattern"}
+)
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
     "local_owned",
@@ -503,7 +512,13 @@ def _is_strict_schema(value: object) -> bool:
 
 
 def _column_problems(
-    at: str, type_: Any, required: Any, allowed: Any, present: Any, strict: Any
+    at: str,
+    type_: Any,
+    required: Any,
+    allowed: Any,
+    present: Any,
+    strict: Any,
+    pattern: Any = None,
 ) -> list[str]:
     """What is wrong with one schema column's fields; ``at`` names the column.
 
@@ -535,6 +550,19 @@ def _column_problems(
             f"{at}: 'strict' is only for a column of "
             f"{sorted(STRICT_TYPES)}, not {type_!r}"
         )
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            found.append(f"{at}: 'pattern' must be a string")
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                found.append(f"{at}: 'pattern' is not a regular expression: {e}")
+        if type_ in COLUMN_TYPES and type_ not in PATTERN_TYPES:
+            found.append(
+                f"{at}: 'pattern' is only for a column of "
+                f"{sorted(PATTERN_TYPES)}, not {type_!r}"
+            )
     return found
 
 
@@ -594,7 +622,13 @@ def _checked_schema(
             found.append(f"{at}: expected a ColumnSchema, not a {type(spec).__name__}")
             continue
         problems = _column_problems(
-            at, spec.type, spec.required, spec.allowed, spec.present, spec.strict
+            at,
+            spec.type,
+            spec.required,
+            spec.allowed,
+            spec.present,
+            spec.strict,
+            spec.pattern,
         )
         found.extend(problems)
         if not problems:
@@ -1122,7 +1156,10 @@ class _Checker:
             allowed = spec.get("allowed")
             present = spec.get("present", False)
             strict = spec.get("strict", False)
-            found = _column_problems(at, type_, required, allowed, present, strict)
+            pattern = spec.get("pattern")
+            found = _column_problems(
+                at, type_, required, allowed, present, strict, pattern
+            )
             problems.extend(found)
             if not unknown and not found:
                 schema[column] = ColumnSchema(
@@ -1131,6 +1168,7 @@ class _Checker:
                     allowed=tuple(allowed) if allowed is not None else None,
                     present=bool(present),
                     strict=bool(strict),
+                    pattern=pattern,
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)

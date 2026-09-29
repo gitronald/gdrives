@@ -694,6 +694,67 @@ class TestColumnSchema:
             ColumnSchema(type=type_, strict=True)
 
 
+class TestColumnPattern:
+    SCHEMA = ColumnSchema(pattern="https://example\\.com/members/[0-9]+")
+
+    def test_a_cell_that_matches_in_full_passes(self):
+        assert cell_problem("https://example.com/members/42", self.SCHEMA) is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "https://example.com/members/42/edit",
+            "see https://example.com/members/42",
+            "https://exampleXcom/members/42",
+        ],
+    )
+    def test_a_cell_that_matches_only_in_part_is_a_problem(self, text):
+        assert cell_problem(text, self.SCHEMA) == (
+            f"{text!r} does not match the pattern {self.SCHEMA.pattern!r}"
+        )
+
+    def test_a_blank_cell_is_checked_by_required_only(self):
+        assert cell_problem("", self.SCHEMA) is None
+        required = ColumnSchema(pattern="[0-9]+", required=True)
+        assert cell_problem("", required) == "is required"
+
+    def test_it_is_checked_after_allowed(self):
+        schema = ColumnSchema(pattern="[a-z]+", allowed=["ab", "c1"])
+        assert cell_problem("zz", schema) == "'zz' is not one of ['ab', 'c1']"
+        assert cell_problem("c1", schema) == "'c1' does not match the pattern '[a-z]+'"
+        assert cell_problem("ab", schema) is None
+
+    def test_it_is_compiled_once_per_string(self):
+        from gdrives.sheets.cells import _compiled
+
+        _compiled.cache_clear()
+        schema = ColumnSchema(pattern="[0-9]+")
+        for _ in range(3):
+            cell_problem("12", schema)
+        info = _compiled.cache_info()
+        assert info.misses == 1 and info.hits >= 2
+
+    def test_it_is_part_of_equality_and_hashing(self):
+        assert ColumnSchema(pattern="a") == ColumnSchema(pattern="a")
+        assert ColumnSchema(pattern="a") != ColumnSchema()
+        assert hash(ColumnSchema(pattern="a")) == hash(ColumnSchema(pattern="a"))
+
+    @pytest.mark.parametrize("type_", ["int", "float", "bool", "date", "datetime"])
+    def test_it_is_refused_for_any_other_type(self, type_):
+        with pytest.raises(
+            ValueError, match=r"pattern is only for a column of \['str'\]"
+        ):
+            ColumnSchema(type=type_, pattern="x")
+
+    @pytest.mark.parametrize("pattern", ["[0-9", 5])
+    def test_it_must_compile(self, pattern):
+        with pytest.raises(ValueError, match="pattern is not a regular expression"):
+            ColumnSchema(pattern=pattern)
+
+    def test_of_takes_it(self):
+        assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
+
+
 class TestColumnSchemaOf:
     @pytest.mark.parametrize(("cls", "name"), CLASSES)
     def test_a_class_is_stored_as_its_name(self, cls, name):

@@ -1272,6 +1272,46 @@ class TestSchemaPresent:
         )
 
 
+class TestSchemaPattern:
+    URL = "https://example\\.com/members/[0-9]+"
+
+    def test_accepted(self):
+        data = config({"Members": members(schema={"link": {"pattern": self.URL}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["link"].pattern == self.URL
+
+    def test_defaults_to_none(self):
+        data = config({"Members": members(schema={"link": {}})})
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert tab.schema["link"].pattern is None
+
+    def test_must_be_a_string(self):
+        refused(
+            config({"Members": members(schema={"link": {"pattern": 5}})}),
+            "target 'roster', tab 'Members': schema 'link': 'pattern' must be a string",
+        )
+
+    def test_must_compile(self):
+        (found,) = problems_of(
+            config({"Members": members(schema={"link": {"pattern": "[0-9"}})})
+        )
+        assert found.startswith(
+            "target 'roster', tab 'Members': schema 'link': "
+            "'pattern' is not a regular expression: "
+        )
+        assert "unterminated character set" in found
+
+    @pytest.mark.parametrize("type_", ["int", "float", "bool", "date", "datetime"])
+    def test_is_refused_for_any_other_type(self, type_):
+        refused(
+            config(
+                {"Members": members(schema={"n": {"type": type_, "pattern": "[0-9]+"}})}
+            ),
+            "target 'roster', tab 'Members': schema 'n': "
+            f"'pattern' is only for a column of ['str'], not {type_!r}",
+        )
+
+
 class TestSchemaStrict:
     @pytest.mark.parametrize("type_", ["bool", "date"])
     def test_accepted_for_bool_and_date(self, type_):
