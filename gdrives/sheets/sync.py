@@ -263,6 +263,10 @@ class TabReport:
     says what failed.
 
     ``linked`` is each URL cell a run with ``link_urls`` gave a link.
+    ``stale_base`` and ``stale_local`` are set when a sync tab is planned: an
+    apply would save the base again, or write the local file, whether or not
+    it has anything to write to the sheet. They are not printed by
+    :func:`format_report`.
     """
 
     tab: str
@@ -291,6 +295,8 @@ class TabReport:
     wrote_base: bool = False
     wrote_widths: bool = False
     linked: list[UrlLinkProblem] = field(default_factory=list)
+    stale_base: bool = False
+    stale_local: bool = False
 
     @property
     def failed(self) -> bool:
@@ -314,34 +320,49 @@ class TabReport:
         return 2 if self.needs_attention else 0
 
     @property
-    def pending(self) -> bool:
-        """True when a preview found something ``apply`` would write.
+    def _changes(self) -> bool:
+        """True when an apply would write more than the base.
 
-        Counts what the report says a run changes: the tab to create, or a
-        header to write to an empty one (a sync writes that; a push writes
-        every row it replaces); columns to add or drop; the cell writes of a
-        merge, the pushes and new rows to the sheet and the folded cells and
-        rows to the local file; a first sync, which saves the base; and a
-        replacement (a pull or a push) that differs. A preview whose only
-        change is a column is pending. A report of a run that applied has
-        nothing pending, and neither has one that stopped on an error or
-        found problems, since ``apply`` writes nothing then.
+        The tab to create, or a header to write to an empty one (a sync writes
+        that; a push writes every row it replaces); columns to add or drop;
+        the cell writes of a merge, the pushes and new rows to the sheet and
+        the folded cells and rows to the local file; the local file rewritten
+        in another order; and a replacement (a pull or a push) that differs.
         """
-        if self.apply or self.failed:
-            return False
         if self.replacement is not None:
             return not self.replacement.unchanged
         if self.plan is None:
             return False
         created = self.tab_state == "missing" or self.tab_state == "empty"
-        first = self.bootstrapped or self.adopted
         return bool(
             created
-            or first
             or self.add_columns
             or self.drop_columns
             or self.plan.has_writes
+            or self.stale_local
         )
+
+    @property
+    def pending(self) -> bool:
+        """True when a preview found something ``apply`` would write.
+
+        That is exactly when an apply of the same run would write the sheet,
+        the local file, or the base, or change the tab's columns or create it:
+        what :attr:`_changes` counts, or a sync whose base would be saved
+        (:attr:`stale_base`, which a first sync has). A preview whose only
+        change is a column is pending, and so is one whose only change is the
+        base. A report of a run that applied has nothing pending, and neither
+        has one that stopped on an error or found problems, since ``apply``
+        writes nothing then.
+        """
+        if self.apply or self.failed:
+            return False
+        return self._changes or (self.stale_base and self.plan is not None)
+
+    @property
+    def base_only(self) -> bool:
+        """True when :attr:`pending` and the base is all an apply would write."""
+        return self.pending and not self._changes
 
 
 @dataclass
@@ -365,6 +386,12 @@ class SyncReport:
     def pending(self) -> bool:
         """True when any tab is :attr:`TabReport.pending`."""
         return any(tab.pending for tab in self.tabs)
+
+    @property
+    def base_only(self) -> bool:
+        """True when the tabs :attr:`pending` are all pending for the base alone."""
+        pending = [tab for tab in self.tabs if tab.pending]
+        return bool(pending) and all(tab.base_only for tab in pending)
 
 
 @dataclass(frozen=True)
@@ -934,6 +961,7 @@ def _plan(
         report.warnings = list[str]()
     report.deferred = list[Cell]()
     report.plan, report.bootstrapped = None, False
+    report.stale_base = report.stale_local = False
     report.insert_row, report.last_row = None, None
     report.add_columns, report.drop_columns = list[str](), dict[str, int]()
     local = _read_local(tab)
@@ -1124,7 +1152,19 @@ def _plan(
             *_respelling_problems(tab.title, local.rows, remote, tab.schema, tab.key),
         ]
         _warn(report, merged, options["warn"])
+    report.stale_base = _base_stale(base, columns, plan)
+    report.stale_local = _local_stale(local, plan)
     return planned(table, plan, base)
+
+
+def _base_stale(base: Records | None, columns: Sequence[str], plan: MergePlan) -> bool:
+    """True when an apply saves the base: none yet, or it differs from the plan's."""
+    return base is None or base.columns != columns or base.rows != plan.new_base
+
+
+def _local_stale(local: Records, plan: MergePlan) -> bool:
+    """True when an apply writes the local file: the plan's rows differ from it."""
+    return plan.new_local != local.rows
 
 
 def _sheet_side(
@@ -1287,11 +1327,11 @@ def apply_tab(service: Service, spreadsheet_id: str, planned: TabPlan) -> TabRep
     if result.pushed or result.appended:
         report.wrote_sheet = True
 
-    if plan.new_local != planned.local.rows:
+    if _local_stale(planned.local, plan):
         tab.local_store.write(planned.local.columns, plan.new_local)
         report.wrote_local = True
     base = planned.base
-    if base is None or base.columns != planned.columns or base.rows != plan.new_base:
+    if _base_stale(base, planned.columns, plan):
         planned.target.base_store(tab).write(planned.columns, plan.new_base)
         report.wrote_base = True
     if tab.widths and report.wrote_sheet:

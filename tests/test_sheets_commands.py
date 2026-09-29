@@ -588,6 +588,27 @@ class TestPreviewHint:
         result = env.invoke("sheets-pull", "SHEET", "--all-tabs", "-o", "out")
         assert result.stderr == "Spreadsheet ID: SHEET\n" + self.HINT
 
+    def test_a_preview_that_would_save_only_the_base_says_so(self, env):
+        # Both sides made the same edit since the base: nothing to write.
+        env.write(
+            "sheets-base/roster/Members.csv", [HEADER, ["m1", "Ada", "old"], ROWS[1]]
+        )
+        result = env.invoke("sheets-sync", "roster")
+        assert result.exit_code == 0
+        assert "in sync: nothing to write" in result.stdout
+        assert result.stderr == (
+            "Spreadsheet ID: SHEET\n"
+            "Preview only; rerun with --apply to save the base.\n"
+        )
+
+    def test_a_preview_that_writes_more_than_the_base_says_write(self, env):
+        env.write(
+            "sheets-base/roster/Members.csv", [HEADER, ROWS[0], ["m2", "Bo", "old"]]
+        )
+        env.write("data/members.csv", [HEADER, ["m1", "Ada", "closed"], ROWS[1]])
+        result = env.invoke("sheets-sync", "roster")
+        assert result.stderr.endswith(self.HINT)
+
     def test_a_preview_in_sync_says_nothing_more(self, env):
         result = env.invoke("sheets-sync", "roster")
         assert result.stderr == "Spreadsheet ID: SHEET\n"

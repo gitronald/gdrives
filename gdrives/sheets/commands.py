@@ -102,14 +102,19 @@ def _print_report(report: SyncReport) -> int:
     hint on stderr, so stdout stays the report alone.
     """
     print(format_report(report))
-    _hint_pending(report.pending)
+    _hint_pending(report.pending, report.base_only)
     return report.exit_code
 
 
-def _hint_pending(pending: bool) -> None:
-    """Say on stderr that a preview left something for ``--apply`` to write."""
+def _hint_pending(pending: bool, base_only: bool = False) -> None:
+    """Say on stderr that a preview left something for ``--apply`` to write.
+
+    ``base_only`` says the base is all it would write, which the report text
+    does not: it can end ``in sync: nothing to write``.
+    """
     if pending:
-        print("Preview only; rerun with --apply to write.", file=sys.stderr)
+        what = "save the base" if base_only else "write"
+        print(f"Preview only; rerun with --apply to {what}.", file=sys.stderr)
 
 
 def _resolve_and_report(source: str) -> str:

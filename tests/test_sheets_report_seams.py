@@ -6,6 +6,8 @@ and what exit code they add up to, ``format_report`` takes either, and
 Runs use ``FakeSheetGrid`` and files under ``tmp_path``.
 """
 
+from typing import Any
+
 import pytest
 from helpers import FakeSheetGrid
 
@@ -14,11 +16,13 @@ from gdrives.sheets import (
     CONFIG_NAME,
     Cell,
     HeldCell,
+    MemoryStore,
     MergePlan,
     NewRow,
     Replacement,
     RowFlag,
     SyncReport,
+    TabConfig,
     TabReport,
     Target,
     format_report,
@@ -108,8 +112,13 @@ class TestPendingByReport:
             (report(plan=MergePlan(), drop_columns={"phone": 0}), True),
             (report(plan=MergePlan(), tab_state="missing"), True),
             (report(plan=MergePlan(), tab_state="empty"), True),
-            (report(plan=MergePlan(), bootstrapped=True), True),
-            (report(plan=MergePlan(), adopted=True), True),
+            (report(plan=MergePlan(), stale_base=True), True),
+            (report(plan=MergePlan(), stale_local=True), True),
+            (report(plan=MergePlan(), bootstrapped=True), False),
+            (report(plan=MergePlan(), adopted=True), False),
+            (report(plan=MergePlan(), stale_base=True, apply=True), False),
+            (report(plan=MergePlan(), stale_base=True, error="boom"), False),
+            (report(stale_base=True), False),
             (report(plan=MergePlan(conflicts=[CELL])), False),
             (report(plan=MergePlan(conflicts=[CELL], pushes=[CELL])), True),
             (report(plan=MergePlan(pushes=[CELL]), apply=True), False),
@@ -130,6 +139,35 @@ class TestPendingByReport:
         assert SyncReport(tabs=[quiet, busy]).pending is True
         assert SyncReport(tabs=[quiet, quiet]).pending is False
         assert SyncReport().pending is False
+
+
+class TestBaseOnly:
+    """A preview pending for the base alone is told apart from one that writes."""
+
+    @pytest.mark.parametrize(
+        ("tab", "base_only"),
+        [
+            (report(plan=MergePlan(), stale_base=True), True),
+            (report(plan=MergePlan(pushes=[CELL]), stale_base=True), False),
+            (report(plan=MergePlan(), stale_base=True, stale_local=True), False),
+            (report(plan=MergePlan(), stale_base=True, add_columns=["phone"]), False),
+            (report(plan=MergePlan(), stale_base=True, tab_state="missing"), False),
+            (report(plan=MergePlan()), False),
+            (report(plan=MergePlan(), stale_base=True, apply=True), False),
+            (report(replacement=Replacement(1, 1)), False),
+        ],
+    )
+    def test_a_tab(self, tab, base_only):
+        assert tab.base_only is base_only
+
+    def test_a_run_is_base_only_when_every_pending_tab_is(self):
+        base = report(plan=MergePlan(), stale_base=True)
+        busy = report(plan=MergePlan(pushes=[CELL]))
+        quiet = report(plan=MergePlan())
+        assert SyncReport(tabs=[base, quiet, base]).base_only is True
+        assert SyncReport(tabs=[base, busy]).base_only is False
+        assert SyncReport(tabs=[quiet]).base_only is False
+        assert SyncReport().base_only is False
 
 
 class TestPendingOfRuns:
@@ -154,6 +192,89 @@ class TestPendingOfRuns:
         first = self.sync(tmp_path, ROWS, ROWS, None)
         assert first.bootstrapped and first.pending
         assert "in sync" in format_report(first)
+
+    EDITED = [["a", "Ann"], ROWS[1]]
+    SHEET_EDIT = [["a", "Amy"], ROWS[1]]
+    CASES: dict[str, tuple[Any, Any, Any, dict[str, Any]]] = {
+        "in sync": (ROWS, ROWS, ROWS, {}),
+        "local edit": (ROWS, EDITED, ROWS, {}),
+        "sheet edit": (EDITED, ROWS, ROWS, {}),
+        "both sides made the same edit": (EDITED, EDITED, ROWS, {}),
+        "first sync in step": (ROWS, ROWS, None, {}),
+        "first sync with differences": (EDITED, ROWS, None, {}),
+        "first sync adopted": (EDITED, ROWS, None, {"adopt": True}),
+        "rows reordered locally": (ROWS, ROWS[::-1], ROWS, {}),
+        "conflicts only": (SHEET_EDIT, EDITED, ROWS, {}),
+        "column add": (ROWS, ROWS, ROWS, {"add_missing": True}),
+        "tab missing": (None, ROWS, None, {}),
+    }
+
+    @pytest.mark.parametrize("case", CASES)
+    def test_pending_is_exactly_what_an_apply_writes(self, tmp_path, case):
+        sheet, local, base, options = self.CASES[case]
+        if case == "column add":
+            # The local file and the base carry a column the sheet lacks.
+            target = make_target(tmp_path)
+            wide = [*HEADER, "phone"]
+            rows = [[*row, ""] for row in ROWS]
+            write_values_csv(str(target.tabs[0].local), [wide, *rows])
+            path = target.base_path(target.tabs[0])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_values_csv(str(path), [wide, *rows])
+            grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+            preview = sync_tab(grid, "S", target, target.tabs[0], **options)
+            applied = sync_tab(grid, "S", target, target.tabs[0], apply=True, **options)
+        else:
+            preview = self.sync(tmp_path, sheet, local, base, **options)
+            applied = self.sync(tmp_path, sheet, local, base, apply=True, **options)
+        assert applied.error is None and not applied.problems
+        wrote = (
+            applied.wrote_sheet
+            or applied.wrote_local
+            or applied.wrote_base
+            or bool(applied.add_columns or applied.drop_columns)
+            or applied.tab_state != "present"
+        )
+        assert preview.pending is wrote
+        assert not applied.pending
+
+    def test_the_equivalence_cases_cover_both_answers(self, tmp_path):
+        answers = {
+            self.sync(tmp_path / name, s, lo, b, **o).pending
+            for name, (s, lo, b, o) in self.CASES.items()
+            if name != "column add"
+        }
+        assert answers == {True, False}
+
+    def test_a_base_alone_is_base_only(self, tmp_path):
+        both = self.sync(tmp_path, self.EDITED, self.EDITED, ROWS)
+        assert both.pending and both.stale_base and not both.stale_local
+        assert both.plan is not None and not both.plan.has_writes
+        assert both.base_only and "in sync" in format_report(both)
+
+    def test_rows_reordered_locally_save_the_base_alone(self, tmp_path):
+        # The merge keeps the local order for the file, so only the base moves.
+        reordered = self.sync(tmp_path, ROWS, ROWS[::-1], ROWS)
+        assert reordered.stale_base and not reordered.stale_local
+        assert reordered.base_only
+
+    def test_a_local_row_missing_a_carried_column_rewrites_the_local_file(self):
+        # A store can hold rows that lack a column outside the projection; the
+        # merge fills it in, so an apply writes the local side alone.
+        records = [{"id": "a", "name": "Ada"}, {"id": "b", "name": "Bo", "note": "x"}]
+        local = MemoryStore(["id", "name", "note"], records, label="local")
+        base = MemoryStore(HEADER, [dict(zip(HEADER, r, strict=True)) for r in ROWS])
+        tab = TabConfig(
+            title="T", store=local, mode="sync", key=("id",), columns=tuple(HEADER)
+        )
+        target = Target(name="t", spreadsheet="S", tabs=(tab,), base_stores={"T": base})
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        preview = sync_tab(grid, "S", target, tab)
+        assert preview.plan is not None and not preview.plan.has_writes
+        assert preview.stale_local and not preview.stale_base
+        assert preview.pending and not preview.base_only
+        applied = sync_tab(grid, "S", target, tab, apply=True)
+        assert applied.wrote_local and not applied.wrote_base
 
     def test_a_column_alone_is_pending(self, tmp_path):
         target = make_target(tmp_path)

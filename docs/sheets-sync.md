@@ -552,15 +552,22 @@ nothing is left for a person. A value that came from the sheet or a file is
 shown with control characters escaped, so it cannot drive the terminal.
 
 A preview that `--apply` would change ends, on stderr, with `Preview only;
-rerun with --apply to write.` Stdout stays the report. The hint is left out
-after an apply, after a preview with nothing to write, and after a preview
+rerun with --apply to write.` Stdout stays the report. When the base is all
+an apply would write (a first sync in step, or both sides made the same edit
+since the base), the hint reads `Preview only; rerun with --apply to save the
+base.`, although the report says `in sync: nothing to write`. The hint is left
+out after an apply, after a preview with nothing to write, and after a preview
 whose tabs are all left to a person or refused, since applying those writes
-nothing. `TabReport.pending` and `SyncReport.pending` give the same answer
-to a caller: True when a preview found a cell to write, a tab to create or
-give a header, a column to add or delete, a first sync's base to save, or a
-pull or push whose target differs. A preview whose only change is a column is
-pending. A tab that stopped on an error or found problems is not, and neither
-is the report of a run that applied.
+nothing. `TabReport.pending` and `SyncReport.pending` give the same answer to
+a caller: True exactly when an apply of the same run would write the sheet,
+the local file, or the base, create a tab, or add or delete a column. That is
+a cell to write, a tab to create or give a header, a column to add or delete,
+a base to save (a first sync always has one), or a pull or push whose target
+differs. A preview whose only change is a column is pending. A tab that
+stopped on an error or found problems is not, and neither is the report of a
+run that applied. `TabReport.base_only` (and `SyncReport.base_only`, for the
+pending tabs of a run) is True when the base is all that is pending; it is
+what picks the wording of the hint.
 
 ### Where new rows go
 

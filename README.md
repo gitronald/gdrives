@@ -437,7 +437,7 @@ match in full.
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, a preview that `--apply` would change ends with `Preview only;
-rerun with --apply to write.` on stderr, and the exit code is 0 when in sync or applied, 1 for an
+rerun with --apply to write.` on stderr (`to save the base.` when the base is all it would write), and the exit code is 0 when in sync or applied, 1 for an
 error, and 2 when conflicts, row flags, or held sheet values are left for a
 person. A preview uses
 the read-only scope; `--apply` first prints the credential it will use to
