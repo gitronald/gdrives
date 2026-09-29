@@ -376,3 +376,94 @@ Left for the owner:
 - **Plan 004.** The two-service option for a narrow upload scope is in its Log,
   with what it leaves unsolved, and with a note that `DRIVE_WRITE_SCOPES` now has
   three consumers.
+
+### 2026-09-29: where this stands, and what is left to pick up
+
+The state at the end of the session, for whoever takes it up next.
+
+**State.** Steps 1 to 21 are implemented, tested, documented, and pushed, on
+`feature/caller-seams-and-fakes`, in the draft PR this plan's `pr` field names.
+The plan is `active`. The last full run, live tests included, passed (3916
+passed, 1 skipped, coverage 100%), and CI passed on Python 3.11 to 3.14. The
+changelog's `[Unreleased]` holds every change. Nothing is merged and no version
+was bumped.
+
+**To close.** In order:
+
+1. Review the PR. Nothing was reviewed by a second reader, and no review file was
+   written beside the plan as plan 019 has one.
+2. Decide the open question below, since it changes what the changelog says.
+3. Mark the PR ready and merge it into `dev` with a merge commit, deleting the
+   feature branch on the remote.
+4. Close the plan: a Retrospective, `status: done`, and `concluded` from the merge
+   commit's date, with the index refreshed in the same commit.
+5. Remove the worktree. The pre-commit and post-merge hooks name the main
+   checkout's interpreter, not the worktree's, so removing it breaks neither; check
+   again if `pre-commit install` is run from inside the worktree before then.
+6. The release is a minor one, since it adds to the public surface.
+
+**Open question, the owner's.** Whether the commands announce a token refresh that
+succeeds. They still do. The change is `announcing_credentials(refresh=False)`
+in `cli._cli_errors`, with the README, `docs/setup-oauth.md`, the guide's
+"Credentials and scopes", and the tests of the refresh line in
+`tests/test_cli.py` to follow.
+
+**Checked by unit tests alone, not against the API or a real credential.**
+
+- The two lines of a refused refresh (step 19). The refusal, the fallback to a
+  service account, and the fallback to Application Default Credentials are
+  mocked. A real revoked grant was not tried.
+- `terminal` (step 18), which is a patch of a private name: a rename of
+  `auth._is_interactive` has to be followed in `gdrives/testing.py`, and its test
+  will say so.
+- `own_colors` for a colour that conditional formatting or the theme gives. The
+  live test covers a colour the cell sets, red and black, and a plain cell.
+- `FakeSheetGrid`'s `effectiveValue`, which no library call reads. It got a unit
+  test in step 2 so that it could stay.
+- `ls --newline` and `export --newline-cells`, which rewrite local bytes and make
+  no request of their own.
+
+**What a caller upgrading has to know.** Each is in the changelog.
+
+- Three messages changed their text: the undeclared column of `strict_schema`,
+  and the two for a malformed schema reference.
+- A schema export is one column wider, `pattern_hint`, last. A reader that takes
+  columns by position is unaffected; one that checks the header is not.
+- An empty `pattern` is now refused, where it loaded and matched nothing.
+- A schema whose `allowed` is a list changed after its first check keeps the
+  values it had then.
+- A command now prints two more lines in one case, a refresh that is refused.
+
+**Decided against, and why, in case it comes up again.**
+
+- A tab field for the registry key (step 11): the key is in the reference.
+- A starting folder for `resolve_spreadsheet_id` (step 13): `walk_entry` and
+  `check_spreadsheet` do it in two calls.
+- A `hint` that applies to every type (step 12): it replaces the default
+  sentence where there is one. A caller that converts other types writes its
+  message from the fields of `NotSpreadsheetError`.
+- "Take it out of the local file" as a remedy (step 4).
+- Shipping the Docs and Drive fakes, and modelling `USER_ENTERED` parsing in
+  `FakeSheetGrid` (step 2). Both are additions if a caller asks.
+
+**Not done, by design.**
+
+- A narrow `drive.file` scope for uploads, the tenth item of the first report. It
+  waits on plan 004, whose Log now holds the two-service option. Three things
+  there are expectations and not findings: that `files.update` is refused for a
+  file the app did not create, whether `files.create` is allowed in a folder the
+  app did not create, and whether the read-back works. Plan 004's Background also
+  names one consumer of `DRIVE_WRITE_SCOPES` where there are now three.
+
+**Housekeeping.**
+
+- The project instructions file for the coding assistant is ignored by git. It
+  was updated on disk for both sets of steps, in the main checkout and in the
+  worktree's copy, and is in no commit.
+- The test spreadsheet holds three `itest_` tabs, read on 2026-09-29. They are
+  the ones left by plan 006's runs, and none is from this plan. They are the
+  owner's to delete.
+- One live test is still skipped, the revision of a file stored as-is, for want
+  of `GDRIVES_TEST_FILE_ID`.
+- The live suite is 40 tests, and a full run took from two and a half to three
+  and a half minutes.
