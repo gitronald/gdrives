@@ -2004,13 +2004,30 @@ class TestPullRecords:
         assert "no tab named 'Nope'" in (raised.value.report.error or "")
         assert "error: no tab named 'Nope'" in str(raised.value)
 
-    def test_an_api_error_raises_with_the_cause(self):
+    def test_a_refusal_keeps_its_cause(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(PullError) as raised:
+            pull_records(grid, "S", "Nope")
+        assert isinstance(raised.value.__cause__, ValueError)
+        assert not isinstance(raised.value.__cause__, PullError)
+
+    def test_an_api_error_propagates_as_raised(self):
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         grid.fail("values.get", http_error(403, "no access"))
-        with pytest.raises(PullError) as raised:
+        report = TabReport(tab="T", mode="pull")
+        with pytest.raises(HttpError) as raised:
+            pull_records(grid, "S", "T", report=report)
+        assert not isinstance(raised.value, ValueError)
+        assert report.error is None
+
+    def test_an_os_error_propagates_as_raised(self, monkeypatch):
+        def broken(*args, **kwargs):
+            raise OSError("disk gone")
+
+        monkeypatch.setattr("gdrives.sheets.sync.pull_tab", broken)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        with pytest.raises(OSError, match="disk gone"):
             pull_records(grid, "S", "T")
-        assert isinstance(raised.value.__cause__, HttpError)
-        assert raised.value.report.error
 
     def test_a_bad_combination_is_refused_before_any_request(self):
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})

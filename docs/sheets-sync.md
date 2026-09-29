@@ -1956,12 +1956,15 @@ library takes those rows with a schema of its own. The library depends on
 none.
 
 `PullError` is a `ValueError` whose `report` is the tab's `TabReport` and whose
-message is `format_report(report)`. It is raised when `report.failed`: the pull
-was refused (no such tab, no header row, no rows, an `exclude` name the header
-lacks) or the API failed, which the report holds as its `error`, or the rows
-have `problems` from the schema, `validate`, or `check`. What `warn` says fails
-nothing; to read it, pass `report=TabReport(tab="Summary", mode="pull")` and
-read its `warnings` afterwards.
+message is `format_report(report)`. It is raised when the pull was refused (no
+such tab, no header row, no rows, an `exclude` name the header lacks) or the
+rows have `problems` from the schema, `validate`, or `check`. An API error is
+not a refusal: an `HttpError` (after the retries of the value calls, as in
+[a retry of your own](#a-retry-of-your-own)) and an `OSError` propagate as
+they were raised, so code that handles them around the value wrappers needs no
+change here. What `warn` says fails nothing; to read it, pass
+`report=TabReport(tab="Summary", mode="pull")` and read its `warnings`
+afterwards.
 
 ### Stores
 

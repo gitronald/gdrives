@@ -465,7 +465,7 @@ link and keeps the formula, which then shows its label as plain text. See
 To read a tab into Python instead of a file, `pull_records(service,
 spreadsheet_id, "Members", ...)` in `gdrives.sheets` takes a pull tab's
 fields and hooks and returns the checked rows as `Records`, raising
-`PullError` (with the tab's report) when the pull is refused or finds problems.
+`PullError` (with the tab's report) when the pull is refused or finds problems. An API error propagates as an `HttpError`.
 `decode_rows` turns the rows into typed values for a dataframe library of your
 own. See [reading a tab into memory](docs/sheets-sync.md#reading-a-tab-into-memory).
 

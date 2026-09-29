@@ -1708,12 +1708,15 @@ def pull_records(
     read and their rows, as canonical cell strings. :func:`decode_rows`
     turns them into typed values.
 
-    Raises :class:`PullError` when the pull did not cleanly succeed: the
-    report has an ``error`` (a refusal, an API error) or ``problems`` (schema,
+    Raises :class:`PullError` when the pull was refused (a ValueError: no such
+    tab, no header row, no rows) or found ``problems`` (schema,
     ``validate``, ``check``), which is when ``report.failed`` is true and a
     pull's exit code is 1. Its ``report`` and message are the tab's
-    :class:`TabReport` and its rendering. What ``warn`` says fails nothing;
-    pass a ``report`` of your own and read its ``warnings`` afterwards.
+    :class:`TabReport` and its rendering. An ``HttpError`` or an ``OSError``
+    is not caught: it propagates as it was raised, with the retries of the
+    value calls already made, so a caller's handling of them needs no change.
+    What ``warn`` says fails nothing; pass a ``report`` of your own and read
+    its ``warnings`` afterwards.
     """
     report = report if report is not None else TabReport(tab=tab, mode="pull")
     store = MemoryStore()
@@ -1743,7 +1746,7 @@ def pull_records(
             report=report,
             transform=transform,
         )
-    except TAB_ERRORS as e:
+    except ValueError as e:
         report.error = str(e)
         raise PullError(report) from e
     if report.failed:
