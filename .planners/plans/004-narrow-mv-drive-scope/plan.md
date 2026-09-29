@@ -217,3 +217,44 @@ Corrections made to the spec:
 - The Notes record the order with plan 009.
 
 Nothing was implemented, and step 1's live check has not been run.
+
+### 2026-09-29 — A narrow scope for uploads: two services
+
+Noted while plan 020 was in progress. Nothing was implemented, and nothing below
+was checked against the API.
+
+`upload` and `sheets-create` request `DRIVE_WRITE_SCOPES` as `mv` does, so the
+constant has three consumers where this plan's Background names one. Narrowing it
+for `mv` to `drive.metadata` would take the content writes of the other two with
+it, so they need a constant of their own first.
+
+Plan 019's Log holds that under `drive.file` a listing is partial, so a replace
+can miss a file of the name and `--no-replace` can report a taken name as free. A
+caller proposed a way round: two services.
+
+- The listing (`find_named`, and the path resolution before it) runs on the
+  read-only token, `drive.readonly`, which sees every file of the name.
+- The write alone runs on a `drive.file` token.
+
+What that gives:
+
+- `--no-replace` keeps its promise: the refusal rests on the whole listing.
+- A create (`files.create`, and `sheets-create --from`) needs no more than
+  `drive.file`, in a folder the token can write to.
+
+What it does not solve, each to be read from the API before a design rests on it:
+
+- **A replace in place of a file the app did not create.** The listing sees the
+  file, and `files.update` under `drive.file` is expected to be refused for it.
+  The narrow mode would then create, or refuse, where the full scope replaces.
+- **A folder the app did not create.** Whether `files.create` with such a folder
+  as its parent is allowed under `drive.file` decides whether the mode is of use
+  in a shared folder at all.
+- **The read-back.** `verify` reads the file's size and checksum; under
+  `drive.file` that is a file the app has just created, which it may read.
+- **Two tokens are held** where one was, and the read-only one is the broader of
+  the two for reading. The gain is that the token that can write can write only
+  what the app made.
+
+The token-file questions of step 2 and step 4 apply to a `drive.file` token as
+they do to a `drive.metadata` one.

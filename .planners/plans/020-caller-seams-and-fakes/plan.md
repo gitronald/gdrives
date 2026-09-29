@@ -155,6 +155,132 @@ The changelog's `[Unreleased]`, the README's command list and module tree, the
 guide (`docs/sheets-sync.md`: the hint, the message, a section on testing a caller
 with `gdrives.testing`, which the guide's test runs), and `.claude/CLAUDE.md`.
 
+### Steps added by a second report
+
+Added on 2026-09-29, after steps 1 to 10 were done, from a second reading of the
+same kind of caller. They go on the same branch and the same PR. Each is an
+addition or an opt-in; no default changes.
+
+| # | Step | Scope |
+|---|---|---|
+| 11 | A schema reference that names an entry | `"clubtools.schema:SCHEMAS[members]"` |
+| 12 | `check_spreadsheet` with the caller's remedy | `hint=`, and `NotSpreadsheetError` carrying the name and the type |
+| 13 | A path walk that returns the entry | `walk_entry`, public |
+| 14 | A hint for a pattern | `ColumnSchema.pattern_hint` and the `pattern_hint` column field |
+| 15 | `trim_cell` | The one-cell function `trim_cells` applies |
+| 16 | `newline` for a listing | `format_csv(rows, newline=None)` and `ls --save-as ... --newline` |
+| 17 | Two options for the link audit | `rows=` on `linked_cells`, `own_colors=` on `styled_cells` |
+| 18 | A seam for terminal detection | `gdrives.testing.terminal` |
+| 19 | Announcing a refresh | `announcing_credentials(refresh=False)`, and a refused refresh is said |
+| 20 | A note for plan 004 | The two-service option for a narrow upload scope |
+| 21 | Docs | As step 10, for the steps above |
+
+#### 11. A schema reference that names an entry
+
+A `schema` reference names `module:attribute`, a mapping or a function given the
+tab's title. A caller that keeps its schemas in one registry can use it only when
+every tab's title is a key of the registry: tabs titled `Members 2026` and
+`Members 2027` cannot share `members`. The reference takes a key in brackets:
+
+```json
+"schema": "clubtools.schema:SCHEMAS[members]"
+```
+
+- With a key, a mapping attribute is a registry, a mapping of key to schema, and the
+  schema is its entry of that key. A function attribute is given the key in place of
+  the title.
+- The key is the text between the brackets as written, with no quoting: one or more
+  characters, none of them a bracket. `load_config` checks the form, and still
+  imports nothing.
+- A registry with no such entry, and an entry that is not a mapping, are problems of
+  the tab, listed with the rest when the run resolves its references.
+- Without a key a reference means what it means today.
+
+#### 12. `check_spreadsheet` with the caller's remedy
+
+The refusal of an `.xlsx` or a CSV file ends by naming `gdrives sheets-create
+--from`. A caller with a conversion command of its own cannot use the check, and
+keeps a comparison of MIME types instead.
+
+- `check_spreadsheet(file, hint=None)`: `hint` replaces the sentence after the
+  semicolon, for the types the default sentence is given for.
+- The refusal is a `NotSpreadsheetError`, a `ValueError`, with `name`, `mime_type`,
+  and `convertible` (whether the type is one `sheets-create --from` converts), so a
+  caller can write a message of its own. Its text without a `hint` is today's.
+- `resolve_spreadsheet_id` and `resolve_and_report` pass `hint` on.
+
+#### 13. A path walk that returns the entry
+
+`walk_segments` returns the ID. The listing entry, with its `mimeType`, comes only
+from the private `_walk`, so a caller that walks from a folder ID makes a second
+`files.get` to learn the type. `walk_entry(service, folder_id, segments, *,
+allow_files=False, corpora="allDrives")` returns the ID and the entry (None for no
+segments), and `walk_segments` is its first result. With `check_spreadsheet` it is
+`resolve_spreadsheet_id` from any folder.
+
+#### 14. A hint for a pattern
+
+A failure reads `'x' does not match the pattern 'https://example\\.com/members/[0-9]+'`,
+to a person who edits a sheet and does not read regular expressions.
+`ColumnSchema.pattern_hint`, and a `pattern_hint` field of a schema column, says
+what the cell should be, as a noun phrase: with `"a member page link"` the failure
+reads `'x' is not a member page link`. It is refused without `pattern`, and when it
+is empty or not a string. It is the last field of `ColumnSchema`, and the last
+column of a schema export.
+
+#### 15. `trim_cell`
+
+`trim_cells` takes rows, and the function it applies to a cell is private. A caller
+that cleans a header or a cell read with `pull_values` wraps each in a row.
+`trim_cell(text)` is that function, exported, and `trim_cells` calls it.
+
+#### 16. `newline` for a listing
+
+`listing.format_csv` ends its rows with CRLF, the `csv` module's default, so a
+listing that is committed is rewritten after every run. `format_csv(rows,
+newline=None)` takes `lf` or `crlf`, and None is today's output. `ls --save-as`
+takes `--newline`, which applies to each file saved (a `.md` listing is written
+with LF today) and is refused without `--save-as`. A listing's cells hold no line
+break, since control characters are escaped, so the row endings are all there is.
+
+#### 17. Two options for the link audit
+
+- `linked_cells` takes `rows`, as `styled_cells` and `clear_link_format` do: it
+  filters the result of the same grid read.
+- `styled_cells(own_colors=True)` counts `color` for a cell that sets a text colour
+  of its own, whatever the colour, as well as for one shown in one of `colors`.
+  Such a cell's colour is `resettable`.
+
+#### 18. A seam for terminal detection
+
+Whether a consent can run is `gdrives.auth._is_interactive`, which a caller's test
+of what it prints on a fallback patches by its private name.
+`gdrives.testing.terminal(present)` is a context manager that makes the library see
+a terminal, or none, inside its block.
+
+#### 19. Announcing a refresh
+
+Inside `announcing_credentials()` the credential line is printed whenever a token
+refresh is coming, and an access token lasts about an hour, so a caller that runs
+many commands prints it on most runs after an idle hour.
+
+- `announcing_credentials(refresh=False)` leaves a coming refresh unannounced. A
+  consent, a fallback for lack of a terminal, and an `always` line are printed as
+  before.
+- A refresh that Google refuses is said on stderr inside any announcing block,
+  naming the token file, since what follows it (a consent, or another credential)
+  is not what the run set out with. Today nothing says so.
+- The default stays `True`, and the commands are unchanged. Whether the commands
+  should stop announcing a refresh that succeeds is the owner's decision, left
+  open here.
+
+#### 20. A note for plan 004
+
+Plan 019's write-up holds that under `drive.file` a listing is partial, so
+`--no-replace` cannot keep its promise. Two services avoid that: the listing runs
+on the read-only token and the write on `drive.file`. The option, and what it does
+not solve, is appended to plan 004's Log. No scope option is added here.
+
 ### Out of scope
 
 - A narrower `drive.file` scope for `upload`: plan 004, still a draft.
