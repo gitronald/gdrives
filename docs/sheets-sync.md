@@ -105,7 +105,7 @@ to keep in step with local files:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs |
+| `spreadsheet` | yes | A Sheet URL, a bare file ID, or a Drive path (`My Drive/...`), resolved as the other `sheets-*` commands resolve theirs; a path must name a native spreadsheet, and a workbook uploaded as-is is refused |
 | `tabs` | yes | An object of one or more tabs, by tab title |
 | `base` | no | The directory for the base snapshots. Default: `sheets-base/<target>`. It may not be inside a `.gdrives/` directory, which is a cache |
 | `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
@@ -1565,8 +1565,10 @@ raise SystemExit(report.exit_code)
 `spreadsheet_id` may be None, and is then the target's own, when the config
 names the spreadsheet by URL or ID: `run_target(service, None, target, "sync")`.
 A Drive path is refused with a message that names `resolve_file_id`, since
-resolving one needs a Drive service and the drive cache. `target.spreadsheet_id`
-gives the same value to the other calls.
+resolving one needs a Drive service and the drive cache; a caller resolves it
+with `gdrives.resolve.resolve_spreadsheet_id`, which also refuses a path that
+names a file that is not a native spreadsheet, such as an uploaded `.xlsx`.
+`target.spreadsheet_id` gives the same value to the other calls.
 
 `format_report` takes the report of one tab as well, and `TabReport.exit_code`
 is the code a run of only that tab exits with, so a caller of `pull_tab` or

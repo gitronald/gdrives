@@ -260,6 +260,19 @@ downloads a whole spreadsheet to a local file. The target is a Sheet URL, a bare
 file ID, or a Drive path; the range is an A1 range like `Sheet1!A1:C10` (a bare
 `A1:C10` targets the first tab).
 
+A Drive path must name a native Google spreadsheet. One that names an uploaded
+workbook (an `.xlsx`, a CSV file) or any other file exits 1 naming the file and
+its type, and for an `.xlsx` or a `.csv` file points to `sheets-create --from`
+(see "Create a spreadsheet") to convert a local copy, where the Sheets API would
+answer with an error that does not say what is wrong. The check reads the type
+from the listing that found the file, so a path makes no request it did not
+make before. A URL or a bare ID is not checked, since that would cost a request
+the commands do not make. The same holds for the `spreadsheet` of a config
+target, in `sheets-sync`, `sheets-pull`, `sheets-push`, and `sheets-links`. From
+code, `gdrives.resolve.resolve_spreadsheet_id(source, service=None)` resolves a
+source and makes the check, and `check_spreadsheet(file)` checks a file the
+caller resolved itself.
+
 ```bash
 gdrives sheets-get <sheet-url> "Sheet1!A1:C10"          # Print a range (aligned columns)
 gdrives sheets-get <sheet-url>                          # First tab, whole used range
