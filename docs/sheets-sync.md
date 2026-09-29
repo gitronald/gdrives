@@ -1214,7 +1214,8 @@ runs (`detail=True`, so one read serves both, and `runs=False` does not save
 it), and clears every other wanted cell, splitting a block around each cell it
 leaves. A column with no such cell is cleared by the same single block as
 before; with no `rows`, the block above and below a cell left is bounded by it
-and open at the end. It combines with `style=True`, whose reset skips the cells
+and open at the end, which costs a read of the tab's size, so that no range
+starts past its last row. It combines with `style=True`, whose reset skips the cells
 left too. The default, `formulas=True`, sends what it always did.
 
 `formulas` belongs to the call. The tab field `clear_links` does not skip
@@ -1313,7 +1314,10 @@ gdrives sheets-links roster --tab Members --color "#1155cc" --apply  # Fix one t
   when `--color` is given. A tab without `link_urls` is left out with a note
   on stderr, and one named with `--tab` is refused unless `--color` is given.
   A pull tab has no `link_urls`, so it is swept when it is named or when
-  `--color` is given.
+  `--color` is given. A target's tab with a `sheet_id` is found by it, under
+  whatever title it has now, as a sync finds it: the rename is noted on
+  stderr, and a `sheet_id` the spreadsheet lacks is refused before any tab is
+  swept.
 - **The colour** is `--color` (`#rrggbb`), which a spreadsheet needs and which
   overrides a target's `link_urls` for every tab swept.
 - **A preview** reads with the read-only scope, lists each URL cell that
@@ -1329,11 +1333,13 @@ gdrives sheets-links roster --tab Members --color "#1155cc" --apply  # Fix one t
   the exit code is then 1. To leave such a tab out, name the tabs to check.
 
 As a library, `sweep_url_links(service, spreadsheet_id, tabs=None, *, color,
-apply=False)` returns a `LinkSweep`, whose `tabs` are `TabLinks` (the
+apply=False, listing=None)` returns a `LinkSweep`, whose `tabs` are `TabLinks` (the
 `problems`, whether they were `applied`, and any `skipped` or `error`), with
 `pending` and `exit_code`. `color` is one colour, or a mapping of tab title to
-colour that has an entry for each tab swept. `format_sweep(sweep)` renders what
-the command prints.
+colour that has an entry for each tab swept, and `listing` is the
+spreadsheet's `tab_listing` when the caller has read it. The tabs are named by
+the titles they have on the sheet: `sheet_id` is a config's field, which the
+command resolves. `format_sweep(sweep)` renders what the command prints.
 
 ### Auditing the links of a tab
 
@@ -1870,7 +1876,7 @@ When OAuth is configured but no consent could run for lack of a terminal, the
 line ends with the reason, so a write is not made as an unexpected identity:
 
 ```
-Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json), since OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login)
+Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json), since OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login
 ```
 
 On a preview that waits, the line follows the spreadsheet ID, since the

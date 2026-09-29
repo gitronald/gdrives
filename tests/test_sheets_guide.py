@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 
 import gdrives.local
 import gdrives.sheets
+from gdrives.auth import CredentialInfo, credential_line
 from gdrives.cli import app
 from gdrives.sheets import (
     ApplyResult,
@@ -214,6 +215,22 @@ def as_config(example: str) -> dict[str, Any]:
         tab = {"mode": "push", "local": "m.csv", "widths": data}
         return {"example": {"spreadsheet": "S", "tabs": {"Members": tab}}}
     return data
+
+
+class TestGuideCredentialLine:
+    def test_the_fallback_line_is_the_one_credential_line_prints(self):
+        shown = [
+            line
+            for line in GUIDE.read_text(encoding="utf-8").splitlines()
+            if line.startswith("Credential: ") and ", since " in line
+        ]
+        info = CredentialInfo(
+            kind="service_account",
+            identity="sync-bot@<project>.iam.gserviceaccount.com",
+            source=Path("<config-dir>/service_account.json"),
+            consent_skipped=True,
+        )
+        assert shown == [credential_line(info)]
 
 
 class TestGuideConfigs:
