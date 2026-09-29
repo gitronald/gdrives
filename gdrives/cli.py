@@ -830,6 +830,50 @@ def sheets_push(
     raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
 
 
+@app.command(name="sheets-links")
+def sheets_links(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="Sheet URL, file ID, or Drive path; or a target name in the "
+            "config file (gdrives-sheets.json). A bare word is a target when "
+            "the config found from the working directory has one of that name"
+        ),
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option("--config", help="Config file; SOURCE is then a target in it"),
+    ] = None,
+    tab: TabsOption = None,
+    color: Annotated[
+        str | None,
+        typer.Option(
+            "--color",
+            help="Link colour, #rrggbb (required for a spreadsheet; for a "
+            "target, overrides each tab's link_urls)",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Fix the links (default: preview only)"),
+    ] = False,
+):
+    """Check that each URL cell links to its own text, and fix it with --apply.
+
+    Sweeps every tab of a spreadsheet (or the --tab ones), or the tabs of a
+    config target in their link_urls colour. Previews by default. Exit code
+    0: every URL cell follows the rule or was fixed; 1: an error; 2: a
+    preview found cells to fix. See docs/sheets-sync.md.
+    """
+    from gdrives.sheets import run_links
+
+    with _cli_errors():
+        code = run_links(
+            source, config=config, tabs=tab or [], color=color, apply=apply
+        )
+    raise typer.Exit(code)  # the report's exit code: 0, 1, or 2
+
+
 # A document target accepted by every docs command: a Doc URL, a bare file ID,
 # or a Drive path (e.g. 'My Drive/notes'). Shared help strings.
 _DOC_SOURCE_HELP = "Doc URL, file ID, or Drive path (e.g. 'My Drive/notes')"

@@ -40,6 +40,8 @@ pull_values`` works regardless of which submodule defines a name:
   ``FileStore``, ``JsonEntryStore``, ``MemoryStore``)
 - ``structure``: add, place, and delete columns by header name, create
   missing tabs, set column widths, and find and clear link formatting
+- ``links``: ``sweep_url_links`` and ``format_sweep``, the links of URL cells
+  over a spreadsheet's tabs
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
   ``run_target``) and report it
@@ -96,6 +98,7 @@ from gdrives.sheets.commands import (
     run_create,
     run_delete_rule,
     run_get,
+    run_links,
     run_pull,
     run_push,
     run_rules,
@@ -136,6 +139,7 @@ from gdrives.sheets.files import (
     write_values_csv,
 )
 from gdrives.sheets.hooks import resolve_hooks, resolve_tab, resolve_target, tab_hooks
+from gdrives.sheets.links import LinkSweep, TabLinks, format_sweep, sweep_url_links
 from gdrives.sheets.match import find_rows, parse_pairs, set_by_match
 from gdrives.sheets.merge import (
     OVERRIDE_REASONS,
@@ -288,6 +292,7 @@ __all__ = [
     "INPUT_OPTIONS",
     "LINK_FIELDS",
     "LOCAL_EXTENSIONS",
+    "LinkSweep",
     "LinkedCell",
     "MODES",
     "MemoryStore",
@@ -322,6 +327,7 @@ __all__ = [
     "SyncReport",
     "TabConfig",
     "TabGrid",
+    "TabLinks",
     "TabListing",
     "TabPlan",
     "TabReport",
@@ -364,6 +370,7 @@ __all__ = [
     "first_tab",
     "format_report",
     "format_rules",
+    "format_sweep",
     "format_values",
     "from_cell",
     "get_column_widths",
@@ -411,6 +418,7 @@ __all__ = [
     "run_create",
     "run_delete_rule",
     "run_get",
+    "run_links",
     "run_pull",
     "run_push",
     "run_rules",
@@ -427,6 +435,7 @@ __all__ = [
     "split_a1",
     "spreadsheet_url",
     "strip_links",
+    "sweep_url_links",
     "sync_tab",
     "tab_grid",
     "tab_hooks",

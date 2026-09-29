@@ -9,12 +9,12 @@ import csv
 import functools
 import json
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ParamSpec, TypeVar
 
 from gdrives.local import escape_formula, printable, slug
 from gdrives.sheets.a1 import a1_quote, a1_to_grid_range
-from gdrives.sheets.config import Target, load_config
+from gdrives.sheets.config import ConfigError, Target, find_config, load_config
 from gdrives.sheets.create import (
     check_tabs,
     create_spreadsheet,
@@ -23,6 +23,7 @@ from gdrives.sheets.create import (
 )
 from gdrives.sheets.files import read_values_csv, write_values_csv
 from gdrives.sheets.hooks import resolve_target
+from gdrives.sheets.links import format_sweep, sweep_url_links
 from gdrives.sheets.match import set_by_match
 from gdrives.sheets.retry import retry_notices
 from gdrives.sheets.rules import (
@@ -98,9 +99,14 @@ def _print_report(report: SyncReport) -> int:
     hint on stderr, so stdout stays the report alone.
     """
     print(format_report(report))
-    if report.pending:
-        print("Preview only; rerun with --apply to write.", file=sys.stderr)
+    _hint_pending(report.pending)
     return report.exit_code
+
+
+def _hint_pending(pending: bool) -> None:
+    """Say on stderr that a preview left something for ``--apply`` to write."""
+    if pending:
+        print("Preview only; rerun with --apply to write.", file=sys.stderr)
 
 
 def _resolve_and_report(source: str) -> str:
@@ -714,3 +720,118 @@ def _run_all_tabs(
         name=slug if slugs else None,
     )
     return _print_report(report)
+
+
+# -- links --
+
+
+def _links_target(source: str, config: str | None) -> Target | None:
+    """The config target ``source`` names, or None when it is a spreadsheet.
+
+    With ``config``, ``source`` is a target. Without it, a URL or a Drive
+    path (anything with a ``/``) is a spreadsheet, and a bare word is a target
+    when the config found from the working directory upward has one of that
+    name, and otherwise a spreadsheet ID. A working directory with no config
+    file has only spreadsheets; a config file that cannot be read is an
+    error, since it may be the one meant.
+    """
+    if config is None:
+        if "/" in source or source.startswith(("http://", "https://")):
+            return None
+        try:
+            found = find_config()
+        except ConfigError:
+            return None
+        loaded = load_config(found)
+        return loaded.targets.get(source)
+    return load_config(config).target(source)
+
+
+def _links_plan(
+    target: Target | None, tabs: Sequence[str], color: str | None
+) -> tuple[list[str] | None, str | Mapping[str, str]]:
+    """The tabs to sweep and their colour, checked before any request.
+
+    A spreadsheet needs ``color``, and sweeps ``tabs`` or every tab. A target
+    sweeps ``tabs`` (each must be one of its tabs), or, with none, every tab
+    when ``color`` is given and otherwise the tabs that have ``link_urls``;
+    each takes its ``link_urls`` colour unless ``color`` overrides it. A tab
+    with no colour is skipped, with a note on stderr, when it was not named,
+    and refused when it was.
+    """
+    if target is None:
+        if color is None:
+            raise ValueError(
+                "a spreadsheet needs --color; a target's tabs may set link_urls"
+            )
+        return list(dict.fromkeys(tabs)) or None, color
+    known = {tab.title: tab for tab in target.tabs}
+    named = list(dict.fromkeys(tabs))
+    unknown = [title for title in named if title not in known]
+    if unknown:
+        raise ValueError(
+            f"target {target.name!r} has no tab(s) {unknown}\ntabs: {list(known)}"
+        )
+    if color is not None:
+        return named or list(known), color
+    colors = {title: tab.link_urls for title, tab in known.items() if tab.link_urls}
+    lacking = [title for title in named if title not in colors]
+    if lacking:
+        raise ValueError(
+            f"tab(s) {lacking} of target {target.name!r} have no link_urls; "
+            "pass --color"
+        )
+    if not named:
+        for title in known:
+            if title not in colors:
+                print(
+                    f"Skipping tab {printable(repr(title))}: no link_urls; "
+                    "pass --color to check it",
+                    file=sys.stderr,
+                )
+        if not colors:
+            raise ValueError(
+                f"no tab of target {target.name!r} has link_urls; pass --color"
+            )
+    return named or list(colors), colors
+
+
+@_noticed
+def run_links(
+    source: str,
+    *,
+    config: str | None = None,
+    tabs: Sequence[str] = (),
+    color: str | None = None,
+    apply: bool = False,
+) -> int:
+    """Check the URL cells of a spreadsheet's tabs, and with ``apply`` fix them.
+
+    ``source`` is a spreadsheet (URL, file ID, or Drive path) or a config
+    target: see :func:`_links_target` for how the two are told apart. A
+    spreadsheet needs ``color`` (``#rrggbb``); a target's tabs take their
+    ``link_urls`` colour, or ``color`` when given, which applies to every tab
+    swept. No hooks or schema of the config are imported. Previews on the
+    read-only scope unless ``apply``. Prints the report and returns its exit
+    code: 0 when every URL cell follows the rule or was fixed, 1 for an
+    error, 2 when a preview found cells to fix.
+    """
+    from gdrives.auth import (
+        SHEETS_WRITE_SCOPES,
+        announce_credentials,
+        build_sheets_service,
+    )
+
+    target = _links_target(source, config)
+    titles, colors = _links_plan(target, tabs, color)
+    scopes = SHEETS_WRITE_SCOPES if apply else None
+    if apply:
+        announce_credentials(scopes, always=True)
+    spreadsheet_id = _resolve_and_report(
+        source if target is None else target.spreadsheet
+    )
+    service = build_sheets_service(scopes)
+    sweep = sweep_url_links(service, spreadsheet_id, titles, color=colors, apply=apply)
+    print(format_sweep(sweep))
+    _hint_pending(sweep.pending)
+    return sweep.exit_code

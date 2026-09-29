@@ -969,6 +969,7 @@ SUBMODULES = (
     "create",
     "files",
     "hooks",
+    "links",
     "match",
     "merge",
     "order",

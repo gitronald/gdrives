@@ -696,6 +696,24 @@ def _fix_url_links(
         return []
     if sheet_id is None:
         sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
+    _write_url_links(service, spreadsheet_id, tab, rgb, problems, positions, sheet_id)
+    return problems
+
+
+def _write_url_links(
+    service: Service,
+    spreadsheet_id: str,
+    tab: str,
+    rgb: _RGB,
+    problems: Sequence[UrlLinkProblem],
+    positions: Mapping[str, int],
+    sheet_id: int,
+) -> None:
+    """Fix ``problems`` in one batch, then read them back.
+
+    Raises :class:`~gdrives.sheets.apply.ReadBackError` for any cell that
+    still breaks the rule.
+    """
     # The runs go in requests of their own, before the links they would drop.
     requests = [
         link_clear(
@@ -733,7 +751,6 @@ def _fix_url_links(
                 for cell in left
             )
         )
-    return problems
 
 
 def set_url_links(
