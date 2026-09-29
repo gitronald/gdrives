@@ -193,7 +193,10 @@ class TabConfig:
     given the tab's title that returns one. Nothing is imported until a run
     starts (:func:`~gdrives.sheets.hooks.resolve_tab`), which gives the run a
     tab with ``schema`` filled and ``schema_ref`` None. Until then the tab has
-    no schema to read: :attr:`types` and :attr:`local_store` raise ValueError.
+    no schema to read: :attr:`types` and :attr:`local_store` raise ValueError,
+    and ``schema`` itself is empty, which is what the tab holds and not what
+    its columns are. :attr:`resolved` tells the two apart, so code that reads
+    ``schema`` for checks of its own looks at it first.
     """
 
     title: str
@@ -269,13 +272,23 @@ class TabConfig:
                 )
 
     @property
+    def resolved(self) -> bool:
+        """True when ``schema`` is the tab's schema: there is no ``schema_ref``.
+
+        False for a tab that names its schema and has not been through
+        :func:`~gdrives.sheets.hooks.resolve_tab`, whose ``schema`` is empty
+        whatever its columns are.
+        """
+        return self.schema_ref is None
+
+    @property
     def types(self) -> dict[str, str]:
         """Each schema column's declared type, for writing a JSON file.
 
         Raises ValueError while ``schema_ref`` is unresolved, since the
         schema is not known yet.
         """
-        if self.schema_ref is not None:
+        if not self.resolved:
             raise ValueError(
                 f"tab {self.title!r}: schema {self.schema_ref!r} is not resolved; "
                 "a run resolves it before its first request (resolve_tab)"
@@ -779,7 +792,7 @@ class _Checker:
             base_stores = {
                 tab.title: JsonEntryStore(base_file, tab.title, types=tab.types)
                 for tab in tabs
-                if tab.mode == "sync" and tab.schema_ref is None
+                if tab.mode == "sync" and tab.resolved
             }
         return Target(
             name=name,
@@ -833,7 +846,7 @@ class _Checker:
         for target in targets:
             for tab in target.tabs:
                 where = f"target {target.name!r}, tab {tab.title!r}"
-                if tab.schema_ref is not None:
+                if not tab.resolved:
                     # Only where the stores are is compared, not how they are
                     # typed, and a reference is not resolved at load.
                     tab = replace(tab, schema_ref=None)

@@ -68,7 +68,7 @@ def schema_rows(
     wanted = [target.tab(title) for title in tabs] if tabs is not None else target.tabs
     rows: list[dict[str, str]] = []
     for tab in wanted:
-        if tab.schema_ref is not None:
+        if not tab.resolved:
             raise ValueError(
                 f"tab {tab.title!r}: schema {tab.schema_ref!r} is not resolved; "
                 "resolve it first (resolve_schemas)"

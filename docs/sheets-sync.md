@@ -2581,4 +2581,6 @@ given, so a tab built in code may name its schema too:
 schema_ref="clubtools.schema:MEMBERS")`. It takes `schema` or `schema_ref`,
 not both. Until it is resolved, a tab has no types: its `types` and
 `local_store`, and a `base_file` entry for it, raise rather than read the
-file untyped.
+file untyped. Its `schema` is empty until then, and `tab.resolved` is False,
+so code that reads `schema` for checks of its own looks at `resolved` first,
+or resolves the tab.

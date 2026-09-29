@@ -257,6 +257,17 @@ class TestATabBuiltInCode:
         # A tab with no reference is returned as it is.
         assert resolve_tab(resolved) is resolved
 
+    def test_resolved_tells_an_empty_schema_from_one_not_found_yet(self, module):
+        name = module(MEMBERS)
+        named = TabConfig("Members", Path("m.csv"), schema_ref=f"{name}:by_title")
+        assert named.schema == {} and named.resolved is False
+        found = resolve_tab(named)
+        assert found.schema and found.resolved is True
+        # A tab with no schema at all is resolved: its schema is empty.
+        plain = TabConfig("Members", Path("m.csv"))
+        assert plain.schema == {} and plain.resolved is True
+        assert TabConfig("T", Path("m.csv"), schema={"n": ColumnSchema()}).resolved
+
     def test_a_target_built_in_code_takes_a_base_file(self, tmp_path):
         tab = TabConfig("T", tmp_path / "m.csv", key=("id",))
         target = Target("t", "S", tabs=(tab,), base_file=tmp_path / "b.json")

@@ -152,7 +152,7 @@ PROMISED_ATTRIBUTES = [
     (TabReport, ["pending", "exit_code"]),
     (gdrives.sheets.SyncReport, ["pending"]),
     (Target, ["spreadsheet_id"]),
-    (TabConfig, ["schema_ref"]),
+    (TabConfig, ["schema_ref", "resolved"]),
     (Target, ["base_file"]),
     (gdrives.sheets.LinkedCell, ["text", "formula"]),
 ]

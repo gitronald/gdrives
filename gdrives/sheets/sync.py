@@ -721,7 +721,7 @@ def _resolved(tab: TabConfig) -> TabConfig:
     same pass, so one ConfigError lists both. A tab with no ``schema_ref`` is
     returned as it is, and its hooks are found where they always were.
     """
-    return resolve_tab(tab) if tab.schema_ref is not None else tab
+    return tab if tab.resolved else resolve_tab(tab)
 
 
 def _with_tab_hooks(
