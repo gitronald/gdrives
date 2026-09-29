@@ -1797,6 +1797,29 @@ class TestPushStrictSchema:
             "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
         ]
 
+    def test_local_checks_a_push_as_true_does(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "push", schema={"id": {}, "name": {}}, strict_schema="local"
+        )
+        write_local(tab, *ROWS)
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = push_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert grid.calls == []
+
+    def test_push_rows_refuses_another_value(self):
+        with pytest.raises(ValueError, match="'strict_schema' must be true, false"):
+            push_rows(
+                FakeSheetGrid({"T": [HEADER]}),
+                "S",
+                "T",
+                ["id"],
+                [{"id": "a"}],
+                strict_schema="both",
+            )
+
     def test_push_rows_default_is_off(self):
         report = push_rows(
             FakeSheetGrid({"T": [HEADER]}),
@@ -1841,6 +1864,30 @@ class TestPullStrictSchema:
         ]
         assert not local_file(tab).exists()
 
+    def test_local_checks_only_the_columns_read(self, tmp_path):
+        tab = one_tab(
+            tmp_path,
+            "pull",
+            columns=["id", "name"],
+            schema={"id": {}, "name": {}},
+            strict_schema="local",
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == []
+        assert rows_of(tab.local) == [["a", "Ada"], ["b", "Bo"]]
+
+    def test_local_refuses_an_undeclared_column_it_reads(self, tmp_path):
+        tab = one_tab(
+            tmp_path, "pull", schema={"id": {}, "name": {}}, strict_schema="local"
+        )
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        report = pull_tab(grid, "S", tab, apply=True)
+        assert report.problems == [
+            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+        ]
+        assert not local_file(tab).exists()
+
     def test_an_excluded_column_is_not_checked(self, tmp_path):
         tab = one_tab(
             tmp_path,
@@ -1868,6 +1915,18 @@ class TestPullStrictSchema:
 
 
 class TestPullRecords:
+    def test_strict_schema_local_checks_the_columns_read(self):
+        grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
+        records = pull_records(
+            grid,
+            "S",
+            "T",
+            columns=["id", "name"],
+            schema={"id": ColumnSchema(), "name": ColumnSchema()},
+            strict_schema="local",
+        )
+        assert records.columns == ["id", "name"]
+
     def test_reads_the_tab_as_records_and_writes_no_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})

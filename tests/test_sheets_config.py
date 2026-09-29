@@ -1183,8 +1183,37 @@ class TestStrictSchema:
     def test_must_be_a_boolean(self):
         refused(
             config({"Members": members(strict_schema="yes")}),
-            "target 'roster', tab 'Members': 'strict_schema' must be true or false",
+            "target 'roster', tab 'Members': 'strict_schema' must be true, false, "
+            "or 'local'",
         )
+
+    def test_local_is_accepted_and_kept(self):
+        data = config({"Members": members(strict_schema="local")})
+        assert (
+            parse_config(data, PATH).target("roster").tabs[0].strict_schema == "local"
+        )
+
+    def test_code_refuses_another_value(self):
+        with pytest.raises(ValueError, match="'strict_schema' must be true, false"):
+            TabConfig("T", Path("m.csv"), strict_schema="both")
+
+    def test_another_string_is_refused(self):
+        refused(
+            config({"Members": members(strict_schema="both")}),
+            "target 'roster', tab 'Members': 'strict_schema' must be true, false, "
+            "or 'local'",
+        )
+
+    def test_local_lets_a_schema_name_a_column_outside_columns(self):
+        data = config(
+            {
+                "Members": members(
+                    columns=["id"], schema={"id": {}, "a": {}}, strict_schema="local"
+                )
+            }
+        )
+        tab = parse_config(data, PATH).target("roster").tabs[0]
+        assert set(tab.schema) == {"id", "a"}
 
     def test_a_schema_column_outside_columns_is_accepted(self):
         data = config(

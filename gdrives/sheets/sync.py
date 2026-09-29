@@ -82,10 +82,12 @@ from gdrives.sheets.cells import (
     to_cell,
 )
 from gdrives.sheets.config import (
+    _STRICT_LOCAL,
     LOCAL_EXTENSIONS,
     MODES,
     TabConfig,
     Target,
+    _is_strict_schema,
 )
 from gdrives.sheets.files import Records, read_records, write_records
 from gdrives.sheets.hooks import (
@@ -621,7 +623,7 @@ def _problems(
     validate: Validate | None,
     check: Check | None,
     *,
-    strict_schema: bool = False,
+    strict_schema: bool | str = False,
     strict_columns: Sequence[str] | None = None,
 ) -> list[str]:
     """Every schema, ``validate``, and ``check`` problem at one stage, as messages.
@@ -1095,7 +1097,7 @@ def _plan(
         # there already stopped the plan, so a column that reaches here is
         # never one the local side also carries: reported once, at "local".
         report.problems = _check(tab, merged, *hooks, strict_columns=())
-        if tab.strict_schema and sheet_columns is not None:
+        if tab.strict_schema is True and sheet_columns is not None:
             sheet_extra = [
                 column
                 for column in sheet_columns
@@ -1597,7 +1599,15 @@ def pull_tab(
         sheet_columns=tuple(name for name in table.header if name),
     )
     report.warnings = list[str]()
-    report.problems = _check(tab, context, validate, check, strict_columns=checked)
+    # "local" checks the columns read, which become the local file's; true
+    # checks every named header column, read or not.
+    report.problems = _check(
+        tab,
+        context,
+        validate,
+        check,
+        strict_columns=checked if tab.strict_schema is True else None,
+    )
     if report.problems:
         return report
     _warn(report, context, warn)
@@ -1631,7 +1641,7 @@ def pull_records(
     key: Sequence[str] = (),
     blank_keys: str = "refuse",
     schema: Mapping[str, ColumnSchema] | None = None,
-    strict_schema: bool = False,
+    strict_schema: bool | str = False,
     exclude: Sequence[str] = (),
     render: str = "unformatted",
     sheet_id: int | None = None,
@@ -1810,7 +1820,7 @@ def push_rows(
     link_urls: str | None = None,
     label: str = "rows",
     sheet_id: int | None = None,
-    strict_schema: bool = False,
+    strict_schema: bool | str = False,
     listing: TabListing | None = None,
     report: TabReport | None = None,
     render: str = "unformatted",
@@ -1902,6 +1912,11 @@ def push_rows(
     if typed_writes and render != "unformatted":
         raise ValueError(
             f"tab {title!r}: typed writes need the tab read unformatted, not {render!r}"
+        )
+    if not _is_strict_schema(strict_schema):
+        raise ValueError(
+            f"tab {title!r}: 'strict_schema' must be true, false, or "
+            f"{_STRICT_LOCAL!r}, not {strict_schema!r}"
         )
     if link_urls is not None:
         if clear_links:

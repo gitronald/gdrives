@@ -95,6 +95,7 @@ _TAB_FIELDS = frozenset(
         "typed_writes",
     }
 )
+_STRICT_LOCAL = "local"
 _SCHEMA_FIELDS = frozenset({"type", "required", "allowed", "present", "strict"})
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
@@ -158,8 +159,13 @@ class TabConfig:
     ``strict_schema`` makes it a problem for a column of either side, less one
     a run is dropping, to have no ``schema`` entry: a carried local column and
     a sheet column outside the projection are checked too, not just the
-    projection. With it, ``schema`` may also name a column outside
-    ``columns``, which is refused otherwise.
+    projection. With ``"local"`` only the local side is checked: every local
+    column must be declared, and a sheet column outside the projection is left
+    alone. A pull checks the columns it reads, which become the local file's,
+    and leaves the other header columns alone; a push has only a local side,
+    so ``"local"`` and true check the same there. With either, ``schema`` may
+    also name a column outside ``columns``, which is refused otherwise: a
+    carried local column is one, and ``"local"`` checks it.
     ``hooks`` maps a hook (:data:`HOOKS`) to the ``module:function`` that
     runs as it, only named here: nothing is imported until a run starts
     (:func:`~gdrives.sheets.hooks.resolve_hooks`). A push tab takes no
@@ -197,7 +203,7 @@ class TabConfig:
     render: str = "unformatted"
     clear_links: bool = False
     sheet_id: int | None = None
-    strict_schema: bool = False
+    strict_schema: bool | str = False
     store: Store | None = None
     entry: str | None = None
     link_urls: str | None = None
@@ -228,6 +234,11 @@ class TabConfig:
         if self.typed_writes and self.render != "unformatted":
             raise ValueError(
                 f"tab {self.title!r}: 'typed_writes' needs 'render' unformatted"
+            )
+        if not _is_strict_schema(self.strict_schema):
+            raise ValueError(
+                f"tab {self.title!r}: 'strict_schema' must be true, false, or "
+                f"{_STRICT_LOCAL!r}, not {self.strict_schema!r}"
             )
         hook_problems = _hook_problems(self.hooks, self.mode)
         if hook_problems:
@@ -484,6 +495,11 @@ def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
     if mode == "push" and "transform" in hooks:
         found.append("hook 'transform' applies only to pull and sync tabs")
     return found
+
+
+def _is_strict_schema(value: object) -> bool:
+    """Whether ``value`` is a ``strict_schema``: true, false, or ``"local"``."""
+    return isinstance(value, bool) or value == _STRICT_LOCAL
 
 
 def _column_problems(
@@ -893,8 +909,10 @@ class _Checker:
                 f"{where}: 'render' must be one of {sorted(RENDERS)}, not {render!r}"
             )
         strict_schema = raw.get("strict_schema", False)
-        if not isinstance(strict_schema, bool):
-            problems.append(f"{where}: 'strict_schema' must be true or false")
+        if not _is_strict_schema(strict_schema):
+            problems.append(
+                f"{where}: 'strict_schema' must be true, false, or {_STRICT_LOCAL!r}"
+            )
             strict_schema = False
         typed_writes = raw.get("typed_writes", False)
         if not isinstance(typed_writes, bool):
@@ -953,7 +971,7 @@ class _Checker:
             sheet_id=sheet_id,
             entry=entry,
             link_urls=link_urls,
-            strict_schema=bool(strict_schema),
+            strict_schema=strict_schema,
             hooks=hooks,
             typed_writes=bool(typed_writes),
             schema_ref=schema_ref,
@@ -1081,7 +1099,7 @@ class _Checker:
         where: str,
         raw: Any,
         columns: Sequence[str] | None,
-        strict_schema: bool = False,
+        strict_schema: bool | str = False,
     ) -> dict[str, ColumnSchema]:
         problems = self.problems
         if not isinstance(raw, dict):

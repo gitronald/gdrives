@@ -466,10 +466,11 @@ class TestTheSameChecks:
             p.removeprefix(load_prefix) for p in at_load
         ]
 
+    @pytest.mark.parametrize("strict", [True, "local"])
     def test_strict_schema_lets_a_schema_name_a_column_outside_columns(
-        self, tmp_path, module
+        self, tmp_path, module, strict
     ):
-        fields = {"columns": ["member_id", "name"], "strict_schema": True}
+        fields = {"columns": ["member_id", "name"], "strict_schema": strict}
         (inline,) = target_of(
             tmp_path, {"T": tab(**fields, schema={"status": {}})}
         ).tabs
