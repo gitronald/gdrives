@@ -484,6 +484,11 @@ The module is found as `import` finds it, never beside the config, and every
 name is checked before the first request. See
 [hooks in the config](docs/sheets-sync.md#hooks-in-the-config).
 
+A target's `defaults` object gives `link_urls`, `strict_schema`, `newline`,
+`render`, and `blank_keys` to every tab that does not set its own, and skips a
+tab it would contradict (a `link_urls` default on a pull tab, say). See
+[defaults for every tab](docs/sheets-sync.md#defaults-for-every-tab).
+
 A tab's `schema` may name a schema written in Python instead of giving one,
 as `"module:attribute"`: `"schema": "clubtools.schema:MEMBERS"`, a mapping of
 column name to `ColumnSchema`, or a function given the tab's title that

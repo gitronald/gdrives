@@ -111,6 +111,7 @@ to keep in step with local files:
 | `base_file` | no | A `.json` file that holds every `sync` tab's base, as the entry named by the tab's title, instead of one CSV per tab under `base`. Contradicts `base`, and may not be inside a `.gdrives/` directory. See [a workbook in one JSON file](#a-workbook-in-one-json-file) |
 | `input_option` | no | How pushed values are entered: `RAW` (the default) or `USER_ENTERED`. A target with a `sync` tab, or a tab that sets `typed_writes`, must use `RAW` |
 | `hooks` | no | The default `hooks` of the target's tabs, hook by hook: a tab's own name for a hook wins. A push tab is not given the target's `transform`. See [hooks in the config](#hooks-in-the-config) |
+| `defaults` | no | An object giving `link_urls`, `strict_schema`, `newline`, `render`, and `blank_keys` to every tab that does not set its own. See [defaults for every tab](#defaults-for-every-tab) |
 
 ### Tab fields
 
@@ -157,6 +158,49 @@ Local columns outside `columns` are **carried**: they stay in the local file,
 pass through a sync untouched, and never reach the sheet or the base. Sheet
 columns outside `columns` are never read or written, unless `--drop-extra`
 deletes them.
+
+### Defaults for every tab
+
+A target's `defaults` object gives five tab fields to every tab of the target
+that does not set its own: `link_urls`, `strict_schema`, `newline`, `render`,
+and `blank_keys`, as a target's `hooks` gives hooks. It is for a target whose
+tabs share a rule, so the rule is written once.
+
+```json
+{
+  "roster": {
+    "spreadsheet": "My Drive/clubs/Roster",
+    "defaults": {
+      "strict_schema": "local",
+      "link_urls": {"color": "#1155cc"},
+      "newline": "crlf"
+    },
+    "tabs": {
+      "Members": {"local": "data/members.csv", "key": ["member_id"]},
+      "Dues": {"local": "data/dues.csv", "key": ["member_id", "year"], "newline": "lf"},
+      "Summary": {"mode": "pull", "local": "data/summary.csv"}
+    }
+  }
+}
+```
+
+- A tab that names a field has set its own, whatever the value: `"newline":
+  "lf"` on `Dues` above keeps LF, though `lf` is also the built-in value.
+- Each default is checked as the tab field is, in the same words, and a
+  problem names the target's `defaults`: `target 'roster', 'defaults':
+  'newline' must be one of ['crlf', 'lf'], not 'cr'`. Any other name is a
+  problem.
+- A default is given only to a tab it applies to, and skipped, without a note,
+  for a tab it would contradict, so a default never makes a tab invalid that
+  was valid without it. `link_urls` is not given to a `pull` tab or to a tab
+  that sets `clear_links`, `newline` is not given to a tab whose `local` is a
+  `.json` file, and `render` `formatted` is not given to a tab that sets
+  `typed_writes`. Above, `Summary` reads with `newline` `crlf` and no
+  `link_urls`, since a pull writes no links. A target's `hooks` follow the
+  same rule: a push tab is not given the `transform`.
+- Nothing else changes: a config with no `defaults` loads as it did.
+- A `Target` built in code has no `defaults`. Its `TabConfig`s carry their own
+  values, and the loader is the only place the defaults are applied.
 
 ### A tab named by its sheetId
 
