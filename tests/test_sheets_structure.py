@@ -805,6 +805,204 @@ class TestClearLinkFormat:
         assert STRUCTURE not in grid.methods
 
 
+def clears(field, across, down=None):
+    """The ``repeatCell`` clearing ``field`` over columns ``across``, rows ``down``."""
+    span = {"sheetId": 0}
+    if down is not None:
+        span["startRowIndex"] = down[0]
+        if down[1] is not None:
+            span["endRowIndex"] = down[1]
+    span |= {"startColumnIndex": across[0], "endColumnIndex": across[1]}
+    return ("repeatCell", {"range": span, "cell": {}, "fields": field})
+
+
+def formula_grid():
+    """Four named columns, ``id`` to ``mail``, and eight rows under the header."""
+    rows = [["id", "site", "note", "mail"]]
+    rows += [[f"r{n}", f"s{n}", f"n{n}", f"m{n}"] for n in range(2, 10)]
+    return FakeSheetGrid({"T": rows})
+
+
+def formula_at(grid, row, column):
+    """Make ``(row, column)`` a cell whose link comes from a ``HYPERLINK`` formula."""
+    grid.tab("T").formats[(row - 1, column)] = {
+        "link": "https://example.com/b",
+        "formula": FORMULA,
+    }
+
+
+class TestClearLinkFormulas:
+    def test_the_default_sends_the_requests_it_always_did(self):
+        grid = detail_grid()
+        clear_link_format(grid, "S", "T")
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert requests_of(grid) == [
+            clears(LINK, (0, 3)),
+            clears("textFormatRuns", (2, 3), (1, 2)),
+        ]
+        grid = detail_grid()
+        clear_link_format(grid, "S", "T", columns=["site"], rows=[2, 3, 6], style=True)
+        assert requests_of(grid) == [
+            clears(CELL_STYLE_FIELDS, (1, 2), (1, 3)),
+            clears(CELL_STYLE_FIELDS, (1, 2), (5, 6)),
+        ]
+
+    def test_formulas_true_is_the_default_and_reads_no_detail(self):
+        grid = detail_grid()
+        clear_link_format(grid, "S", "T", formulas=True)
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert grid.calls[1][1]["fields"] != LINK_DETAIL_FIELDS
+        assert 5 not in {cell.row for cell in linked_cells(grid, "S", "T")}
+
+    def test_a_formula_cell_mid_column_splits_that_column_alone(self):
+        grid = formula_grid()
+        formula_at(grid, 5, 1)
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert grid.calls[1][1]["fields"] == LINK_DETAIL_FIELDS
+        assert requests_of(grid) == [
+            clears(LINK, (0, 1)),
+            clears(LINK, (1, 2), (0, 4)),
+            clears(LINK, (1, 2), (5, None)),
+            clears(LINK, (2, 4)),
+        ]
+
+    def test_the_cell_is_left_with_its_link_and_a_format_link_beside_it_is_not(self):
+        grid = formula_grid()
+        formula_at(grid, 5, 1)
+        grid.tab("T").formats[(5, 1)] = {"link": "https://own.io"}
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert grid.links("T") == {(5, 2): "https://example.com/b"}
+        assert grid.tab("T").formats[(4, 1)]["formula"] == FORMULA
+
+    def test_formula_cells_of_adjacent_columns_on_different_rows(self):
+        grid = formula_grid()
+        formula_at(grid, 3, 1)
+        formula_at(grid, 6, 2)
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert requests_of(grid) == [
+            clears(LINK, (0, 1)),
+            clears(LINK, (1, 2), (0, 2)),
+            clears(LINK, (1, 2), (3, None)),
+            clears(LINK, (2, 3), (0, 5)),
+            clears(LINK, (2, 3), (6, None)),
+            clears(LINK, (3, 4)),
+        ]
+
+    def test_adjacent_columns_with_the_same_formula_rows_share_a_block(self):
+        grid = formula_grid()
+        formula_at(grid, 4, 1)
+        formula_at(grid, 4, 2)
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert requests_of(grid) == [
+            clears(LINK, (0, 1)),
+            clears(LINK, (1, 3), (0, 3)),
+            clears(LINK, (1, 3), (4, None)),
+            clears(LINK, (3, 4)),
+        ]
+
+    def test_given_rows_are_split_around_the_formula_cells_among_them(self):
+        grid = formula_grid()
+        formula_at(grid, 3, 1)
+        formula_at(grid, 4, 1)
+        formula_at(grid, 7, 1)  # not a wanted row
+        clear_link_format(
+            grid,
+            "S",
+            "T",
+            columns=["site", "note"],
+            rows=[2, 3, 4, 5, 8, 9],
+            runs=False,
+            formulas=False,
+        )
+        assert requests_of(grid) == [
+            clears(LINK, (1, 2), (1, 2)),
+            clears(LINK, (1, 2), (4, 5)),
+            clears(LINK, (1, 2), (7, 9)),
+            clears(LINK, (2, 3), (1, 5)),
+            clears(LINK, (2, 3), (7, 9)),
+        ]
+
+    def test_a_formula_cell_in_the_first_row_and_in_the_last_wanted_row(self):
+        grid = formula_grid()
+        formula_at(grid, 1, 1)
+        clear_link_format(grid, "S", "T", columns=["site"], runs=False, formulas=False)
+        assert requests_of(grid) == [clears(LINK, (1, 2), (1, None))]
+        grid = formula_grid()
+        formula_at(grid, 2, 1)
+        formula_at(grid, 4, 1)
+        clear_link_format(
+            grid,
+            "S",
+            "T",
+            columns=["site"],
+            rows=[2, 3, 4],
+            runs=False,
+            formulas=False,
+        )
+        assert requests_of(grid) == [clears(LINK, (1, 2), (2, 3))]
+
+    def test_every_wanted_cell_a_formula_sends_nothing(self):
+        grid = formula_grid()
+        formula_at(grid, 3, 1)
+        formula_at(grid, 4, 1)
+        clear_link_format(grid, "S", "T", columns=["site"], rows=[3, 4], formulas=False)
+        assert STRUCTURE not in grid.methods
+
+    def test_style_leaves_the_look_of_a_skipped_cell_too(self):
+        grid = formula_grid()
+        formula_at(grid, 5, 1)
+        grid.tab("T").formats[(4, 1)] |= {"underline": True, "color": {"red": 1}}
+        grid.tab("T").formats[(5, 1)] = {"underline": True, "color": {"red": 1}}
+        clear_link_format(
+            grid, "S", "T", columns=["site"], runs=False, style=True, formulas=False
+        )
+        assert requests_of(grid) == [
+            clears(CELL_STYLE_FIELDS, (1, 2), (0, 4)),
+            clears(CELL_STYLE_FIELDS, (1, 2), (5, None)),
+        ]
+        assert grid.tab("T").formats[(4, 1)]["underline"] is True
+        assert grid.tab("T").formats[(4, 1)]["color"] == {"red": 1}
+        assert grid.format("T", 6, 2) == {}
+
+    def test_one_read_serves_the_runs_and_the_formulas(self):
+        grid = detail_grid()
+        clear_link_format(grid, "S", "T", formulas=False)
+        assert grid.methods == [READ, GRID, GRID, STRUCTURE]
+        assert grid.calls[1][1]["fields"] == LINK_DETAIL_FIELDS
+        assert requests_of(grid) == [
+            clears(LINK, (0, 1)),
+            clears(LINK, (1, 2), (0, 4)),
+            clears(LINK, (1, 2), (5, None)),
+            clears(LINK, (2, 3)),
+            clears("textFormatRuns", (2, 3), (1, 2)),
+        ]
+        assert grid.tab("T").formats[(4, 1)]["link"] == "https://example.com/b"
+        assert grid.format("T", 2, 3) == {}
+
+    def test_a_formula_cell_is_left_whole_runs_included(self):
+        # The API returns no runs on a formula cell; a cell that had both
+        # would be left as it is.
+        grid = formula_grid()
+        formula_at(grid, 3, 1)
+        grid.tab("T").formats[(2, 1)]["runs"] = [run_link("https://docs.example", 1)]
+        grid.tab("T").formats[(3, 1)] = {"runs": [run_link("https://part.io", 1)]}
+        clear_link_format(grid, "S", "T", columns=["site"], formulas=False)
+        assert grid.tab("T").formats[(2, 1)]["runs"]
+        assert grid.format("T", 4, 2) == {}
+        cleared = [
+            body["range"]["startRowIndex"]
+            for kind, body in requests_of(grid)
+            if body["fields"] == "textFormatRuns"
+        ]
+        assert cleared == [3]
+
+    def test_no_formula_cell_leaves_the_request_it_sends_by_default(self):
+        grid = formula_grid()
+        clear_link_format(grid, "S", "T", runs=False, formulas=False)
+        assert requests_of(grid) == [clears(LINK, (0, 4))]
+
+
 class TestGetColumnWidths:
     def test_each_named_column_in_header_order(self):
         grid = FakeSheetGrid({"My Tab": [["id", "", "name", 2026.0], ["a", "x"]]})

@@ -1201,7 +1201,20 @@ A link that comes from a `HYPERLINK` formula is the cell's link like any
 other, and `clear_link_format` removes it: the formula stays in the cell and
 shows its label as plain text. To find such cells first, read with
 `linked_cells(..., detail=True)`, whose `formula` is True for them (see
-[auditing links](#auditing-the-links-of-a-tab)).
+[auditing links](#auditing-the-links-of-a-tab)). `formulas=False` leaves them
+as they are instead: their link, their underline, and their colour, and their
+text format runs if a cell had both. It finds them by the read that finds the
+runs (`detail=True`, so one read serves both, and `runs=False` does not save
+it), and clears every other wanted cell, splitting a block around each cell it
+leaves. A column with no such cell is cleared by the same single block as
+before; with no `rows`, the block above and below a cell left is bounded by it
+and open at the end. It combines with `style=True`, whose reset skips the cells
+left too. The default, `formulas=True`, sends what it always did.
+
+`formulas` belongs to the call. The tab field `clear_links` does not skip
+formula cells, and neither does `strip_links`. A run writes literal strings
+(`RAW`), so the cells it writes and clears hold no formula unless the target's
+`input_option` is `USER_ENTERED`.
 
 A link set as the cell's own format (`userEnteredFormat.textFormat.link`,
 sent with `repeatCell`) takes, on plain text and on a cell whose link points

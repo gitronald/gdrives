@@ -400,6 +400,7 @@ def clear_link_format(
     rows: Sequence[int] | None = None,
     runs: bool = True,
     style: bool = False,
+    formulas: bool = True,
     header: Sequence[str] | None = None,
     sheet_id: int | None = None,
 ) -> None:
@@ -423,9 +424,16 @@ def clear_link_format(
     ``style`` does not touch runs.
 
     A cell whose link comes from a ``HYPERLINK`` formula loses the link and
-    keeps the formula, which then shows its label as plain text. Find such
-    cells first with ``linked_cells(..., detail=True)``, whose ``formula`` is
-    True for them.
+    keeps the formula, which then shows its label as plain text. With
+    ``formulas=False`` such a cell is left as it is: its link, its
+    underline, and its colour, and its runs if it had any. Each block is
+    split around those cells, so a column with none is still cleared by one
+    block, and the rows of a block with no ``rows`` end where the last
+    skipped cell of its columns is passed (an open range, to the end of the
+    tab). The cells are found by the same grid read as the runs,
+    ``linked_cells(..., detail=True)``, so ``formulas=False`` costs that
+    read even with ``runs=False``. ``formulas`` is named beside ``runs`` and
+    ``style`` for what the clear also takes: the formula cells, by default.
 
     With ``runs``, a cell that holds a link on part of its text has its text
     format runs cleared whole, in the same request. The API cannot take a
@@ -447,35 +455,94 @@ def clear_link_format(
     positions, known = _wanted(service, spreadsheet_id, tab, columns, header)
     if not positions or (rows is not None and not rows):
         return
-    partial: list[LinkedCell] = []
-    if runs:
-        partial = linked_cells(
-            service, spreadsheet_id, tab, columns=list(positions), header=known
+    found: list[LinkedCell] = []
+    if runs or not formulas:
+        found = linked_cells(
+            service,
+            spreadsheet_id,
+            tab,
+            columns=list(positions),
+            header=known,
+            detail=not formulas,
         )
+    partial = found if runs else []
+    left = [] if formulas else [cell for cell in found if cell.formula]
     if sheet_id is None:
         sheet_id = tab_grid(service, spreadsheet_id, tab).sheet_id
     field = CELL_STYLE_FIELDS if style else CELL_LINK_FIELD
-    requests = _link_clears(sheet_id, positions, rows, partial, field)
-    batch_update_spreadsheet(service, spreadsheet_id, requests)
+    requests = _link_clears(sheet_id, positions, rows, partial, field, left)
+    if requests:
+        batch_update_spreadsheet(service, spreadsheet_id, requests)
 
 
 def link_clear(
     sheet_id: int,
     field: str,
     across: tuple[int, int],
-    down: tuple[int, int] | None = None,
+    down: tuple[int, int | None] | None = None,
 ) -> dict[str, Any]:
     """The ``repeatCell`` that clears ``field`` over a block of cells.
 
     ``across`` and ``down`` are 0-based, end-exclusive column and row bounds;
-    with no ``down`` the block is every row. The cell sent is empty, so each
-    field the mask names is cleared, and no other.
+    with no ``down`` the block is every row, and a ``down`` with no end runs
+    from its start to the last row. The cell sent is empty, so each field the
+    mask names is cleared, and no other.
     """
     span: dict[str, Any] = {"sheetId": sheet_id}
     if down is not None:
-        span |= {"startRowIndex": down[0], "endRowIndex": down[1]}
+        span["startRowIndex"] = down[0]
+        if down[1] is not None:
+            span["endRowIndex"] = down[1]
     span |= {"startColumnIndex": across[0], "endColumnIndex": across[1]}
     return {"repeatCell": {"range": span, "cell": {}, "fields": field}}
+
+
+def _skipped_rows(
+    positions: Mapping[str, int], rows: Sequence[int] | None, left: Sequence[LinkedCell]
+) -> dict[int, frozenset[int]]:
+    """The 0-based rows to leave, by column index, among the wanted ones."""
+    skipped: dict[int, set[int]] = {}
+    for cell in left:
+        if rows is None or cell.row in rows:
+            skipped.setdefault(positions[cell.column], set()).add(cell.row - 1)
+    return {column: frozenset(held) for column, held in skipped.items()}
+
+
+def _blocks(
+    positions: Mapping[str, int], skipped: Mapping[int, frozenset[int]]
+) -> list[tuple[tuple[int, int], frozenset[int]]]:
+    """Runs of adjacent columns that leave the same rows, as ``(across, rows)``."""
+    blocks: list[tuple[tuple[int, int], frozenset[int]]] = []
+    for first, end in _adjacent(list(positions.values())):
+        for column in range(first, end):
+            gap = skipped.get(column, frozenset())
+            if blocks and blocks[-1][0][1] == column and blocks[-1][1] == gap:
+                blocks[-1] = ((blocks[-1][0][0], column + 1), gap)
+            else:
+                blocks.append(((column, column + 1), gap))
+    return blocks
+
+
+def _row_spans(
+    rows: Sequence[int] | None, gap: frozenset[int]
+) -> list[tuple[int, int | None] | None]:
+    """The row bounds of a block that leaves the 0-based rows of ``gap``.
+
+    With no ``rows`` the block is every row: ``None`` when it leaves none,
+    else the stretches between the rows left, the last with no end.
+    """
+    if rows is not None:
+        return list(_adjacent([row - 1 for row in rows if row - 1 not in gap]))
+    if not gap:
+        return [None]
+    spans: list[tuple[int, int | None] | None] = []
+    start = 0
+    for row in sorted(gap):
+        if row > start:
+            spans.append((start, row))
+        start = row + 1
+    spans.append((start, None))
+    return spans
 
 
 def _link_clears(
@@ -484,14 +551,20 @@ def _link_clears(
     rows: Sequence[int] | None,
     partial: Sequence[LinkedCell],
     field: str = CELL_LINK_FIELD,
+    left: Sequence[LinkedCell] = (),
 ) -> list[dict[str, Any]]:
-    """The requests that clear ``field`` of a block, and the runs of ``partial``."""
-    spans = [None] if rows is None else _adjacent([row - 1 for row in rows])
+    """The requests that clear ``field`` of a block, and the runs of ``partial``.
+
+    The cells of ``left`` are excluded from both: a block is split around
+    them, and their runs are kept.
+    """
+    skipped = _skipped_rows(positions, rows, left)
     requests = [
         link_clear(sheet_id, field, across, down)
-        for across in _adjacent(list(positions.values()))
-        for down in spans
+        for across, gap in _blocks(positions, skipped)
+        for down in _row_spans(rows, gap)
     ]
+    kept = {(cell.column, cell.row) for cell in left}
     requests.extend(
         link_clear(
             sheet_id,
@@ -500,7 +573,9 @@ def _link_clears(
             (cell.row - 1, cell.row),
         )
         for cell in partial
-        if cell.in_runs and (rows is None or cell.row in rows)
+        if cell.in_runs
+        and (rows is None or cell.row in rows)
+        and (cell.column, cell.row) not in kept
     )
     return requests
 

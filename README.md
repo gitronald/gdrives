@@ -459,7 +459,8 @@ whether its link is a `HYPERLINK` formula's (`formula`), and `styled_cells`
 finds the cells underlined or coloured as a link is that hold none.
 `clear_link_format(..., style=True)` clears the underline and the text colour
 with the link; a cell whose link comes from a `HYPERLINK` formula loses the
-link and keeps the formula, which then shows its label as plain text. See
+link and keeps the formula, which then shows its label as plain text, unless
+the call passes `formulas=False`, which leaves such a cell as it is. See
 [links](docs/sheets-sync.md#links).
 
 To read a tab into Python instead of a file, `pull_records(service,
