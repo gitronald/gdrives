@@ -1311,8 +1311,10 @@ knows are valid.
 
 A preview reads with the read-only scope, so it never triggers a consent for
 write access. It prints a credential line only when its authentication is
-about to wait on an interactive consent or a token refresh, as every `gdrives`
-command does.
+about to wait on an interactive consent or a token refresh, or when OAuth is
+configured, no cached token serves, and there is no terminal for a consent (the
+run then goes on as a service account or ADC, and the line ends with the reason),
+as every `gdrives` command does.
 
 With `--apply`, each command first prints one line to stderr naming the
 credential its requests will use (an OAuth token, a service account and its
@@ -1323,6 +1325,13 @@ look hung and a write is not made as an unexpected identity:
 ```
 Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json)
 Spreadsheet ID: <spreadsheet-id>
+```
+
+When OAuth is configured but no consent could run for lack of a terminal, the
+line ends with the reason, so a write is not made as an unexpected identity:
+
+```
+Credential: service account sync-bot@<project>.iam.gserviceaccount.com (key <config-dir>/service_account.json) (OAuth is configured, but no cached token serves these scopes and there is no terminal for a consent; run gdrives login)
 ```
 
 On a preview that waits, the line follows the spreadsheet ID, since the

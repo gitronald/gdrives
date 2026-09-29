@@ -189,7 +189,11 @@ use. When a cached token already serves the scope, nothing is asked. It exits 1
 when the time runs out, or when the token could not be saved. It is also the
 way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
-starting `Credential:`.
+starting `Credential:`. The line is also printed when OAuth is configured but no
+cached token serves and there is no terminal for a consent, so the run goes on
+as the service account or ADC; it then ends with the reason and `run gdrives login`.
+It stays quiet when OAuth is not configured. `gdrives.auth.credential_line(info)`
+is that line for a `CredentialInfo`, for a caller printing it by hand.
 
 A caller that wants to say more can build on `gdrives.auth.describe_credentials()`,
 whose `CredentialInfo` names why a credential was chosen without a network call:
