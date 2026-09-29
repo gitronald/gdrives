@@ -1250,3 +1250,36 @@ def test_clear_link_format_leaves_a_formula_in_the_last_row(tab, shared_tab):
     assert [(cell.row, cell.targets, cell.formula) for cell in left] == [
         (3, ("https://example.com/b",), True)
     ]
+
+
+def test_styled_cells_finds_a_colour_a_cell_sets_itself(tab, shared_tab):
+    # What own_colors rests on: a text colour a cell sets is returned in its
+    # user-entered format, black included, and a cell that sets none has no
+    # such property. rows leaves the header out of both audits.
+    service, sid, name = tab
+    header = ["id", "note"]
+    rows = [header, ["a", "red"], ["b", "black"], ["c", "plain"]]
+    sheets.update_values(service, sid, f"'{name}'!A1:B4", rows)
+
+    def colored(rgb):
+        entered = {"textFormat": {"foregroundColorStyle": {"rgbColor": rgb}}}
+        return {"values": [{"userEnteredFormat": entered}]}
+
+    colors = {
+        "updateCells": {
+            "start": {"sheetId": shared_tab.sheet_id, "rowIndex": 1, "columnIndex": 1},
+            "rows": [colored({"red": 1.0}), colored({})],
+            "fields": "userEnteredFormat.textFormat.foregroundColorStyle",
+        }
+    }
+    _patiently(service, sid, {"requests": [colors]})
+
+    assert sheets.styled_cells(service, sid, name, header=header) == []
+    found = sheets.styled_cells(
+        service, sid, name, header=header, rows=[2, 3, 4], own_colors=True
+    )
+    assert found == [
+        sheets.StyledCell(2, "note", "red", ("color",), True),
+        sheets.StyledCell(3, "note", "black", ("color",), True),
+    ]
+    assert sheets.linked_cells(service, sid, name, header=header, rows=[2, 3]) == []

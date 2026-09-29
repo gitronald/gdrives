@@ -59,3 +59,21 @@ the grid has, and a range of no cells does nothing.
   above, less the `bold` row.
 - `test_clear_link_format_leaves_a_formula_in_the_last_row` (live).
 - `TestLinks` in `tests/test_sheets_grid.py`: the same answers from the fake.
+
+## Step 17: a text colour a cell sets itself
+
+Read on 2026-09-29, on the same temporary tab. Two cells were given a
+`foregroundColorStyle` by `updateCells`, one red (`rgbColor: {red: 1}`) and one
+black (`rgbColor: {}`), and a third was left plain.
+
+| Cell | `userEnteredFormat.textFormat` | `styled_cells(own_colors=True)` |
+|---|---|---|
+| Red, set by the cell | holds the colour | found, `color`, resettable |
+| Black, set by the cell | holds a colour property, though every channel is 0 | found, `color`, resettable |
+| Plain | absent | not found |
+
+So a colour the cell sets is told from one it does not set by the presence of the
+property, and black is no exception. With the default `colors` and no
+`own_colors`, none of the three is found.
+
+Pinned by `test_styled_cells_finds_a_colour_a_cell_sets_itself` (live).
