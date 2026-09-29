@@ -51,10 +51,16 @@ gdrives/
 │   ├── table.py      # Read a whole tab as header-named, keyed records
 │   ├── merge.py      # The pure three-way merge by row key
 │   ├── apply.py      # Write a merge plan to a tab, guarded and read back
+│   ├── typed.py      # Typed writes: typed columns as values, and date formats
+│   ├── retype.py     # Rewrite the text a typed column holds as values
 │   ├── order.py      # Put a keyed tab's rows in a given order by moving whole rows
-│   ├── structure.py  # Add and delete columns, create tabs, set column widths
+│   ├── structure.py  # Add and delete columns, create tabs, set column widths, and find, clear, and set links
+│   ├── links.py      # Check or fix the links of URL cells over a spreadsheet's tabs
 │   ├── create.py     # Create a native spreadsheet in a folder, and name its tabs
 │   ├── config.py     # The sync config file (gdrives-sheets.json)
+│   ├── hooks.py      # Hooks and schema references a config names as module:name
+│   ├── transforms.py # Stock transform hooks (trim_cells)
+│   ├── schema.py     # A target's declared schema columns as rows of documentation
 │   ├── stores.py     # Stores for the local side and the base (FileStore, JsonEntryStore, MemoryStore)
 │   ├── sync.py       # Sync, pull, and push a config's tabs, and the report
 │   └── commands.py   # run_* entry points for the sheets-* commands
