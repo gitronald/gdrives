@@ -5,7 +5,7 @@ status: active
 branch: feature/caller-glue-followups
 created: 2026-09-29T01:19:50-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/63
 ---
 
 # Remove the glue callers still write around gdrives.sheets
