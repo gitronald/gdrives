@@ -1509,7 +1509,7 @@ gdrives sheets-sync roster --tab Dues    # preview: the problems list the undecl
 
 ```
   problems (1), so nothing is written:
-    Dues (sheet): column 'note' has no schema entry, and the tab is strict_schema
+    Dues (sheet): column 'note' has no schema entry, and strict_schema is true: declare it in the tab's schema, or set strict_schema to 'local' to leave the sheet's own columns alone
 ```
 
 The run exits 1 while there are problems. For a sheet where collaborators keep

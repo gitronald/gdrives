@@ -646,8 +646,9 @@ class TestTidyingClaims:
         report = run_target(sheet, "S", target, "sync")
         (dues,) = report.tabs
         assert dues.problems == [
-            "Dues (sheet): column 'note' has no schema entry, "
-            "and the tab is strict_schema"
+            "Dues (sheet): column 'note' has no schema entry, and strict_schema "
+            "is true: declare it in the tab's schema, or set strict_schema to "
+            "'local' to leave the sheet's own columns alone"
         ]
         assert report.exit_code == 1 and not dues.wrote_local
         assert sheet.values("Dues") == [["id", "dues", "note"], ["m1", "10", "late"]]

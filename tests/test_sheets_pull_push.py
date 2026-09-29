@@ -1766,7 +1766,8 @@ class TestPushStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = push_tab(grid, "S", tab, apply=True)
         assert report.problems == [
-            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'amt' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
         assert grid.calls == []
 
@@ -1794,7 +1795,8 @@ class TestPushStrictSchema:
             strict_schema=True,
         )
         assert report.problems == [
-            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'amt' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
 
     def test_local_checks_a_push_as_true_does(self, tmp_path):
@@ -1805,7 +1807,8 @@ class TestPushStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = push_tab(grid, "S", tab, apply=True)
         assert report.problems == [
-            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'amt' has no schema entry, "
+            "and strict_schema is 'local': declare it in the tab's schema"
         ]
         assert grid.calls == []
 
@@ -1845,7 +1848,8 @@ class TestPullStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = pull_tab(grid, "S", tab, apply=True)
         assert report.problems == [
-            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (sheet): column 'amt' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
         assert not local_file(tab).exists()
 
@@ -1860,7 +1864,9 @@ class TestPullStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = pull_tab(grid, "S", tab, apply=True)
         assert report.problems == [
-            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (sheet): column 'amt' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema, or set "
+            "strict_schema to 'local' to leave the sheet's own columns alone"
         ]
         assert not local_file(tab).exists()
 
@@ -1884,7 +1890,8 @@ class TestPullStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = pull_tab(grid, "S", tab, apply=True)
         assert report.problems == [
-            "T (sheet): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (sheet): column 'amt' has no schema entry, "
+            "and strict_schema is 'local': declare it in the tab's schema"
         ]
         assert not local_file(tab).exists()
 
