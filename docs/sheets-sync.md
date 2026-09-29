@@ -124,7 +124,7 @@ to keep in step with local files:
 | `key` | all | The key columns that identify a row: a list of one or more names. Required for `sync`; optional for `pull` and `push`, where it makes the preview report rows by key |
 | `columns` | all | The **projection**: the columns the sheet carries. Default: every column of the local file. The key, owned, `schema`, `insert_above`, and `widths` columns must be in it |
 | `exclude` | `pull` | Columns to leave out of a pull, by header name; the other way round from `columns`. Contradicts `columns`. See [excluding columns from a pull](#excluding-columns-from-a-pull) |
-| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), and `pattern` (a regular expression, `str` only). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column) |
+| `schema` | all | Per column: `type` (`str`, the default, `int`, `float`, `bool`, `date`, or `datetime`), `required` (true or false), `allowed` (a list of permitted values), `present` (true or false), `strict` (true or false, `bool` and `date` only), `pattern` (a regular expression, `str` only), and `description` (text for a person, read by no check). Checked before anything is written. A `date` or `datetime` column is read from the sheet as ISO 8601. Or a string, `"module:attribute"`, naming a schema written in Python: **naming it runs it**, see [a schema in code](#a-schema-in-code). See [how cells are read and written](#how-cells-are-read-and-written) and [column presence and strict forms](#column-presence-and-strict-forms) and [a pattern for a column](#a-pattern-for-a-column), and [describing the columns](#describing-the-columns) |
 | `bom` | all | `true` writes a byte-order mark at the start of a `.csv` or `.tsv` file, for spreadsheet apps that need one. Not for `.json` |
 | `blank_keys` | all | `refuse` (the default) refuses a row with any blank key cell. `partial` refuses only a row whose every key cell is blank, for a composite key of which a component is absent on some rows. See [keys with a blank component](#keys-with-a-blank-component) |
 | `newline` | all | The line ending a `.csv` or `.tsv` file is written with: `lf` (the default) or `crlf`. A `sync` tab's base follows it. `crlf` is not for `.json`, which is written with LF |
@@ -471,6 +471,57 @@ blanks. The check is part of `cell_problem`, run after `required`, the type,
 other: it blocks the write, and `on_invalid: "hold"` holds a sheet value that
 fails it. In JSON the backslash is written twice, as above. The expression is
 compiled once per distinct string, not once per cell.
+
+### Describing the columns
+
+A schema column takes a `description`, a string that says what the column
+holds. No check of a cell reads it, and a config written without one loads as
+before; it is documentation kept beside the rules it describes.
+`gdrives sheets-schema` lists the columns a target's tabs declare, one row
+each, with the type, the rules, and the description:
+
+```bash
+gdrives sheets-schema roster                      # CSV to stdout
+gdrives sheets-schema roster --tab Members -o schema.csv
+gdrives sheets-schema roster -o schema.json       # .csv, .tsv, or .json by the extension
+```
+
+```json
+"Members": {
+  "local": "data/members.csv", "key": ["member_id"],
+  "schema": {
+    "member_id": {"required": true, "description": "The member's number, kept for life."},
+    "status": {"allowed": ["active", "closed"], "description": "Whether dues are being collected."}
+  }
+}
+```
+
+The columns are `tab`, `column`, `key` (`TRUE` for a column in the tab's
+`key`), `type`, `required`, `present`, `strict`, `allowed`, `pattern`, and
+`description`. A flag is `TRUE` or `FALSE`, as cells are written. `allowed` is
+the permitted values as canonical cell strings in a JSON array, such as
+`["active", "closed"]`, which reads back whatever a value holds, and is blank
+when the column has no list. `pattern` and `description` are blank when unset.
+The rows follow the config's order of tabs, and each tab's order of columns.
+
+- Only the columns a tab's `schema` declares are listed. A column of `key` or
+  `columns` that the `schema` leaves out is not, since a config does not know
+  the columns of a tab that has no projection, and half a list would mislead.
+  `strict_schema` is the way to require that every column is declared.
+- The command reads the config alone: no request to Google, and no
+  credential. **A `schema` given as `"module:attribute"` runs that module**,
+  as a sync does (see [a schema in code](#a-schema-in-code)), so read a
+  config from somewhere else before you run it. Hooks are not imported.
+- With `-o` the file is written atomically, with LF line endings; without it
+  the CSV goes to stdout. `--tab` limits the tabs, and `--config` names the
+  config file. It exits 0, or 1 on a problem with the config, a tab, a
+  schema, or the output path.
+- In code, `schema_rows(target, tabs=None)` returns the rows as dicts, in the
+  order of `gdrives.sheets.schema.SCHEMA_COLUMNS`, for a caller's own docs:
+  give `write_records` the columns and the rows to write a file, or
+  `format_schema(rows)` for the CSV text. A tab whose `schema` is a reference
+  must be resolved first, and `resolve_schemas(target)` does that without
+  the hooks that `resolve_target` also finds.
 
 ### Ownership
 
@@ -1459,6 +1510,7 @@ gdrives sheets-push roster --apply                 # Replace the push tabs from 
 gdrives sheets-pull <spreadsheet-id> --all-tabs -o out/  # One-off dump, no config
 gdrives sheets-widths <spreadsheet-id> --tab Members     # Column widths, as JSON for the config
 gdrives sheets-links <spreadsheet-id> --color "#1155cc"  # Check the links of URL cells on every tab
+gdrives sheets-schema roster -o schema.csv         # The target's schema columns, one row each
 ```
 
 | Option | Commands | Meaning |
@@ -1473,6 +1525,7 @@ gdrives sheets-links <spreadsheet-id> --color "#1155cc"  # Check the links of UR
 | `--prefer local\|sheet` | `sheets-sync` | Resolve cell conflicts toward one side |
 | `--all-tabs` | `sheets-pull` | Dump every tab, with no config. Needs `-o` |
 | `-o`, `--output DIR` | `sheets-pull` | The directory for `--all-tabs` files |
+| `-o`, `--output FILE` | `sheets-schema` | Write the schema rows to this `.csv`, `.tsv`, or `.json` file. Default: CSV to stdout |
 | `--skip TITLE` | `sheets-pull` | With `--all-tabs`, leave this tab out; repeat for several |
 | `--format csv\|tsv\|json` | `sheets-pull` | With `--all-tabs`, the file format. Default `csv` |
 | `--bom` | `sheets-pull` | With `--all-tabs`, start each `.csv` or `.tsv` file with a byte-order mark. Not with `--format json` |
@@ -1494,6 +1547,10 @@ target's, and with `--apply` fixes them; see
 [checking a whole spreadsheet](#checking-a-whole-spreadsheet). It exits 0 when
 every URL cell follows the rule or was fixed, 2 when a preview found cells to
 fix, and 1 on an error.
+
+**`sheets-schema`** lists the schema columns of a target, from the config alone:
+no request and no credential. See [describing the
+columns](#describing-the-columns).
 
 **`sheets-widths`** prints a tab's column widths in pixels as a JSON object
 by header name, ready to paste under the tab's `widths`. It takes a Sheet
@@ -2053,7 +2110,7 @@ first, the code's cleaning what it returns.
 **Running a command on a config runs the schema module it names**, as it runs
 the hooks. A `schema` given as `"module:attribute"` is code: `sheets-sync`,
 `sheets-pull`, and `sheets-push`, a preview included, import the module, and
-call its function when the attribute is one.
+call its function when the attribute is one. `sheets-schema` runs it too.
 
 A caller that declares its columns in Python, for its own checks and its own
 docs, names that declaration in the config instead of restating it as JSON:

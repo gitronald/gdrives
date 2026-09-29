@@ -409,6 +409,7 @@ gdrives sheets-pull <sheet-url> --all-tabs -o out/ --slug --bom --apply  # Slug 
 gdrives sheets-widths <sheet-url> --tab Members    # Column widths as JSON, for a tab's "widths"
 gdrives sheets-links <sheet-url> --color "#1155cc" # Check the links of URL cells on every tab
 gdrives sheets-links roster --tab Members --apply  # A target's tab, in its link_urls colour, fixed
+gdrives sheets-schema roster -o schema.csv         # A target's schema columns, with types, rules, and descriptions
 ```
 
 A `sync` tab is merged three ways by row key against a **base snapshot** (one
@@ -490,6 +491,14 @@ a line, keeping line breaks. Name it in `hooks`, or pass `transform=trim_cells`.
 Whitespace a collaborator typed stays on the sheet, since only the sheet's side
 of the merge is cleaned. See
 [a stock transform](docs/sheets-sync.md#a-stock-transform).
+
+A schema column may carry a `description`, which no check reads.
+`gdrives sheets-schema roster -o schema.csv` lists a target's declared columns
+with their types, rules, and descriptions, from the config alone (no request,
+no credential; a schema named as `module:attribute` is imported), as CSV, TSV,
+or JSON by the file's extension. `schema_rows` in `gdrives.sheets` returns the
+rows for a caller's own docs. See
+[describing the columns](docs/sheets-sync.md#describing-the-columns).
 
 A target's `defaults` object gives `link_urls`, `strict_schema`, `newline`,
 `render`, and `blank_keys` to every tab that does not set its own, and skips a
