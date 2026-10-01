@@ -1,10 +1,10 @@
 ---
 id: 20
 slug: caller-seams-and-fakes
-status: active
+status: done
 branch: feature/caller-seams-and-fakes
 created: 2026-09-29T12:32:11-07:00
-concluded:
+concluded: 2026-09-29T13:23:49-07:00
 pr: https://github.com/gitronald/gdrives/pull/65
 ---
 
@@ -467,3 +467,39 @@ in `cli._cli_errors`, with the README, `docs/setup-oauth.md`, the guide's
   of `GDRIVES_TEST_FILE_ID`.
 - The live suite is 40 tests, and a full run took from two and a half to three
   and a half minutes.
+
+### 2026-09-30: close
+
+- **Open question, decided by the owner:** the commands keep announcing a token
+  refresh that succeeds. `announcing_credentials(refresh=False)` stays a library
+  opt-in for a caller that runs many commands, and the changelog already says so.
+  No code changed.
+- **Review follow-up.** A medium review of the PR ran two finders (correctness;
+  reuse and simplification) and a verifier per file. Seven candidates, no finding
+  survived, and nothing was changed. Conscious no-ops, all design nits: the two
+  `check_newline` functions (`export`, `listing`) keep their context-specific
+  signatures; `sync.py` imports `LinkSweep` and `TabLinks` from `links.py` for
+  `pending_hint`, one way with no cycle; `walk_segments` stays a thin wrapper over
+  `walk_entry`; `FakeSheetGrid` refuses a `repeatCell` on a tab of no rows, as
+  the pinned rule for a range that starts at the grid's end says; a padded
+  registry key fails at resolution with its own message. The review was posted
+  on the PR.
+- Gate: ruff, ruff format, and pyrefly clean locally; CI passed on the head
+  commit on Python 3.11 to 3.14. The full live suite was not rerun, as nothing
+  but this plan changed since its last full pass.
+
+## Retrospective
+
+- Two sets of steps on one branch and one PR worked: the second report arrived
+  mid-plan and folded in without a second review and merge cycle.
+- Moving the fakes into the package (`gdrives.testing`) put them under the 100%
+  coverage floor, so every branch of a fake needed a test. Pinning the fakes
+  against the live API (`live-findings.md`) before shipping them was what made
+  them worth importing.
+- Message wording is public surface: three changed messages and one wider schema
+  export are the upgrade notes a caller has to read. Collecting them in the last
+  log entry made the changelog and the close straightforward.
+- Leaving a single owner's question open in the log, with the exact change it
+  would take, made the close one decision instead of a re-investigation.
+- Next time: write the review beside the plan before handing off, so the close
+  does not start with an unreviewed PR.
