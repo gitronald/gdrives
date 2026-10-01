@@ -1,6 +1,6 @@
 """Tests for gdrives.sheets — value ops, source resolution, CSV, and entry points.
 
-The core helpers run against ``FakeSheetsService`` (tests/helpers.py), which
+The core helpers run against ``FakeSheetsService`` (gdrives.testing), which
 records each ``(method, kwargs)`` call and returns a preset response, so tests
 assert both the exact request shape and the parsed result. The ``run_*`` entry
 points patch ``build_sheets_service`` at its source (``gdrives.auth``) since they
@@ -10,7 +10,6 @@ import it lazily.
 from types import MappingProxyType
 
 import pytest
-from helpers import FakeSheetsService, patch_sheets_service
 
 from gdrives.sheets import (
     FORMATTED_STRING,
@@ -43,6 +42,7 @@ from gdrives.sheets import (
     update_values,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetsService, patch_sheets_service
 
 # -- pull_values --
 
@@ -252,7 +252,7 @@ class TestPullGrid:
             pull_grid(svc, "sid", "T", self.MASK)
 
     def test_an_http_error_is_retried_as_a_read_is(self, monkeypatch):
-        from helpers import http_error
+        from gdrives.testing import http_error
 
         monkeypatch.setattr("gdrives.sheets.retry.time.sleep", lambda seconds: None)
         svc = FakeSheetsService(

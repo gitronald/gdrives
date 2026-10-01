@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from helpers import http_error, make_file, make_gdoc
+from helpers import make_file, make_gdoc
 
 from gdrives.revisions import (
     EXPORT_EXTENSIONS,
@@ -12,6 +12,7 @@ from gdrives.revisions import (
     download_revision,
     list_revisions,
 )
+from gdrives.testing import http_error
 
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 PDF_MIME = "application/pdf"

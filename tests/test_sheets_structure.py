@@ -8,7 +8,6 @@ from datetime import date
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import LINK_BLUE, FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     CELL_STYLE_FIELDS,
@@ -34,6 +33,7 @@ from gdrives.sheets import (
     url_link_problems,
 )
 from gdrives.sheets.structure import _shown_rgb, _style_reasons
+from gdrives.testing import LINK_BLUE, FakeSheetGrid, http_error
 
 READ = "values.get"
 GRID = "spreadsheets.get"
@@ -395,6 +395,30 @@ class TestLinkedCells:
             ),
         }
 
+    def test_rows_filter_the_result_of_the_same_read(self):
+        grid = linked_grid()
+        found = linked_cells(grid, "S", "T", rows=[2, 4, 99])
+        assert [(cell.row, cell.column) for cell in found] == [
+            (2, "site"),
+            (2, "note"),
+            (4, "note"),
+        ]
+        assert grid.methods == [READ, GRID]
+        assert grid.calls[-1][1]["ranges"] == ["'T'!A:E"]
+        everything = linked_cells(grid, "S", "T")
+        assert linked_cells(grid, "S", "T", rows=None) == everything
+        assert linked_cells(grid, "S", "T", rows=[]) == []
+        detailed = linked_cells(grid, "S", "T", rows=[3], detail=True)
+        assert [(cell.row, cell.text) for cell in detailed] == [(3, "example.com")]
+
+    def test_a_row_below_1_is_refused_before_any_request(self):
+        grid = linked_grid()
+        with pytest.raises(
+            ValueError, match=r"rows are spreadsheet rows, from 1: \[0\]"
+        ):
+            linked_cells(grid, "S", "T", rows=[0, 2])
+        assert grid.methods == []
+
     def test_the_columns_named_bound_the_read(self):
         grid = linked_grid()
         found = linked_cells(grid, "S", "T", columns=["note", "site"])
@@ -587,6 +611,27 @@ class TestStyledCells:
         assert [c.row for c in styled_cells(grid, "S", "T", colors=[])] == [2, 3, 3]
         assert LINK_COLOR == "#1155cc"
 
+    def test_own_colors_finds_any_colour_a_cell_sets_itself(self):
+        grid = styled_grid()
+        found = styled_cells(grid, "S", "T", own_colors=True)
+        assert [(cell.row, cell.column, cell.reasons) for cell in found] == [
+            (2, "site", ("underline", "color")),
+            (2, "note", ("color",)),
+            (3, "site", ("underline",)),
+            (3, "note", ("underline", "color")),
+            (4, "note", ("color",)),
+        ]
+        assert all(cell.resettable for cell in found)
+        # With no colour named, the cell's own colours are all that count.
+        own = styled_cells(grid, "S", "T", colors=[], own_colors=True)
+        assert [(cell.row, cell.column) for cell in own] == [
+            (cell.row, cell.column) for cell in found
+        ]
+        clear_link_format(
+            grid, "S", "T", rows=[cell.row for cell in own], style=True, runs=False
+        )
+        assert styled_cells(grid, "S", "T", colors=[], own_colors=True) == []
+
     def test_columns_rows_and_header_bound_the_result_and_the_read(self):
         grid = styled_grid()
         header = ["id", "site", "note"]
@@ -652,6 +697,32 @@ class TestLookOfACell:
         assert _style_reasons(cell, {(17, 85, 204)}) == (("underline", "color"), True)
         entered.pop("underline")
         assert _style_reasons(cell, {(17, 85, 204)}) == (("underline", "color"), False)
+
+    def test_own_colors_counts_a_colour_the_cell_sets_and_no_other(self):
+        red = {"foregroundColorStyle": {"rgbColor": {"red": 1.0}}}
+        cell = {
+            "effectiveFormat": {"textFormat": red},
+            "userEnteredFormat": {"textFormat": red},
+        }
+        assert _style_reasons(cell, {(17, 85, 204)}) == ((), True)
+        assert _style_reasons(cell, {(17, 85, 204)}, own_colors=True) == (
+            ("color",),
+            True,
+        )
+        # A colour from conditional formatting or the theme is not the cell's.
+        given = {"effectiveFormat": {"textFormat": red}}
+        assert _style_reasons(given, set(), own_colors=True) == ((), True)
+        assert _style_reasons(given, {(255, 0, 0)}, own_colors=True) == (
+            ("color",),
+            False,
+        )
+        # Black that the cell sets itself is a colour of its own.
+        black = {"foregroundColorStyle": {"rgbColor": {}}}
+        cell = {
+            "effectiveFormat": {"textFormat": black},
+            "userEnteredFormat": {"textFormat": black},
+        }
+        assert _style_reasons(cell, set(), own_colors=True) == (("color",), True)
 
 
 class TestClearLinkFormatStyle:

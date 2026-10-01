@@ -9,7 +9,6 @@ values and formats a run leaves on the sheet and the requests that made them.
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from helpers import FakeSheetGrid
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -40,6 +39,7 @@ from gdrives.sheets import (
     verify,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 STRUCTURE = "spreadsheets.batchUpdate"
 PUSH = "values.batchUpdate"

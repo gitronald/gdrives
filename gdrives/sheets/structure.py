@@ -342,6 +342,7 @@ def linked_cells(
     columns: Sequence[str] | None = None,
     header: Sequence[str] | None = None,
     detail: bool = False,
+    rows: Sequence[int] | None = None,
 ) -> list[LinkedCell]:
     """Every cell of ``columns`` that holds a link, in row then column order.
 
@@ -350,25 +351,33 @@ def linked_cells(
     (:func:`~gdrives.sheets.values.pull_grid`) under :data:`LINK_FIELDS`,
     over the columns from the first wanted to the last. ``header`` is the
     tab's header row when the caller has it, which saves the read of row 1.
+    ``rows`` (1-based spreadsheet rows) defaults to every row, and filters the
+    result of that one read, as it does for :func:`styled_cells`: a caller
+    auditing data rows leaves row 1 out.
 
     With ``detail`` the read is under :data:`LINK_DETAIL_FIELDS` and fills
     each cell's ``text`` and ``formula``; without it they keep their
     defaults (``""`` and False), and the read and the result are those of
     0.14.
 
-    Raises ValueError, before the grid read, for a blank or repeated name, or
-    a name the header lacks or repeats.
+    Raises ValueError, before any request, for a row below 1, and before the
+    grid read for a blank or repeated name, or a name the header lacks or
+    repeats.
     """
+    _check_rows(rows)
     positions, _ = _wanted(service, spreadsheet_id, tab, columns, header)
     if not positions:
         return []
     first, last = min(positions.values()), max(positions.values())
     names = {index: name for name, index in positions.items()}
+    wanted = None if rows is None else set(rows)
     span = f"{a1_quote(tab)}!{column_letter(first)}:{column_letter(last)}"
     fields = LINK_DETAIL_FIELDS if detail else LINK_FIELDS
     data = pull_grid(service, spreadsheet_id, span, fields)
     found: list[LinkedCell] = []
     for row, held in enumerate(data.get("rowData", []), start=1):
+        if wanted is not None and row not in wanted:
+            continue
         for index, cell in enumerate(held.get("values", []), start=first):
             if index not in names:
                 continue
@@ -514,9 +523,10 @@ def _skipped_rows(
     positions: Mapping[str, int], rows: Sequence[int] | None, left: Sequence[LinkedCell]
 ) -> dict[int, frozenset[int]]:
     """The 0-based rows to leave, by column index, among the wanted ones."""
+    wanted = None if rows is None else set(rows)
     skipped: dict[int, set[int]] = {}
     for cell in left:
-        if rows is None or cell.row in rows:
+        if wanted is None or cell.row in wanted:
             skipped.setdefault(positions[cell.column], set()).add(cell.row - 1)
     return {column: frozenset(held) for column, held in skipped.items()}
 
@@ -583,6 +593,7 @@ def _link_clears(
         for down in _row_spans(rows, gap, row_count)
     ]
     kept = {(cell.column, cell.row) for cell in left}
+    wanted = None if rows is None else set(rows)
     requests.extend(
         link_clear(
             sheet_id,
@@ -592,7 +603,7 @@ def _link_clears(
         )
         for cell in partial
         if cell.in_runs
-        and (rows is None or cell.row in rows)
+        and (wanted is None or cell.row in wanted)
         and (cell.column, cell.row) not in kept
     )
     return requests
@@ -619,11 +630,13 @@ def strip_links(
     returned.
     """
 
+    wanted = None if rows is None else set(rows)
+
     def found() -> list[LinkedCell]:
         cells = linked_cells(
             service, spreadsheet_id, tab, columns=columns, header=header
         )
-        return [cell for cell in cells if rows is None or cell.row in rows]
+        return [cell for cell in cells if wanted is None or cell.row in wanted]
 
     linked = found()
     if not linked:
@@ -994,18 +1007,22 @@ def _shown_rgb(text_format: Mapping[str, Any]) -> _RGB:
 
 
 def _style_reasons(
-    cell: Mapping[str, Any], rgbs: Collection[_RGB]
+    cell: Mapping[str, Any], rgbs: Collection[_RGB], own_colors: bool = False
 ) -> tuple[tuple[str, ...], bool]:
-    """Why a cell with text and no link looks like a link, and if a reset undoes it."""
+    """Why a cell with text and no link looks like a link, and if a reset undoes it.
+
+    With ``own_colors`` a text colour the cell sets itself is a reason,
+    whatever the colour.
+    """
     shown = cell.get("effectiveFormat", {}).get("textFormat", {})
     entered = cell.get("userEnteredFormat", {}).get("textFormat", {})
-    found = {
-        "underline": bool(shown.get("underline")),
-        "color": _shown_rgb(shown) in rgbs,
-    }
     own = {
         "underline": bool(entered.get("underline")),
         "color": "foregroundColorStyle" in entered or "foregroundColor" in entered,
+    }
+    found = {
+        "underline": bool(shown.get("underline")),
+        "color": _shown_rgb(shown) in rgbs or (own_colors and own["color"]),
     }
     reasons = tuple(reason for reason in _STYLE_REASON_ORDER if found[reason])
     return reasons, all(own[reason] for reason in reasons)
@@ -1020,6 +1037,7 @@ def styled_cells(
     rows: Sequence[int] | None = None,
     header: Sequence[str] | None = None,
     colors: Sequence[str] = (LINK_COLOR,),
+    own_colors: bool = False,
 ) -> list[StyledCell]:
     """Every cell of ``columns`` and ``rows`` that looks like a link and holds none.
 
@@ -1032,6 +1050,12 @@ def styled_cells(
     caller that wants underlines alone passes none. Either reason is enough,
     so a cell underlined in black is found. Returns the cells in row then
     column order.
+
+    ``own_colors`` widens ``color`` to any text colour the cell sets itself,
+    whatever it is, beside the ``colors`` named: the answer to "does this
+    cell set a text colour of its own", black included. Such a colour is the
+    cell's own, so a reset undoes it. A colour that conditional formatting or
+    the theme gives is still found by ``colors`` alone.
 
     The look is read from the effective format, since a link's own look has
     no user-entered property and conditional formatting or a theme can
@@ -1068,7 +1092,7 @@ def styled_cells(
             text = cell.get("formattedValue", "")
             if index not in names or not text or _holds_link(cell):
                 continue
-            reasons, resettable = _style_reasons(cell, rgbs)
+            reasons, resettable = _style_reasons(cell, rgbs, own_colors)
             if reasons:
                 found.append(StyledCell(row, names[index], text, reasons, resettable))
     return found

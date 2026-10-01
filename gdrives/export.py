@@ -56,7 +56,9 @@ def mime_for_output(output_path: str) -> str:
         )
 
 
-def set_line_endings(content: bytes, extension: str, newline: str) -> bytes:
+def set_line_endings(
+    content: bytes, extension: str, newline: str, cells: bool = False
+) -> bytes:
     """Rewrite the line endings of a text export to ``newline`` (``lf`` or ``crlf``).
 
     Works on the bytes Drive sent, so a file that is not valid UTF-8 is not
@@ -67,9 +69,14 @@ def set_line_endings(content: bytes, extension: str, newline: str) -> bytes:
     stays as the cell holds it: only the row endings change, and which cells
     are quoted, and every other byte, stay as they were. A UTF-8 byte-order
     mark at the start of the file is kept, and the first cell starts after it.
+
+    ``cells`` rewrites the line breaks inside the quoted cells of a ``.csv``
+    file as well, so the file holds one line ending throughout. That changes
+    the values of those cells, which is why it is asked for and not the
+    default. It changes nothing for a ``.txt`` or ``.md`` file.
     """
     ending = line_ending(newline).encode()
-    if extension.lower() != ".csv":
+    if cells or extension.lower() != ".csv":
         return _TEXT_END.sub(ending, content)
 
     def row_ending(match: re.Match[bytes]) -> bytes:
@@ -79,34 +86,51 @@ def set_line_endings(content: bytes, extension: str, newline: str) -> bytes:
     return mark + _CSV_SCAN.sub(row_ending, content[len(mark) :])
 
 
-def check_newline(output_path: str, newline: str | None) -> None:
-    """Refuse a ``newline`` that is not one, or that goes with a binary export."""
+def check_newline(output_path: str, newline: str | None, cells: bool = False) -> None:
+    """Refuse a ``newline`` that is not one, or that goes with a binary export.
+
+    ``cells`` is refused without a ``newline`` to rewrite them to, and for
+    any export but a ``.csv`` file, the one that has cells.
+    """
+    suffix = Path(output_path).suffix.lower()
+    if cells and newline is None:
+        raise ValueError("newline_cells needs a newline to rewrite the cells to")
     if newline is None:
         return
     line_ending(newline)
-    suffix = Path(output_path).suffix.lower()
     if suffix not in TEXT_EXTENSIONS:
         raise ValueError(
             f"newline applies to a text export ({', '.join(sorted(TEXT_EXTENSIONS))}), "
             f"not {suffix!r}"
         )
+    if cells and suffix != ".csv":
+        raise ValueError(f"newline_cells applies to a .csv export, not {suffix!r}")
 
 
 def export_file(
-    service: Service, file_id: str, output_path: str, newline: str | None = None
+    service: Service,
+    file_id: str,
+    output_path: str,
+    newline: str | None = None,
+    newline_cells: bool = False,
 ):
     """Export a Doc, Sheet, or Slides to the format implied by output_path.
 
     ``newline`` (``"lf"`` or ``"crlf"``) rewrites the line endings of a text
     export (``.csv``, ``.txt``, ``.md``) before the file appears under its name;
     None leaves the bytes as Drive sent them. It is refused, before any request,
-    for a binary format and for any other value.
+    for a binary format and for any other value. ``newline_cells`` rewrites the
+    line breaks inside the quoted cells of a ``.csv`` export too
+    (:func:`set_line_endings`), and is refused without ``newline`` and for any
+    other format.
     """
     mime = mime_for_output(output_path)
-    check_newline(output_path, newline)
+    check_newline(output_path, newline, newline_cells)
     content = service.files().export(fileId=file_id, mimeType=mime).execute()
     if newline is not None:
-        content = set_line_endings(content, Path(output_path).suffix, newline)
+        content = set_line_endings(
+            content, Path(output_path).suffix, newline, cells=newline_cells
+        )
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with atomic_output(out) as f:
@@ -114,13 +138,18 @@ def export_file(
     print(f"Exported to {output_path} ({len(content)} bytes)")
 
 
-def run(source: str, output: str, newline: str | None = None):
+def run(
+    source: str,
+    output: str,
+    newline: str | None = None,
+    newline_cells: bool = False,
+):
     """Export a Doc (.docx/.txt/.md), Sheet (.xlsx/.csv), or Slides (.pptx) file."""
     from gdrives.auth import build_drive_service
 
-    check_newline(output, newline)
+    check_newline(output, newline, newline_cells)
     file_id = extract_drive_id(source)
     print(f"File ID: {file_id}", file=sys.stderr)
 
     service = build_drive_service()
-    export_file(service, file_id, output, newline=newline)
+    export_file(service, file_id, output, newline=newline, newline_cells=newline_cells)

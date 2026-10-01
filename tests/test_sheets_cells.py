@@ -3,6 +3,7 @@
 All pure functions, so the tests are exhaustive over the documented cases.
 """
 
+from dataclasses import fields, replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from gdrives.sheets import (
     ColumnSchema,
     Problem,
     cell_problem,
+    cells,  # the module, for patching its names
     column_type,
     decode_rows,
     encode_rows,
@@ -716,6 +718,61 @@ class TestColumnSchema:
             ColumnSchema(type=type_, strict=True)
 
 
+class TestAllowedCells:
+    def test_they_are_the_canonical_strings_in_order(self):
+        schema = ColumnSchema(type="date", allowed=[date(2026, 1, 1), "2026-02-01"])
+        assert schema.allowed_cells == ("2026-01-01", "2026-02-01")
+
+    def test_a_schema_with_no_allowed_has_none(self):
+        assert ColumnSchema().allowed_cells == ()
+
+    def test_they_are_built_once(self, monkeypatch):
+        built: list[object] = []
+
+        def counting(value: object) -> str:
+            built.append(value)
+            return to_cell(value)
+
+        monkeypatch.setattr(cells, "to_cell", counting)
+        schema = ColumnSchema(allowed=["x", "y"])
+        for text in ("x", "y", "z", "x"):
+            cell_problem(text, schema)
+        assert built == ["x", "y"]
+
+    def test_a_date_column_normalizes_them_once(self, monkeypatch):
+        seen: list[str] = []
+        normalize = cells.normalize_cell
+
+        def counting(text: str, type_: str = "str") -> str:
+            seen.append(text)
+            return normalize(text, type_)
+
+        monkeypatch.setattr(cells, "normalize_cell", counting)
+        schema = ColumnSchema(type="datetime", allowed=[datetime(2026, 1, 1, 9)])
+        for _ in range(3):
+            assert cell_problem("2026-01-01 09:00:00.000", schema) is None
+        assert seen.count("2026-01-01 09:00:00") == 1
+
+    def test_a_list_changed_after_the_first_check_is_not_read_again(self):
+        allowed = ["x"]
+        schema = ColumnSchema(allowed=allowed)
+        assert cell_problem("y", schema) == "'y' is not one of ['x']"
+        allowed.append("y")
+        assert cell_problem("y", schema) == "'y' is not one of ['x']"
+
+    def test_they_are_no_part_of_equality_or_repr(self):
+        checked, fresh = ColumnSchema(allowed=("x",)), ColumnSchema(allowed=("x",))
+        cell_problem("x", checked)
+        assert checked == fresh
+        assert hash(checked) == hash(fresh)
+        assert repr(checked) == repr(fresh)
+
+    def test_a_replaced_schema_builds_its_own(self):
+        schema = ColumnSchema(allowed=["x"])
+        cell_problem("x", schema)
+        assert replace(schema, allowed=["y"]).allowed_cells == ("y",)
+
+
 class TestColumnPattern:
     SCHEMA = ColumnSchema(pattern="https://example\\.com/members/[0-9]+")
 
@@ -773,8 +830,48 @@ class TestColumnPattern:
         with pytest.raises(ValueError, match="pattern is not a regular expression"):
             ColumnSchema(pattern=pattern)
 
+    def test_it_must_not_be_empty(self):
+        with pytest.raises(ValueError, match="pattern must not be empty"):
+            ColumnSchema(pattern="")
+
     def test_of_takes_it(self):
         assert ColumnSchema.of(str, pattern="x") == ColumnSchema(pattern="x")
+
+
+class TestPatternHint:
+    SCHEMA = ColumnSchema(
+        pattern="https://example\\.com/members/[0-9]+",
+        pattern_hint="a member page link",
+    )
+
+    def test_a_failure_is_named_by_the_hint(self):
+        assert cell_problem("x", self.SCHEMA) == "'x' is not a member page link"
+        assert cell_problem("https://example.com/members/7", self.SCHEMA) is None
+
+    def test_a_blank_cell_is_still_required_s(self):
+        assert cell_problem("", self.SCHEMA) is None
+
+    def test_it_reaches_the_problem_of_a_row(self):
+        (found,) = problems([{"link": "x"}], {"link": self.SCHEMA}, tab="Members")
+        assert (
+            str(found) == "Members: row 1, column 'link': 'x' is not a member page link"
+        )
+
+    def test_it_is_the_last_field_and_part_of_equality(self):
+        assert [f.name for f in fields(ColumnSchema)][-1] == "pattern_hint"
+        assert self.SCHEMA != ColumnSchema(pattern=self.SCHEMA.pattern)
+        assert ColumnSchema.of(str, pattern="a", pattern_hint="an a") == ColumnSchema(
+            pattern="a", pattern_hint="an a"
+        )
+
+    def test_it_is_refused_without_a_pattern(self):
+        with pytest.raises(ValueError, match="only for a column with a pattern"):
+            ColumnSchema(pattern_hint="a member page link")
+
+    @pytest.mark.parametrize("hint", ["", 5])
+    def test_it_must_be_a_string_that_is_not_empty(self, hint):
+        with pytest.raises(ValueError, match="pattern_hint must be a string"):
+            ColumnSchema(pattern="a", pattern_hint=hint)
 
 
 class TestColumnDescription:

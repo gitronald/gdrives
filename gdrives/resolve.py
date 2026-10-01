@@ -66,20 +66,28 @@ def walk_segments(
     corpora: str = "allDrives",
 ) -> str:
     """Walk path segments from a starting folder, returning the final ID."""
-    return _walk(service, folder_id, segments, allow_files, corpora)[0]
+    return walk_entry(
+        service, folder_id, segments, allow_files=allow_files, corpora=corpora
+    )[0]
 
 
-def _walk(
+def walk_entry(
     service: Service,
     folder_id: str,
     segments: list[str],
-    allow_files: bool,
-    corpora: str,
+    *,
+    allow_files: bool = False,
+    corpora: str = "allDrives",
 ) -> tuple[str, DriveFile | None]:
     """Walk ``segments``, returning the final ID and the listing entry it came from.
 
-    The entry is the child the last segment matched, with the metadata a folder
-    listing carries (its ``mimeType`` among it), and None for no segments.
+    As :func:`walk_segments`, from any folder, for a caller that needs what
+    the file is as well as its ID. The entry is the child the last segment
+    matched, with the metadata a folder listing carries (its ``name`` and its
+    ``mimeType`` among it), so its type costs no ``files.get``; it is None for
+    no segments, when the ID is ``folder_id``. Given to
+    :func:`check_spreadsheet`, the entry of a path that must name a
+    spreadsheet is checked at no request.
     """
     match: DriveFile | None = None
     for i, segment in enumerate(segments):
@@ -233,14 +241,42 @@ _TYPE_WORDS = {
 }
 
 
-def check_spreadsheet(file: DriveFile) -> None:
+#: The way out :func:`check_spreadsheet` names for a type that can be converted.
+CONVERT_HINT = (
+    "download it and convert the local copy with 'gdrives sheets-create --from'"
+)
+
+
+class NotSpreadsheetError(ValueError):
+    """A Drive file that is not a native Google spreadsheet.
+
+    ``name`` is the file's name as Drive holds it (the message shows it
+    through :func:`~gdrives.local.printable`), ``mime_type`` its type, empty
+    when the file has none, and ``convertible`` whether the type is one
+    ``sheets-create --from`` converts. A caller with a message of its own
+    writes it from these.
+    """
+
+    def __init__(
+        self, message: str, *, name: str, mime_type: str, convertible: bool
+    ) -> None:
+        super().__init__(message)
+        self.name = name
+        self.mime_type = mime_type
+        self.convertible = convertible
+
+
+def check_spreadsheet(file: DriveFile, hint: str | None = None) -> None:
     """Refuse a Drive file that is not a native Google spreadsheet.
 
     The Sheets API answers a workbook uploaded as-is with an error that does not
     say what is wrong with the file. ``file`` needs ``name`` and ``mimeType``; a
-    file the caller resolved itself (a path walk's entry) is checked at no cost.
-    A type that ``sheets-create --from`` converts
-    (:data:`~gdrives.sheets.create.SOURCE_MIMES`) is refused with that way out.
+    file the caller resolved itself (a path walk's entry, see
+    :func:`walk_entry`) is checked at no cost. A type that ``sheets-create
+    --from`` converts (:data:`~gdrives.sheets.create.SOURCE_MIMES`) is refused
+    with that way out, :data:`CONVERT_HINT`, after a semicolon. ``hint`` is
+    given in its place, for a caller that converts such a file with a command
+    of its own. The refusal is a :class:`NotSpreadsheetError`, a ValueError.
     """
     mime = file.get("mimeType", "")
     if mime == SPREADSHEET_MIME:
@@ -251,27 +287,30 @@ def check_spreadsheet(file: DriveFile) -> None:
     words = _TYPE_WORDS.get(mime)
     kind = f"{words} ({mime})" if words else f"of type {mime or 'unknown'}"
     message = f"'{printable(file['name'])}' is {kind}, not a Google spreadsheet"
-    if mime in SOURCE_MIMES.values():
-        message += (
-            "; download it and convert the local copy with 'gdrives "
-            "sheets-create --from'"
-        )
-    raise ValueError(message)
+    convertible = mime in SOURCE_MIMES.values()
+    if convertible:
+        message += f"; {CONVERT_HINT if hint is None else hint}"
+    raise NotSpreadsheetError(
+        message, name=file["name"], mime_type=mime, convertible=convertible
+    )
 
 
-def resolve_spreadsheet_id(source: str, service: Service | None = None) -> str:
+def resolve_spreadsheet_id(
+    source: str, service: Service | None = None, *, hint: str | None = None
+) -> str:
     """Resolve a URL, bare ID, or Drive path to a spreadsheet's file ID.
 
     As :func:`resolve_file_id`, and a Drive path is also checked to be a native
-    spreadsheet (:func:`check_spreadsheet`). The check reads the ``mimeType``
-    of the listing the last path segment was matched in, so it costs no
-    request. A URL or a bare ID is not checked, since that would cost one.
+    spreadsheet (:func:`check_spreadsheet`, which is given ``hint``). The check
+    reads the ``mimeType`` of the listing the last path segment was matched in,
+    so it costs no request. A URL or a bare ID is not checked, since that would
+    cost one.
     """
     file_id = direct_file_id(source)
     if file_id is not None:
         return file_id
     service, drive_id, parts = _drive_root(source, service)
-    file_id, entry = _walk(service, drive_id, parts, True, "allDrives")
+    file_id, entry = walk_entry(service, drive_id, parts, allow_files=True)
     # A path of a drive alone walks nothing, and names the drive.
     check_spreadsheet(
         entry
@@ -279,7 +318,8 @@ def resolve_spreadsheet_id(source: str, service: Service | None = None) -> str:
             "id": file_id,
             "name": source.strip("/"),
             "mimeType": "application/vnd.google-apps.folder",
-        }
+        },
+        hint,
     )
     return file_id
 
@@ -290,16 +330,20 @@ def resolve_and_report(
     service: Service | None = None,
     *,
     spreadsheet: bool = False,
+    hint: str | None = None,
 ) -> str:
     """Resolve ``source`` with :func:`resolve_file_id` and echo the ID to stderr.
 
-    With ``spreadsheet``, :func:`resolve_spreadsheet_id` resolves it instead.
+    With ``spreadsheet``, :func:`resolve_spreadsheet_id` resolves it instead,
+    and is given ``hint``.
 
     Every Sheets and Docs command opens the same way, so the resolve-then-
     announce step lives here once. ``label`` names the file kind in the
     message (``"Spreadsheet ID: ..."``, ``"Document ID: ..."``).
     """
-    resolve = resolve_spreadsheet_id if spreadsheet else resolve_file_id
-    file_id = resolve(source, service)
+    if spreadsheet:
+        file_id = resolve_spreadsheet_id(source, service, hint=hint)
+    else:
+        file_id = resolve_file_id(source, service)
     print(f"{label} ID: {file_id}", file=sys.stderr)
     return file_id

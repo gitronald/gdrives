@@ -1154,3 +1154,132 @@ def test_sync_with_typed_writes_writes_values_the_sheet_computes_over(tab, tmp_p
     assert third.exit_code == 0, sheets.format_report(third)
     (report,) = third.tabs
     assert report.plan is not None and not report.plan.has_writes
+
+
+def _repeat_answer(service, sid, sheet_id, span):
+    """Send one link clear over ``span``; None when taken, else the refusal.
+
+    The refusal is its status and its message. The mask is the one
+    ``clear_link_format`` sends, and the cell is empty, so nothing is set.
+    """
+    from googleapiclient.errors import HttpError
+
+    request = {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id} | span,
+            "cell": {},
+            "fields": sheets.CELL_LINK_FIELD,
+        }
+    }
+    try:
+        sheets.batch_update_spreadsheet(service, sid, [request])
+    except HttpError as e:
+        return e.resp.status, e._get_reason()
+    return None
+
+
+def test_a_clear_range_is_refused_when_it_starts_past_the_grid(tab, shared_tab):
+    # What clear_link_format(formulas=False) rests on when it leaves out the
+    # open range after a formula in the last row, and what FakeSheetGrid
+    # models: a range that starts at or past the grid's last row or column
+    # is refused, open-ended or not, and with it the whole batch. A range that
+    # starts inside the grid is taken, whether it ends past the grid or holds
+    # no cell, and the grid keeps its size.
+    service, sid, name = tab
+    rows = _row_count(service, sid, name)
+    assert rows == DEFAULT_ROWS
+    across = {"startColumnIndex": 0, "endColumnIndex": 2}
+    down = {"startRowIndex": 0, "endRowIndex": 2}
+    limits = f"exceeds grid limits. Max rows: {rows}, max columns: {DEFAULT_COLUMNS}"
+
+    refused = {
+        f"A{rows + 1}:B": across | {"startRowIndex": rows},
+        f"A{rows + 6}:B": across | {"startRowIndex": rows + 5},
+        f"A{rows + 1}:B{rows + 1}": across
+        | {"startRowIndex": rows, "endRowIndex": rows + 1},
+        "AA1:AA2": down | {"startColumnIndex": 26, "endColumnIndex": 27},
+        "AA1:2": down | {"startColumnIndex": 26},
+    }
+    for shown, span in refused.items():
+        answer = _repeat_answer(service, sid, shared_tab.sheet_id, span)
+        assert answer == (
+            400,
+            f"Invalid requests[0].repeatCell: Range ({name}!{shown}) {limits}",
+        )
+
+    taken = [
+        across | {"startRowIndex": rows - 1},
+        across | {"startRowIndex": rows - 1, "endRowIndex": rows + 3},
+        down | {"startColumnIndex": 25, "endColumnIndex": 28},
+        across | {"startRowIndex": 3, "endRowIndex": 3},
+        down | {"startColumnIndex": 3, "endColumnIndex": 3},
+    ]
+    for span in taken:
+        assert _repeat_answer(service, sid, shared_tab.sheet_id, span) is None
+    assert _row_count(service, sid, name) == rows
+
+
+def test_clear_link_format_leaves_a_formula_in_the_last_row(tab, shared_tab):
+    # The case the range above is left out for: the cell left is in the
+    # grid's last row, so the open range after it would start past the grid.
+    service, sid, name = tab
+    header = ["id", "site"]
+    formula = '=HYPERLINK("https://example.com/b","label")'
+    shrink = {
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": shared_tab.sheet_id,
+                "gridProperties": {"rowCount": 3},
+            },
+            "fields": "gridProperties.rowCount",
+        }
+    }
+    _patiently(service, sid, {"requests": [shrink]})
+    assert _row_count(service, sid, name) == 3
+    sheets.update_values(
+        service,
+        sid,
+        f"'{name}'!A1:B3",
+        [header, ["a", "https://own.example.com"], ["b", formula]],
+    )
+
+    sheets.clear_link_format(
+        service, sid, name, header=header, runs=False, formulas=False
+    )
+    left = sheets.linked_cells(service, sid, name, header=header, detail=True)
+    assert [(cell.row, cell.targets, cell.formula) for cell in left] == [
+        (3, ("https://example.com/b",), True)
+    ]
+
+
+def test_styled_cells_finds_a_colour_a_cell_sets_itself(tab, shared_tab):
+    # What own_colors rests on: a text colour a cell sets is returned in its
+    # user-entered format, black included, and a cell that sets none has no
+    # such property. rows leaves the header out of both audits.
+    service, sid, name = tab
+    header = ["id", "note"]
+    rows = [header, ["a", "red"], ["b", "black"], ["c", "plain"]]
+    sheets.update_values(service, sid, f"'{name}'!A1:B4", rows)
+
+    def colored(rgb):
+        entered = {"textFormat": {"foregroundColorStyle": {"rgbColor": rgb}}}
+        return {"values": [{"userEnteredFormat": entered}]}
+
+    colors = {
+        "updateCells": {
+            "start": {"sheetId": shared_tab.sheet_id, "rowIndex": 1, "columnIndex": 1},
+            "rows": [colored({"red": 1.0}), colored({})],
+            "fields": "userEnteredFormat.textFormat.foregroundColorStyle",
+        }
+    }
+    _patiently(service, sid, {"requests": [colors]})
+
+    assert sheets.styled_cells(service, sid, name, header=header) == []
+    found = sheets.styled_cells(
+        service, sid, name, header=header, rows=[2, 3, 4], own_colors=True
+    )
+    assert found == [
+        sheets.StyledCell(2, "note", "red", ("color",), True),
+        sheets.StyledCell(3, "note", "black", ("color",), True),
+    ]
+    assert sheets.linked_cells(service, sid, name, header=header, rows=[2, 3]) == []

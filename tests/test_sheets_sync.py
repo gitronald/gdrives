@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error, local_file
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -27,6 +27,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid, http_error
 
 HEADER = ["id", "name", "amt"]
 ROWS = [["a", "Ada", "1"], ["b", "Bo", "2"]]
@@ -1863,7 +1864,8 @@ class TestStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = run(grid, target, apply=True)
         assert report.problems == [
-            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'amt' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
         assert grid.calls == []
 
@@ -1875,7 +1877,8 @@ class TestStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = run(grid, target, apply=True)
         assert report.problems == [
-            "T (local): column 'id' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'id' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
         assert grid.calls == []
 
@@ -1901,8 +1904,8 @@ class TestStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, ["a", "Ada", "1"]]})
         report = run(grid, target, apply=True)
         assert report.problems == [
-            "T (local): column 'notes' has no schema entry, and the tab is "
-            "strict_schema"
+            "T (local): column 'notes' has no schema entry, "
+            "and strict_schema is true: declare it in the tab's schema"
         ]
         # A column both sides hold is reported once, at the local stage,
         # before the sheet holding it too is even read.
@@ -1928,8 +1931,9 @@ class TestStrictSchema:
         )
         report = run(grid, target, apply=True)
         assert report.problems == [
-            "T (sheet): column 'region' has no schema entry, and the tab is "
-            "strict_schema"
+            "T (sheet): column 'region' has no schema entry, and strict_schema "
+            "is true: declare it in the tab's schema, or set strict_schema to "
+            "'local' to leave the sheet's own columns alone"
         ]
         assert writes(grid) == []
 
@@ -1956,7 +1960,8 @@ class TestStrictSchema:
         grid = FakeSheetGrid({"T": [HEADER, *ROWS]})
         report = run(grid, target, apply=True)
         assert report.problems == [
-            "T (local): column 'amt' has no schema entry, and the tab is strict_schema"
+            "T (local): column 'amt' has no schema entry, "
+            "and strict_schema is 'local': declare it in the tab's schema"
         ]
         assert grid.calls == []
 

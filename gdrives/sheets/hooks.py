@@ -3,7 +3,8 @@
 A tab's ``hooks`` (:attr:`~gdrives.sheets.config.TabConfig.hooks`) names the
 functions that run as its ``validate``, ``check``, ``warn``, and
 ``transform``, and its ``schema`` may name its columns' schema
-(:attr:`~gdrives.sheets.config.TabConfig.schema_ref`). Reading a config
+(:attr:`~gdrives.sheets.config.TabConfig.schema_ref`), with a key after it
+for an entry of a registry (``module:attribute[key]``). Reading a config
 imports nothing: the names are checked by form only. :func:`resolve_target`
 imports the modules and looks the names up, and a run does so before its
 first request, listing every name that does not resolve, and every problem
@@ -25,7 +26,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, TypeVar
 
-from gdrives.sheets.config import ConfigError, TabConfig, Target, _checked_schema
+from gdrives.sheets.config import (
+    ConfigError,
+    TabConfig,
+    Target,
+    _checked_schema,
+    schema_ref_parts,
+)
 
 #: A function a config names, as found; what it takes depends on its hook.
 Hook = Callable[..., Any]
@@ -73,7 +80,10 @@ def resolve_tab(tab: TabConfig) -> TabConfig:
 
     The module is imported and the attribute looked up: a mapping of column
     name to :class:`~gdrives.sheets.cells.ColumnSchema`, or a function that
-    is given the tab's title and returns one. The schema is then checked as
+    is given the tab's title and returns one. A reference with a key,
+    ``module:attribute[key]``, names an entry of a registry: the attribute is
+    a mapping of key to schema, or a function given the key, so tabs of
+    different titles share one schema. The schema is then checked as
     a config's ``schema`` object is at load, against the tab's ``columns``,
     ``strict_schema``, and ``exclude``. Returns the tab with ``schema``
     filled and ``schema_ref`` None; a tab with no ``schema_ref`` is returned
@@ -140,29 +150,42 @@ def _resolve(tab: TabConfig) -> tuple[TabConfig, list[str]]:
 
 def _resolve_schema(tab: TabConfig) -> tuple[TabConfig, list[str]]:
     """``tab`` with the schema ``schema_ref`` names, or ``tab`` and the problems."""
-    name = tab.schema_ref
-    if name is None:
+    if tab.schema_ref is None:
         return tab, []
-    where = f"schema {name!r}"
+    parts = schema_ref_parts(tab.schema_ref)
+    assert parts is not None  # the tab checked its form
+    name, key = parts
+    where = f"schema {tab.schema_ref!r}"
     wanted = "a mapping of column name to ColumnSchema"
     try:
         found = _attribute(name)
     except ValueError as e:
         return tab, [f"{where}: {e}"]
-    if isinstance(found, Mapping):
-        value: Any = found
-    elif callable(found):
+    value: Any
+    if callable(found) and not isinstance(found, Mapping):
         try:
-            value = found(tab.title)
+            # A function is given the key it is asked for, else the title.
+            value = found(tab.title if key is None else key)
         except Exception as e:  # a caller's code may raise anything
             return tab, [f"{where} raised {type(e).__name__}: {e}"]
         if not isinstance(value, Mapping):
             return tab, [f"{where} returned a {type(value).__name__}, not {wanted}"]
-    else:
+    elif not isinstance(found, Mapping):
+        registry = "" if key is None else " for each key"
         return tab, [
-            f"{where} is a {type(found).__name__}, not {wanted} or a function "
-            "that returns one"
+            f"{where} is a {type(found).__name__}, not {wanted}{registry} or a "
+            "function that returns one"
         ]
+    elif key is None:
+        value = found
+    elif key not in found:
+        return tab, [f"{where}: {name.split(':')[1]!r} has no entry {key!r}"]
+    else:
+        value = found[key]
+        if not isinstance(value, Mapping):
+            return tab, [
+                f"{where}: entry {key!r} is a {type(value).__name__}, not {wanted}"
+            ]
     schema, problems = _checked_schema(where, value, tab)
     if problems:
         return tab, problems

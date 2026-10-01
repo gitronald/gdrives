@@ -15,7 +15,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid
 from typer.testing import CliRunner
 
 from gdrives.auth import CredentialInfo
@@ -35,6 +34,7 @@ from gdrives.sheets import (
     write_values_csv,
 )
 from gdrives.sheets.hooks import _chained, _joined
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["member_id", "name", "status"]
 ROWS = [["m1", "Ada", "active"], ["m2", "Bo", "active"]]

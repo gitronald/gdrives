@@ -1,4 +1,4 @@
-"""Tests for ``FakeSheetGrid``, the stateful Sheets fake in tests/helpers.py.
+"""Tests for ``FakeSheetGrid``, the stateful Sheets fake in gdrives.testing.
 
 The apply and structure tests trust this fake to behave like the Sheets API
 where the code depends on it: how reads truncate, what a write outside the grid
@@ -11,7 +11,8 @@ from datetime import date, datetime
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import LINK_BLUE, FakeSheetGrid, http_error
+
+from gdrives.testing import LINK_BLUE, FakeSheetGrid, http_error
 
 
 def batch(grid, *requests):
@@ -671,6 +672,22 @@ class TestLinks:
         widths = grid_read(grid, "'T'!A:B", "sheets(data(columnMetadata(pixelSize)))")
         assert widths == {"columnMetadata": [{"pixelSize": 100}, {"pixelSize": 100}]}
 
+    def test_a_grid_read_returns_a_value_by_its_kind(self):
+        grid = FakeSheetGrid({"T": [["x", 3, True, date(2026, 2, 3), ""]]})
+        mask = "sheets(data(rowData(values(effectiveValue))))"
+        assert grid_read(grid, "'T'!A1:E1", mask) == {
+            "rowData": [
+                {
+                    "values": [
+                        {"effectiveValue": {"stringValue": "x"}},
+                        {"effectiveValue": {"numberValue": 3}},
+                        {"effectiveValue": {"boolValue": True}},
+                        {"effectiveValue": {"numberValue": 46056}},
+                    ]
+                }
+            ]
+        }
+
     def test_a_grid_read_with_no_mask_is_not_modelled(self):
         grid = FakeSheetGrid({"T": [["a"]]})
         with pytest.raises(HttpError):
@@ -717,7 +734,8 @@ class TestLinks:
         [
             repeat("note"),
             repeat(LINK, startRowIndex=5, endRowIndex=5),
-            repeat(LINK, startColumnIndex=0, endColumnIndex=99),
+            repeat(LINK, startRowIndex=3, endRowIndex=2),
+            repeat(LINK, startColumnIndex=5, endColumnIndex=99),
             repeat(LINK, sheet_id=9),
             {
                 "updateCells": {
@@ -733,6 +751,62 @@ class TestLinks:
         with pytest.raises(HttpError) as raised:
             batch(grid, request_)
         assert status(raised) == 400
+
+    # The refusals and the two ranges taken are the API's, read from it by
+    # test_a_clear_range_is_refused_when_it_starts_past_the_grid.
+    @pytest.mark.parametrize(
+        ("span", "shown"),
+        [
+            ({"startRowIndex": 5}, "T!A6:"),
+            ({"startRowIndex": 5, "endColumnIndex": 2}, "T!A6:B"),
+            ({"startRowIndex": 9, "endColumnIndex": 2}, "T!A10:B"),
+            ({"startRowIndex": 5, "endRowIndex": 6, "endColumnIndex": 2}, "T!A6:B6"),
+            (
+                {
+                    "startRowIndex": 0,
+                    "endRowIndex": 2,
+                    "startColumnIndex": 26,
+                    "endColumnIndex": 27,
+                },
+                "T!AA1:AA2",
+            ),
+            ({"endRowIndex": 2, "startColumnIndex": 26}, "T!AA1:2"),
+        ],
+    )
+    def test_a_range_that_starts_past_the_grid_is_refused(self, span, shown):
+        grid = FakeSheetGrid({"T": [["a"]]}, rows=5, columns=26)
+        with pytest.raises(HttpError) as raised:
+            batch(grid, repeat(LINK, **span))
+        assert status(raised) == 400
+        assert raised.value.resp.reason == (
+            f"Invalid requests[0].repeatCell: Range ({shown}) exceeds grid limits. "
+            "Max rows: 5, max columns: 26"
+        )
+
+    def test_a_refusal_names_the_request_by_its_place_in_the_batch(self):
+        grid = FakeSheetGrid({"T": [["x.io"]]}, rows=5, columns=5)
+        with pytest.raises(HttpError) as raised:
+            batch(grid, repeat(LINK), repeat(BOLD), repeat(LINK, startRowIndex=5))
+        assert raised.value.resp.reason.startswith(
+            "Invalid requests[2].repeatCell: Range (T!A6:) exceeds grid limits."
+        )
+        # The batch is refused whole: the first request cleared nothing.
+        assert grid.links("T") == {(1, 1): "http://x.io"}
+
+    def test_a_range_that_ends_past_the_grid_covers_the_cells_it_has(self):
+        grid = FakeSheetGrid({"T": [["a"], ["x.io", "y.io"]]}, rows=2, columns=2)
+        bold = {"userEnteredFormat": {"textFormat": {"bold": True}}}
+        batch(grid, repeat(BOLD, bold, startRowIndex=1, endRowIndex=9))
+        batch(grid, repeat(LINK, startColumnIndex=1, endColumnIndex=9))
+        assert grid.format("T", 2, 1) == {"link": "http://x.io", "bold": True}
+        assert grid.format("T", 2, 2) == {"bold": True}
+        assert (grid.tab("T").row_count, grid.tab("T").column_count) == (2, 2)
+
+    def test_a_range_of_no_cells_changes_nothing(self):
+        grid = FakeSheetGrid({"T": [["x.io"]]}, rows=5, columns=5)
+        batch(grid, repeat(LINK, startRowIndex=0, endRowIndex=0))
+        batch(grid, repeat(LINK, startColumnIndex=0, endColumnIndex=0))
+        assert grid.links("T") == {(1, 1): "http://x.io"}
 
 
 class TestSheets:

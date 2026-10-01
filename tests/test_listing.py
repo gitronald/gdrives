@@ -238,6 +238,15 @@ class TestFormatCsv:
         assert lines[0] == "path,name,type,modified,owner,shared_by,url"
         assert "dir/file.txt" in lines[1]
 
+    def test_newline_is_how_each_row_ends(self):
+        rows = [DriveEntry("https://url", "a.txt", "a.txt", "txt", "2026-01-15", "o")]
+        crlf = format_csv(rows)
+        assert crlf.count("\r\n") == 2
+        assert format_csv(rows, newline="crlf") == format_csv(rows, None) == crlf
+        assert format_csv(rows, newline="lf") == crlf.replace("\r\n", "\n")
+        with pytest.raises(ValueError, match="newline must be one of"):
+            format_csv(rows, newline="cr")
+
     def test_strips_trailing_slash_from_path(self):
         rows = [
             DriveEntry("https://url", "dir/", "dir", "folder", "2026-01-15", "a@b.com"),
@@ -339,6 +348,35 @@ class TestLs:
         data = out_path.read_bytes()
         assert data == format_csv(mock_collect.return_value).encode()
         assert data.count(b"\r\n") == 2 and b"\r\r\n" not in data
+
+    @pytest.mark.parametrize(("newline", "ending"), [("lf", b"\n"), ("crlf", b"\r\n")])
+    @patch("gdrives.listing.collect")
+    def test_newline_ends_the_lines_of_each_saved_file(
+        self, mock_collect, tmp_path, newline, ending
+    ):
+        mock_collect.return_value = [
+            DriveEntry("https://url", "a.txt", "a.txt", "txt", "2026-01-15", "o"),
+            DriveEntry("https://url", "b.txt", "b.txt", "txt", "2026-01-15", "o"),
+        ]
+        paths = [tmp_path / "out.csv", tmp_path / "out.md"]
+        ls("folder_id", save_as=[str(path) for path in paths], newline=newline)
+        default = [
+            format_csv(mock_collect.return_value),
+            format_markdown(mock_collect.return_value),
+        ]
+        for path, text in zip(paths, default, strict=True):
+            data = path.read_bytes()
+            lines = text.replace("\r\n", "\n").encode()
+            assert data == lines.replace(b"\n", ending)
+            assert data.count(ending) == lines.count(b"\n") > 1
+
+    @patch("gdrives.listing.collect")
+    def test_a_bad_newline_is_refused_before_the_traversal(self, mock_collect):
+        with pytest.raises(ValueError, match="newline must be one of"):
+            ls("folder_id", save_as=["out.csv"], newline="cr")
+        with pytest.raises(ValueError, match="newline applies to a saved listing"):
+            ls("folder_id", newline="lf")
+        mock_collect.assert_not_called()
 
     @patch("gdrives.listing.collect")
     def test_save_as_suffix_is_case_insensitive(self, mock_collect, tmp_path):

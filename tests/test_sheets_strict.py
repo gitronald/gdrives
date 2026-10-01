@@ -8,7 +8,7 @@ and off by default: a config or a call written before this step behaves the
 same, with the same report (``TestUnchangedDefaults``).
 """
 
-from helpers import FakeSheetGrid, local_file
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -24,6 +24,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["id", "name", "amt"]
 ROWS = [["a", "Ada", "1"], ["b", "Bo", "2"]]

@@ -37,7 +37,11 @@ MEMBERS = {
     "member_id": {"required": True, "description": "The member's number."},
     "status": {"allowed": ["active", "closed"], "present": True},
     "paid": {"type": "bool", "strict": True},
-    "link": {"pattern": "https://example\\.com/[0-9]+", "description": 'A, "quoted"'},
+    "link": {
+        "pattern": "https://example\\.com/[0-9]+",
+        "description": 'A, "quoted"',
+        "pattern_hint": "a member page link",
+    },
 }
 
 
@@ -85,12 +89,14 @@ class TestSchemaRows:
             "allowed": "",
             "pattern": "",
             "description": "The member's number.",
+            "pattern_hint": "",
         }
         status, paid, link = rows[1:]
         assert status["allowed"] == '["active", "closed"]'
         assert status["present"] == "TRUE" and status["key"] == "FALSE"
         assert paid["type"] == "bool" and paid["strict"] == "TRUE"
         assert link["pattern"] == "https://example\\.com/[0-9]+"
+        assert link["pattern_hint"] == "a member page link"
 
     def test_tabs_follow_the_config_and_tabs_selects(self, tmp_path):
         tabs = {
@@ -146,8 +152,9 @@ class TestFormatSchema:
         assert "\r" not in text and text.endswith("\n")
         assert (
             lines[1]
-            == "Members,member_id,TRUE,str,TRUE,FALSE,FALSE,,,The member's number."
+            == "Members,member_id,TRUE,str,TRUE,FALSE,FALSE,,,The member's number.,"
         )
+        assert lines[4].endswith(",a member page link")
         assert '"A, ""quoted"""' in lines[4]
 
     def test_values_are_exact_unless_formulas_are_escaped(self, tmp_path):
@@ -155,10 +162,13 @@ class TestFormatSchema:
         rows[0]["description"] = "=HYPERLINK(1)"
         rows[1]["pattern"] = "-x"
         exact = list(csv.reader(io.StringIO(format_schema(rows))))
-        assert (exact[1][-1], exact[2][8]) == ("=HYPERLINK(1)", "-x")
+        rows[3]["pattern_hint"] = "+1"
+        exact = list(csv.reader(io.StringIO(format_schema(rows))))
+        assert (exact[1][9], exact[2][8], exact[4][10]) == ("=HYPERLINK(1)", "-x", "+1")
         text = format_schema(rows, escape_formulas=True)
         escaped = list(csv.reader(io.StringIO(text)))
-        assert (escaped[1][-1], escaped[2][8]) == ("'=HYPERLINK(1)", "'-x")
+        found = (escaped[1][9], escaped[2][8], escaped[4][10])
+        assert found == ("'=HYPERLINK(1)", "'-x", "'+1")
         assert escaped[0] == exact[0] and escaped[1][:9] == exact[1][:9]
         assert rows[1]["pattern"] == "-x"
 
@@ -245,12 +255,12 @@ class TestTheCommand:
         exact = invoke("roster")
         assert (
             exact.stdout.split("\n")[1]
-            == "Members,status,FALSE,str,FALSE,FALSE,FALSE,,-x,=SUM(A1)"
+            == "Members,status,FALSE,str,FALSE,FALSE,FALSE,,-x,=SUM(A1),"
         )
         result = invoke("roster", "--escape-formulas")
         assert result.exit_code == 0, result.output
         assert result.stdout.split("\n")[1] == (
-            "Members,status,FALSE,str,FALSE,FALSE,FALSE,,'-x,'=SUM(A1)"
+            "Members,status,FALSE,str,FALSE,FALSE,FALSE,,'-x,'=SUM(A1),"
         )
         for name in ("schema.csv", "schema.tsv"):
             done = invoke("roster", "-o", str(project / name), "--escape-formulas")
