@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-30
+
 ### Added
 
 - `gdrives.testing`, the fakes of the Sheets API that the library's own tests run on, shipped in the wheel so that a caller can test what happens after a request as well as what stops before one. `FakeSheetGrid` holds each tab's cells and applies the writes it is sent, records every call (`calls`, `methods`), and takes `fail(method, error)` and `edit_externally(edit, before=method)`; `FakeSheetsService` replays preset responses; `http_error(status, reason)` builds the `HttpError` the client raises; `patch_sheets_service(monkeypatch, fake)` makes the `run_*` entry points use a fake, given pytest's `monkeypatch` or anything with its `setattr(target, value)`; and `LINK_BLUE` is the colour the API shows a link in. The module imports no test framework. The fakes model the API where the library depends on it and no further, and the live tests pin what they model. The guide has a section on it, "Testing a caller", whose example the guide's test runs.
