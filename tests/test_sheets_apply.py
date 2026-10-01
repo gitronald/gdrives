@@ -11,7 +11,6 @@ from datetime import date
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     ApplyError,
@@ -27,6 +26,7 @@ from gdrives.sheets import (
     read_tab,
     verify,
 )
+from gdrives.testing import FakeSheetGrid, http_error
 
 # The projection skips "note" and the unnamed gap, so new-row writes must
 # step around both.

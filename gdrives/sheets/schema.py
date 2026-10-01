@@ -29,6 +29,7 @@ SCHEMA_COLUMNS = (
     "allowed",
     "pattern",
     "description",
+    "pattern_hint",
 )
 
 
@@ -56,7 +57,8 @@ def schema_rows(
     ``TRUE`` for a column in the tab's ``key``, and ``required``,
     ``present``, and ``strict`` are ``TRUE`` or ``FALSE``, as cells are.
     ``allowed`` is the permitted values as a JSON array of canonical cell
-    strings, and ``pattern`` and ``description`` are blank when not set.
+    strings, and ``pattern``, ``description``, and ``pattern_hint`` are blank
+    when not set.
 
     Only the columns a ``schema`` declares are listed: a column of ``columns``
     or of ``key`` that it leaves out is not, since a config does not know the
@@ -86,6 +88,7 @@ def schema_rows(
                     "allowed": _allowed(spec.allowed),
                     "pattern": spec.pattern or "",
                     "description": spec.description or "",
+                    "pattern_hint": spec.pattern_hint or "",
                 }
             )
     return rows

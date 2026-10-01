@@ -17,7 +17,6 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid
 from typer.testing import CliRunner
 
 from gdrives.auth import CredentialInfo
@@ -37,9 +36,11 @@ from gdrives.sheets import (
     resolve_tab,
     resolve_target,
     run_target,
+    schema_ref_parts,
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["member_id", "name", "dues"]
 ROWS = [["m1", "Ada", 10], ["m2", "Bo", 20]]
@@ -165,15 +166,23 @@ class TestTheConfigNamesASchema:
     @pytest.mark.parametrize(
         ("schema", "problem"),
         [
-            (
-                "clubtools",
-                "'schema' must be an object of columns or 'module:attribute', "
-                "not 'clubtools'",
-            ),
-            (
-                "a:b:c",
-                "'schema' must be an object of columns or 'module:attribute', "
-                "not 'a:b:c'",
+            *(
+                (
+                    schema,
+                    "'schema' must be an object of columns, 'module:attribute' or "
+                    f"'module:attribute[key]', not {schema!r}",
+                )
+                for schema in (
+                    "clubtools",
+                    "a:b:c",
+                    "m:S[]",
+                    "m:S[a][b]",
+                    "m:S[a]b",
+                    "m:S[a",
+                    "m:S]a[",
+                    "[a]",
+                    "m:[a]",
+                )
             ),
             (3, "'schema' must be an object of columns"),
         ],
@@ -208,15 +217,147 @@ class TestTheConfigNamesASchema:
         assert "would be written whole and by entry" in found
 
 
+REGISTRY = """
+    from gdrives.sheets import ColumnSchema
+
+    CALLS = []
+
+    SCHEMAS = {
+        "members": {
+            "member_id": ColumnSchema(required=True),
+            "dues": ColumnSchema("int"),
+        },
+        "a key, with spaces": {"dues": ColumnSchema("float")},
+        "listed": ["dues"],
+    }
+
+    MEMBERS = SCHEMAS["members"]
+
+
+    def by_name(name):
+        CALLS.append(name)
+        return SCHEMAS[name]
+
+
+    NOT_A_REGISTRY = ["members"]
+"""
+
+
+class TestAReferenceWithAKey:
+    def test_the_parts_are_read_by_form(self):
+        assert schema_ref_parts("clubtools.schema:SCHEMAS[members]") == (
+            "clubtools.schema:SCHEMAS",
+            "members",
+        )
+        assert schema_ref_parts("m:S[a key, with spaces]") == (
+            "m:S",
+            "a key, with spaces",
+        )
+        assert schema_ref_parts("m:S") == ("m:S", None)
+        assert schema_ref_parts("m:S[]") is None
+        assert schema_ref_parts(3) is None
+
+    def test_the_config_keeps_it_and_imports_nothing(self, tmp_path, imports):
+        (loaded,) = target_of(
+            tmp_path, {"Members 2026": tab(schema="clubtools.schema:SCHEMAS[members]")}
+        ).tabs
+        assert loaded.schema_ref == "clubtools.schema:SCHEMAS[members]"
+        assert not loaded.resolved
+        assert imports == []
+
+    def test_two_tabs_share_an_entry_of_a_mapping(self, tmp_path, module):
+        name = module(REGISTRY)
+        tabs = {
+            "Members 2026": tab(local="a.csv", schema=f"{name}:SCHEMAS[members]"),
+            "Members 2027": tab(local="b.csv", schema=f"{name}:SCHEMAS[members]"),
+            "Rates": tab(
+                local="c.csv",
+                key=["dues"],
+                schema=f"{name}:SCHEMAS[a key, with spaces]",
+            ),
+        }
+        first, second, rates = resolve_target(target_of(tmp_path, tabs)).tabs
+        assert first.schema == second.schema == sys.modules[name].MEMBERS
+        assert first.resolved and first.types == {"member_id": "str", "dues": "int"}
+        assert rates.types == {"dues": "float"}
+
+    def test_a_function_is_given_the_key_in_place_of_the_title(self, tmp_path, module):
+        name = module(REGISTRY)
+        tabs = {"Members 2026": tab(schema=f"{name}:by_name[members]")}
+        (resolved,) = resolve_target(target_of(tmp_path, tabs)).tabs
+        assert resolved.schema == sys.modules[name].MEMBERS
+        assert sys.modules[name].CALLS == ["members"]
+
+    def test_a_tab_built_in_code_resolves(self, module):
+        name = module(REGISTRY)
+        tab = TabConfig("Any", Path("m.csv"), schema_ref=f"{name}:SCHEMAS[members]")
+        assert resolve_tab(tab).types == {"member_id": "str", "dues": "int"}
+
+    @pytest.mark.parametrize(
+        ("reference", "problem"),
+        [
+            ("SCHEMAS[guests]", ": 'SCHEMAS' has no entry 'guests'"),
+            (
+                "SCHEMAS[listed]",
+                ": entry 'listed' is a list, not a mapping of column name to "
+                "ColumnSchema",
+            ),
+            ("by_name[guests]", " raised KeyError: 'guests'"),
+            (
+                "by_name[listed]",
+                " returned a list, not a mapping of column name to ColumnSchema",
+            ),
+            (
+                "NOT_A_REGISTRY[members]",
+                " is a list, not a mapping of column name to ColumnSchema for "
+                "each key or a function that returns one",
+            ),
+            ("MISSING[members]", None),
+        ],
+    )
+    def test_what_does_not_resolve_is_a_problem_of_the_tab(
+        self, tmp_path, module, reference, problem
+    ):
+        name = module(REGISTRY)
+        schema = f"{name}:{reference}"
+        target = target_of(tmp_path, {"Members": tab(schema=schema)})
+        if problem is None:
+            problem = f": module {name!r} has no 'MISSING'"
+        assert resolve_problems(target) == [
+            f"tab 'Members': schema {schema!r}{problem}"
+        ]
+
+    def test_the_entry_is_checked_as_a_schema_is(self, tmp_path, module):
+        name = module(REGISTRY)
+        fields = {"columns": ["member_id", "name"]}
+        schema = f"{name}:SCHEMAS[members]"
+        target = target_of(tmp_path, {"Members": tab(schema=schema, **fields)})
+        (found,) = resolve_problems(target)
+        assert found.startswith(f"tab 'Members': schema {schema!r}: ")
+        assert "'dues'" in found
+
+    def test_a_run_reads_the_tab_by_it(self, tmp_path, module):
+        name = module(REGISTRY)
+        tabs = {"Members": tab(mode="pull", schema=f"{name}:SCHEMAS[members]")}
+        tabs["Members"].pop("key")
+        target = target_of(tmp_path, tabs)
+        report = run_target(grid_of(), "S", target, "pull", apply=True)
+        assert report.exit_code == 0, report.tabs[0]
+        assert (tmp_path / "m.csv").read_text().splitlines()[1] == "m1,Ada,10"
+
+
 class TestATabBuiltInCode:
     def test_a_reference_is_checked_by_form(self):
         tab = TabConfig("T", Path("m.csv"), schema_ref="clubtools.schema:MEMBERS")
         assert tab.schema_ref == "clubtools.schema:MEMBERS"
         with pytest.raises(
             ValueError,
-            match=r"tab 'T': 'schema_ref' must be 'module:attribute', not 'nope'",
+            match=r"tab 'T': 'schema_ref' must be 'module:attribute' or "
+            r"'module:attribute\[key\]', not 'nope'",
         ):
             TabConfig("T", Path("m.csv"), schema_ref="nope")
+        keyed = TabConfig("T", Path("m.csv"), schema_ref="clubtools.schema:S[members]")
+        assert keyed.schema_ref == "clubtools.schema:S[members]"
 
     def test_schema_and_schema_ref_contradict_each_other(self):
         with pytest.raises(
@@ -430,6 +571,27 @@ SAME_CHECKS = {
         {"link": {"description": 5}},
         "spec = ColumnSchema()\n"
         "object.__setattr__(spec, 'description', 5)\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern hint without a pattern": (
+        {},
+        {"link": {"pattern_hint": "a link"}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'pattern_hint', 'a link')\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern hint empty": (
+        {},
+        {"link": {"pattern": "[0-9]+", "pattern_hint": ""}},
+        "spec = ColumnSchema(pattern='[0-9]+')\n"
+        "object.__setattr__(spec, 'pattern_hint', '')\n"
+        "SCHEMA = {'link': spec}",
+    ),
+    "pattern empty": (
+        {},
+        {"link": {"pattern": ""}},
+        "spec = ColumnSchema()\n"
+        "object.__setattr__(spec, 'pattern', '')\n"
         "SCHEMA = {'link': spec}",
     ),
     "pattern does not compile": (

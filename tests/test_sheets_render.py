@@ -19,7 +19,6 @@ from default_requests import (
     default_push,
     default_sync,
 )
-from helpers import FakeSheetGrid
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -40,6 +39,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 
 class TestDefaultRequests:

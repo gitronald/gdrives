@@ -447,6 +447,7 @@ def authenticate_oauth(
                 # (TransportError) propagates instead. A new consent can't
                 # fix it and a service account can't reach Google either, so
                 # the CLI reports it as is rather than opening a browser flow.
+                _say_refused(token_path)
                 continue
             _write_token(token_path, creds)
         if creds.valid:
@@ -503,15 +504,37 @@ def authenticate(scopes: list[str] | None = None, *, force: bool = False):
     Drive access; pass a write scope (e.g. SHEETS_WRITE_SCOPES) for write ops.
     With ``force`` the credentials are OAuth or the call fails (see
     authenticate_oauth): nothing falls through to the other two.
+
+    Inside announcing_credentials(), a token refresh that Google refuses is
+    said on stderr, and so is the service account or the Application Default
+    Credentials used in its place, since the run then goes on as another
+    identity than the one it set out with.
     """
+    state = _announced.get()
+    refused = state.refused if state is not None else 0
     creds = authenticate_oauth(scopes, force=force)
-    creds = creds or authenticate_service_account(scopes)
     if creds:
         return creds
+    creds = authenticate_service_account(scopes)
+    if creds:
+        if state is not None and state.refused > refused:
+            path = _service_account_path()
+            assert path is not None  # a key was just read from it
+            used = CredentialInfo(
+                kind="service_account",
+                identity=_service_account_email(path),
+                source=path,
+            )
+            print(f"Credential: {used}, used in its place", file=sys.stderr)
+        return creds
     try:
-        return authenticate_adc(scopes)
+        creds = authenticate_adc(scopes)
     except google.auth.exceptions.GoogleAuthError:
         raise SystemExit(NO_CREDENTIALS_MESSAGE)
+    if state is not None and state.refused > refused:
+        used = CredentialInfo(kind="adc")
+        print(f"Credential: {used}, used in its place", file=sys.stderr)
+    return creds
 
 
 PASSED_REASONS = ("missing", "scopes", "unreadable", "invalid")
@@ -682,27 +705,61 @@ def credential_line(info: CredentialInfo) -> str:
     return line
 
 
-# The scope sets whose credential line this run has printed, or None when
-# authentication announces nothing on its own (see announcing_credentials).
-_announced: ContextVar[set[frozenset[str]] | None] = ContextVar(
+@dataclass
+class _Announcing:
+    """What an announcing_credentials() block has said, and what it says.
+
+    ``seen`` is the scope sets whose credential line was printed, ``refresh``
+    whether a coming refresh is announced, and ``refused`` the count of token
+    refreshes Google refused inside the block.
+    """
+
+    seen: set[frozenset[str]] = field(default_factory=set[frozenset[str]])
+    refresh: bool = True
+    refused: int = 0
+
+
+# The block authentication announces itself in, or None when it announces
+# nothing on its own (see announcing_credentials).
+_announced: ContextVar[_Announcing | None] = ContextVar(
     "gdrives_announced_credentials", default=None
 )
 
 
 @contextmanager
-def announcing_credentials() -> Generator[None, None, None]:
+def announcing_credentials(*, refresh: bool = True) -> Generator[None, None, None]:
     """Announce, within the block, each authentication that is about to wait.
 
     Every service built inside prints its credential line first when a consent
     or a token refresh is coming (see announce_credentials), once per scope
     set. The CLI runs every command inside one; a library caller's stderr is
     left alone unless it enters one too.
+
+    ``refresh=False`` leaves a coming refresh unannounced, for a caller that
+    runs many commands: an access token lasts about an hour, so a refresh is
+    routine, and one that succeeds changes nothing a person needs to know. A
+    consent, a consent skipped for lack of a terminal, and an ``always`` line
+    are printed as before. A refresh that Google refuses is said in either
+    case, naming the token file, with the credential used in its place when
+    that is a service account or Application Default Credentials (see
+    authenticate).
     """
-    token = _announced.set(set())
+    token = _announced.set(_Announcing(refresh=refresh))
     try:
         yield
     finally:
         _announced.reset(token)
+
+
+def _say_refused(token_path: Path) -> None:
+    """Say, inside announcing_credentials(), that a token's refresh was refused."""
+    state = _announced.get()
+    if state is not None:
+        state.refused += 1
+        print(
+            f"Credential: the refresh of OAuth token {token_path} was refused",
+            file=sys.stderr,
+        )
 
 
 def announce_credentials(
@@ -715,17 +772,19 @@ def announce_credentials(
     for lack of a terminal (the line then says why, see credential_line); with
     ``always`` whatever it reports, so a write is not made as an unexpected
     identity.
-    Inside announcing_credentials() a scope set's line is printed once.
+    Inside announcing_credentials() a scope set's line is printed once, and
+    inside announcing_credentials(refresh=False) a refresh alone prints none.
     """
     key = frozenset(scopes or SCOPES)
-    seen = _announced.get()
-    if seen is not None and key in seen:
+    state = _announced.get()
+    if state is not None and key in state.seen:
         return
     info = describe_credentials(scopes, force=force)
-    if always or info.consent or info.refresh or info.consent_skipped:
+    refresh = info.refresh and (state is None or state.refresh)
+    if always or info.consent or refresh or info.consent_skipped:
         print(credential_line(info), file=sys.stderr)
-        if seen is not None:
-            seen.add(key)
+        if state is not None:
+            state.seen.add(key)
 
 
 @functools.cache

@@ -108,7 +108,16 @@ _TAB_FIELDS = frozenset(
 )
 _STRICT_LOCAL = "local"
 _SCHEMA_FIELDS = frozenset(
-    {"type", "required", "allowed", "present", "strict", "pattern", "description"}
+    {
+        "type",
+        "required",
+        "allowed",
+        "present",
+        "strict",
+        "pattern",
+        "description",
+        "pattern_hint",
+    }
 )
 # Fields that only mean something to a merge, so only to a sync tab.
 _SYNC_ONLY = (
@@ -190,7 +199,10 @@ class TabConfig:
     ``schema_ref`` names the schema as ``module:attribute`` instead of giving
     it, and contradicts a non-empty ``schema``. The attribute is a mapping of
     column name to :class:`~gdrives.sheets.cells.ColumnSchema`, or a function
-    given the tab's title that returns one. Nothing is imported until a run
+    given the tab's title that returns one. With a key after it,
+    ``module:attribute[key]``, the attribute is a registry: a mapping whose
+    entry of that key is the schema, or a function given the key in place of
+    the title (:func:`schema_ref_parts`). Nothing is imported until a run
     starts (:func:`~gdrives.sheets.hooks.resolve_tab`), which gives the run a
     tab with ``schema`` filled and ``schema_ref`` None. Until then the tab has
     no schema to read: :attr:`types` and :attr:`local_store` raise ValueError,
@@ -260,9 +272,9 @@ class TabConfig:
         if hook_problems:
             raise ValueError(f"tab {self.title!r}: " + "; ".join(hook_problems))
         if self.schema_ref is not None:
-            if not _is_hook_name(self.schema_ref):
+            if schema_ref_parts(self.schema_ref) is None:
                 raise ValueError(
-                    f"tab {self.title!r}: 'schema_ref' must be 'module:attribute', "
+                    f"tab {self.title!r}: 'schema_ref' must be {SCHEMA_REF_FORMS}, "
                     f"not {self.schema_ref!r}"
                 )
             if self.schema:
@@ -541,6 +553,30 @@ def _is_hook_name(value: Any) -> bool:
     )
 
 
+# A schema reference: a name, and after it an optional key in brackets.
+_SCHEMA_REF = re.compile(r"(?P<name>[^\[\]]+)(?:\[(?P<key>[^\[\]]+)\])?")
+
+#: The forms a schema reference takes, as a message names them.
+SCHEMA_REF_FORMS = "'module:attribute' or 'module:attribute[key]'"
+
+
+def schema_ref_parts(value: Any) -> tuple[str, str | None] | None:
+    """The ``module:attribute`` and the key of a schema reference, by form alone.
+
+    ``"clubtools.schema:SCHEMAS[members]"`` is ``("clubtools.schema:SCHEMAS",
+    "members")``, and a reference with no key has None for one. The key is the
+    text between the brackets as written: one or more characters, none of
+    them a bracket. Returns None for anything that is not a reference.
+    Imports nothing.
+    """
+    if not isinstance(value, str):
+        return None
+    match = _SCHEMA_REF.fullmatch(value)
+    if match is None or not _is_hook_name(match["name"]):
+        return None
+    return match["name"], match["key"]
+
+
 def _hook_problems(hooks: Mapping[str, Any], mode: str) -> list[str]:
     """What is wrong with a tab's ``hooks`` of the given ``mode``, by form alone."""
     found: list[str] = []
@@ -569,6 +605,7 @@ def _column_problems(
     strict: Any,
     pattern: Any = None,
     description: Any = None,
+    pattern_hint: Any = None,
 ) -> list[str]:
     """What is wrong with one schema column's fields; ``at`` names the column.
 
@@ -603,6 +640,8 @@ def _column_problems(
     if pattern is not None:
         if not isinstance(pattern, str):
             found.append(f"{at}: 'pattern' must be a string")
+        elif not pattern:
+            found.append(f"{at}: 'pattern' must not be empty")
         else:
             try:
                 re.compile(pattern)
@@ -615,6 +654,11 @@ def _column_problems(
             )
     if description is not None and not isinstance(description, str):
         found.append(f"{at}: 'description' must be a string")
+    if pattern_hint is not None:
+        if not isinstance(pattern_hint, str) or not pattern_hint:
+            found.append(f"{at}: 'pattern_hint' must be a string that is not empty")
+        if pattern is None:
+            found.append(f"{at}: 'pattern_hint' is only for a column with a 'pattern'")
     return found
 
 
@@ -682,6 +726,7 @@ def _checked_schema(
             spec.strict,
             spec.pattern,
             spec.description,
+            spec.pattern_hint,
         )
         found.extend(problems)
         if not problems:
@@ -1004,12 +1049,12 @@ class _Checker:
         if isinstance(raw_schema, str):
             # A reference is checked by form only; the checks that need its
             # columns run when a run resolves it (hooks.resolve_tab).
-            if _is_hook_name(raw_schema):
+            if schema_ref_parts(raw_schema) is not None:
                 schema_ref = raw_schema
             else:
                 problems.append(
-                    f"{where}: 'schema' must be an object of columns or "
-                    f"'module:attribute', not {raw_schema!r}"
+                    f"{where}: 'schema' must be an object of columns, "
+                    f"{SCHEMA_REF_FORMS}, not {raw_schema!r}"
                 )
         else:
             schema = self._schema(where, raw_schema, columns, strict_schema)
@@ -1276,8 +1321,17 @@ class _Checker:
             strict = spec.get("strict", False)
             pattern = spec.get("pattern")
             description = spec.get("description")
+            hint = spec.get("pattern_hint")
             found = _column_problems(
-                at, type_, required, allowed, present, strict, pattern, description
+                at,
+                type_,
+                required,
+                allowed,
+                present,
+                strict,
+                pattern,
+                description,
+                hint,
             )
             problems.extend(found)
             if not unknown and not found:
@@ -1289,6 +1343,7 @@ class _Checker:
                     strict=bool(strict),
                     pattern=pattern,
                     description=description,
+                    pattern_hint=hint,
                 )
         if not strict_schema:
             self._outside(where, "schema", list(raw), columns)

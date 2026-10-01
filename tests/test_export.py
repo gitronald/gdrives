@@ -3,6 +3,7 @@
 import csv
 import io
 import random
+import re
 
 import pytest
 
@@ -180,6 +181,31 @@ class TestSetLineEndingsCsv:
         assert out.replace(ending, b"").count(b'"') == data.count(b'"')
         assert out.endswith(ending) == data.rstrip(b"\r").endswith(b"\n") or not data
 
+    @pytest.mark.parametrize("name", CELL_CASES)
+    @pytest.mark.parametrize(("newline", "ending"), [("lf", "\n"), ("crlf", "\r\n")])
+    def test_cells_hold_the_ending_too_when_asked(self, name, newline, ending):
+        data = CELL_CASES[name]
+        out = set_line_endings(data, ".csv", newline, cells=True)
+        # Every line ending of the file is the one named, in a cell or not.
+        assert out == re.sub(rb"\r\n|\r|\n", ending.encode(), data)
+        # The cells come out as they went in, but for their line breaks.
+        assert cells(out) == [
+            [re.sub("\r\n|\r|\n", ending, cell) for cell in row] for row in cells(data)
+        ]
+
+    def test_cells_expected_bytes(self):
+        data = b'a,"x\ny"\r\n1,"p\r\nq"\r\n'
+        assert set_line_endings(data, ".csv", "lf", cells=True) == (
+            b'a,"x\ny"\n1,"p\nq"\n'
+        )
+        assert set_line_endings(data, ".csv", "crlf", cells=True) == (
+            b'a,"x\r\ny"\r\n1,"p\r\nq"\r\n'
+        )
+
+    def test_cells_change_nothing_for_a_text_file(self):
+        data = b"a\r\nb\rc\n"
+        assert set_line_endings(data, ".md", "lf", cells=True) == b"a\nb\nc\n"
+
     def test_expected_bytes(self):
         data = b'a,"x\ny"\r\n1,"p\r\nq"\r\n'
         assert set_line_endings(data, ".csv", "lf") == b'a,"x\ny"\n1,"p\r\nq"\n'
@@ -295,7 +321,7 @@ class TestExportFileNewline:
         out.write_bytes(b"old")
         mock_service.files().export().execute.return_value = b"a\r\n"
 
-        def boom(*args):
+        def boom(*args, **options):
             raise RuntimeError("rewrite failed")
 
         monkeypatch.setattr("gdrives.export.set_line_endings", boom)
@@ -322,6 +348,32 @@ class TestExportFileNewline:
     def test_check_newline_none_is_always_fine(self):
         check_newline("out.docx", None)
 
+    def test_cells_are_rewritten_when_asked(self, mock_service, tmp_path):
+        out = tmp_path / "out.csv"
+        mock_service.files().export().execute.return_value = b'a,"x\r\ny"\r\n'
+        export_file(mock_service, "fid", str(out), newline="lf", newline_cells=True)
+        assert out.read_bytes() == b'a,"x\ny"\n'
+
+    @pytest.mark.parametrize(
+        ("name", "newline", "message"),
+        [
+            ("o.csv", None, "newline_cells needs a newline"),
+            ("o.txt", "lf", r"newline_cells applies to a \.csv export, not '\.txt'"),
+            ("o.docx", "lf", "text export"),
+            ("o.docx", None, "newline_cells needs a newline"),
+        ],
+    )
+    def test_cells_are_refused_before_any_request(
+        self, mock_service, tmp_path, name, newline, message
+    ):
+        out = tmp_path / name
+        with pytest.raises(ValueError, match=message):
+            export_file(
+                mock_service, "fid", str(out), newline=newline, newline_cells=True
+            )
+        mock_service.files().export.assert_not_called()
+        assert not out.exists()
+
 
 # -- run --
 
@@ -334,7 +386,7 @@ class TestRun:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.export_file",
-            lambda service, file_id, output, newline=None: rec.update(
+            lambda service, file_id, output, **options: rec.update(
                 svc=service, fid=file_id, out=output
             ),
         )
@@ -359,7 +411,19 @@ class TestRun:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.export_file",
-            lambda service, file_id, output, newline: rec.update(n=newline),
+            lambda service, file_id, output, **options: rec.update(options),
         )
         run("DOCID", "out.csv", "crlf")
-        assert rec == {"n": "crlf"}
+        assert rec == {"newline": "crlf", "newline_cells": False}
+        run("DOCID", "out.csv", "crlf", newline_cells=True)
+        assert rec == {"newline": "crlf", "newline_cells": True}
+
+    def test_newline_cells_is_checked_before_authenticating(self, monkeypatch):
+        def build():
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        with pytest.raises(ValueError, match="needs a newline"):
+            run("DOCID", "out.csv", newline_cells=True)
+        with pytest.raises(ValueError, match=r"applies to a \.csv export, not '\.md'"):
+            run("DOCID", "out.md", "lf", newline_cells=True)

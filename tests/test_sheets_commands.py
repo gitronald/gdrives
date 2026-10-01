@@ -14,12 +14,13 @@ import json
 from pathlib import Path
 
 import pytest
-from helpers import FakeSheetGrid, http_error, plain
+from helpers import plain
 from typer.testing import CliRunner
 
 from gdrives.auth import SHEETS_WRITE_SCOPES, CredentialInfo, build_sheets_service
 from gdrives.cli import app
 from gdrives.sheets import CONFIG_NAME, read_records, run_pull, write_values_csv
+from gdrives.testing import FakeSheetGrid, http_error
 
 HEADER = ["member_id", "name", "status"]
 ROWS = [["m1", "Ada", "active"], ["m2", "Bo", "active"]]

@@ -8,8 +8,6 @@ setting existed, and are kept as they were recorded: a run that does not set
 
 from datetime import date
 
-from helpers import FakeSheetGrid
-
 from gdrives.sheets import (
     CONFIG_NAME,
     parse_config,
@@ -18,6 +16,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["id", "name", "when"]
 

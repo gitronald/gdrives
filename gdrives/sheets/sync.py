@@ -97,6 +97,7 @@ from gdrives.sheets.hooks import (
     resolve_target,
     tab_hooks,
 )
+from gdrives.sheets.links import LinkSweep, TabLinks
 from gdrives.sheets.merge import SIDES, Cell, MergePlan, merge
 from gdrives.sheets.stores import FileStore, MemoryStore, Store
 from gdrives.sheets.structure import (
@@ -575,15 +576,37 @@ def _check(
 
 
 def _strict_schema_problems(
-    tab: str, stage: str, schema: Mapping[str, ColumnSchema], columns: Iterable[str]
+    tab: str,
+    stage: str,
+    schema: Mapping[str, ColumnSchema],
+    columns: Iterable[str],
+    mode: bool | str,
+    unread: Collection[str] = (),
 ) -> list[str]:
-    """One problem per column of ``columns`` that ``schema`` does not declare."""
+    """One problem per column of ``columns`` that ``schema`` does not declare.
+
+    Each names the ``strict_schema`` ``mode`` that refused it, as a config
+    spells it, and the way out: a schema entry. A column of ``unread``, a
+    sheet column the run does not read, has a second one, since ``"local"``
+    would leave it alone.
+    """
     label = f"{tab} ({stage})"
-    return [
-        f"{label}: column {column!r} has no schema entry, and the tab is strict_schema"
-        for column in columns
-        if column not in schema
-    ]
+    named = "true" if mode is True else repr(mode)
+    found: list[str] = []
+    for column in columns:
+        if column in schema:
+            continue
+        remedy = "declare it in the tab's schema"
+        if column in unread:
+            remedy += (
+                f", or set strict_schema to {_STRICT_LOCAL!r} to leave the sheet's own "
+                "columns alone"
+            )
+        found.append(
+            f"{label}: column {column!r} has no schema entry, and strict_schema "
+            f"is {named}: {remedy}"
+        )
+    return found
 
 
 def _respelling_problems(
@@ -667,8 +690,11 @@ def _problems(
     ]
     if strict_schema:
         checked = strict_columns if strict_columns is not None else context.columns
+        unread = set(checked) - set(context.columns)
         found.extend(
-            _strict_schema_problems(context.tab, context.stage, schema, checked)
+            _strict_schema_problems(
+                context.tab, context.stage, schema, checked, strict_schema, unread
+            )
         )
     if validate is not None:
         found.extend(f"{label}: {text}" for text in validate(context.rows))
@@ -1134,7 +1160,9 @@ def _plan(
             ]
             report.problems = [
                 *report.problems,
-                *_strict_schema_problems(tab.title, "sheet", tab.schema, sheet_extra),
+                *_strict_schema_problems(
+                    tab.title, "sheet", tab.schema, sheet_extra, True, sheet_extra
+                ),
             ]
         if sheet_columns is not None:
             # A column this run is adding with add_missing is not yet in the
@@ -2483,6 +2511,24 @@ def run_target(
 
 
 # -- the text report --
+
+
+def pending_hint(report: "SyncReport | TabReport | LinkSweep | TabLinks") -> str | None:
+    """The line that says a preview left something for ``--apply``, or None.
+
+    It is what the commands print to stderr after a preview, for a caller
+    that prints a report itself: ``Preview only; rerun with --apply to
+    write.`` when ``report.pending``, and None when nothing is pending, as
+    after an apply or for a run that stopped on a problem. A sync whose base
+    is all an apply would write (``base_only``) reads ``to save the base.``
+    instead, which :func:`format_report` does not say: its text can end ``in
+    sync: nothing to write``. The line has no line ending.
+    """
+    if not report.pending:
+        return None
+    base_only = isinstance(report, (SyncReport, TabReport)) and report.base_only
+    what = "save the base" if base_only else "write"
+    return f"Preview only; rerun with --apply to {what}."
 
 
 def _q(text: str) -> str:

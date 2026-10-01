@@ -7,17 +7,57 @@ from helpers import make_file, make_folder, mock_list_response
 
 from gdrives.files import SPREADSHEET_MIME
 from gdrives.resolve import (
+    CONVERT_HINT,
     DrivePathError,
+    NotSpreadsheetError,
     check_spreadsheet,
     resolve_and_report,
     resolve_file_id,
     resolve_path,
     resolve_shared_path,
     resolve_spreadsheet_id,
+    walk_entry,
     walk_segments,
 )
 
 # -- walk_segments --
+
+
+class TestWalkEntry:
+    def test_it_returns_the_id_and_the_entry_the_last_segment_matched(
+        self, mock_service
+    ):
+        folder = make_folder("clubs", id="clubs_id")
+        sheet = make_file("Roster", id="sheet_id", mime=SPREADSHEET_MIME)
+        mock_service.files().list().execute.side_effect = [
+            mock_list_response([folder]),
+            mock_list_response([sheet]),
+        ]
+        found = walk_entry(
+            mock_service, "folder_id", ["clubs", "roster"], allow_files=True
+        )
+        assert found == ("sheet_id", sheet)
+        # The entry is checked with no request of its own.
+        check_spreadsheet(sheet)
+        mock_service.files().get.assert_not_called()
+
+    def test_no_segments_is_the_folder_and_no_entry(self, mock_service):
+        assert walk_entry(mock_service, "folder_id", []) == ("folder_id", None)
+
+    def test_files_are_refused_unless_allowed(self, mock_service):
+        sheet = make_file("Roster", id="sheet_id", mime=SPREADSHEET_MIME)
+        mock_service.files().list().execute.return_value = mock_list_response([sheet])
+        with pytest.raises(DrivePathError, match="folder 'Roster'"):
+            walk_entry(mock_service, "folder_id", ["Roster"])
+
+    def test_walk_segments_is_its_id(self, mock_service):
+        folder = make_folder("clubs", id="clubs_id")
+        mock_service.files().list().execute.return_value = mock_list_response([folder])
+        assert (
+            walk_segments(mock_service, "folder_id", ["clubs"], corpora="user")
+            == (walk_entry(mock_service, "folder_id", ["clubs"], corpora="user")[0])
+        )
+        assert mock_service.files().list.call_args[1]["corpora"] == "user"
 
 
 class TestWalkSegments:
@@ -351,6 +391,55 @@ class TestResolveSpreadsheetId:
             with pytest.raises(ValueError, match="sheets-create --from"):
                 check_spreadsheet(file)
 
+    def test_the_refusal_carries_the_name_and_the_type(self):
+        file = {"id": "f", "name": "Roster\x1b[2J.xlsx", "mimeType": _XLSX}
+        with pytest.raises(NotSpreadsheetError) as caught:
+            check_spreadsheet(file)
+        error = caught.value
+        assert isinstance(error, ValueError)
+        assert (error.name, error.mime_type) == ("Roster\x1b[2J.xlsx", _XLSX)
+        assert error.convertible is True
+        assert str(error).endswith(f"; {CONVERT_HINT}")
+
+    @pytest.mark.parametrize("mime", ["application/pdf", ""])
+    def test_a_type_that_cannot_be_converted_says_so(self, mime):
+        file = {"id": "f", "name": "Roster", "mimeType": mime}
+        if not mime:
+            del file["mimeType"]
+        with pytest.raises(NotSpreadsheetError) as caught:
+            check_spreadsheet(file, hint="run 'clubtools convert'")
+        assert (caught.value.mime_type, caught.value.convertible) == (mime, False)
+        assert "clubtools" not in str(caught.value)
+
+    def test_a_hint_replaces_the_way_out(self):
+        file = {"id": "f", "name": "Roster.xlsx", "mimeType": _XLSX}
+        with pytest.raises(NotSpreadsheetError) as caught:
+            check_spreadsheet(file, hint="run 'clubtools convert' on it")
+        assert str(caught.value) == (
+            f"'Roster.xlsx' is an Excel workbook ({_XLSX}), not a Google "
+            "spreadsheet; run 'clubtools convert' on it"
+        )
+
+    @patch("gdrives.resolve.load", return_value=_DRIVES)
+    def test_a_path_is_refused_with_the_hint_given(self, _load, mock_service, capsys):
+        book = make_file("Roster.xlsx", id="book_id", mime=_XLSX)
+        mock_service.files().list().execute.return_value = mock_list_response([book])
+        for resolve in (
+            lambda: resolve_spreadsheet_id(
+                "My Drive/Roster.xlsx", mock_service, hint="convert it"
+            ),
+            lambda: resolve_and_report(
+                "My Drive/Roster.xlsx",
+                "Spreadsheet",
+                mock_service,
+                spreadsheet=True,
+                hint="convert it",
+            ),
+        ):
+            with pytest.raises(NotSpreadsheetError, match="; convert it$"):
+                resolve()
+        assert capsys.readouterr().err == ""
+
     @patch("gdrives.resolve.load", return_value=_DRIVES)
     def test_a_drive_alone_is_not_a_spreadsheet(self, _load, mock_service):
         with pytest.raises(ValueError, match="'My Drive' is a folder"):
@@ -365,7 +454,7 @@ class TestResolveSpreadsheetId:
     def test_resolve_and_report_can_check(self, monkeypatch, mock_service, capsys):
         monkeypatch.setattr(
             "gdrives.resolve.resolve_spreadsheet_id",
-            lambda source, service=None: f"S:{source}",
+            lambda source, service=None, hint=None: f"S:{source}",
         )
         got = resolve_and_report("x", "Spreadsheet", mock_service, spreadsheet=True)
         assert got == "S:x"

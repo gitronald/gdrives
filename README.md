@@ -1,4 +1,4 @@
-# gdrives v0.15.0
+# gdrives v0.16.0
 
 Command-line tools for Google Drive.
 
@@ -40,6 +40,7 @@ gdrives/
 ├── mv.py        # Rename and move files and folders (Drive API files.update)
 ├── upload.py    # Upload a local file, replacing a file of its name in place
 ├── local.py     # Local output: atomic writes, CSV formula escaping, terminal-safe names
+├── testing.py   # Fakes of the Sheets API for a caller's tests (FakeSheetGrid, FakeSheetsService)
 ├── sheets/      # Google Sheets: cell ranges, rules, and keyed sync (Sheets API v4)
 │   ├── values.py     # spreadsheets.values.* wrappers, render options, and tab lookups
 │   ├── retry.py      # Retry with exponential backoff and jitter
@@ -178,7 +179,7 @@ Run `gdrives show-drives` once to populate the drive-name cache
 (`.gdrives/cache.json`); any command given a Drive path (`ls`, `download`, `mv`,
 `upload`, and the `sheets-*` and `docs-*` commands) resolves it against the
 cache.
-`gdrives --version` prints the installed version.
+`gdrives --version` prints the installed version, which `gdrives.__version__` holds.
 
 ### Log in
 
@@ -195,11 +196,15 @@ use. When a cached token already serves the scope, nothing is asked. It exits 1
 when the time runs out, or when the token could not be saved. It is also the
 way to grant again after a token's refresh has failed. Before any command
 waits on a consent or a token refresh, it says so on stderr with a line
-starting `Credential:`. The line is also printed when OAuth is configured but no
+starting `Credential:`. A refresh that Google refuses is said as well, with the
+service account or ADC used in its place. The line is also printed when OAuth is configured but no
 cached token serves and there is no terminal for a consent, so the run goes on
 as the service account or ADC; it then ends with the reason and `run gdrives login`.
 It stays quiet when OAuth is not configured. `gdrives.auth.credential_line(info)`
-is that line for a `CredentialInfo`, for a caller printing it by hand.
+is that line for a `CredentialInfo`, for a caller printing it by hand. A caller
+that enters `gdrives.auth.announcing_credentials()` itself gets the same lines,
+and `announcing_credentials(refresh=False)` leaves a coming refresh unannounced,
+for one that runs many commands in a row.
 
 A caller that wants to say more can build on `gdrives.auth.describe_credentials()`,
 whose `CredentialInfo` names why a credential was chosen without a network call:
@@ -238,7 +243,15 @@ gdrives ls "My Drive/projects" --save-as map.md         # Nested markdown
 gdrives ls "My Drive/projects" --save-as data.csv       # CSV export
 gdrives ls "My Drive/projects" --depth 3 --save-as map.md
 gdrives ls "My Drive/projects" --save-as map.md --save-as data.csv  # both, one traversal
+gdrives ls "My Drive/projects" --save-as data.csv --newline lf      # LF row endings
 ```
+
+A saved CSV ends its rows with CRLF and a saved markdown map its lines with LF.
+`--newline lf` or `--newline crlf` ends the lines of every file saved the same
+way, so a listing that is committed is not rewritten after each run. It is
+refused without `--save-as`, and with any other value, before any request. From
+code, `listing.format_csv(rows, newline=None)` and `listing.ls(..., newline=None)`
+take the same value.
 
 File names come from whoever owns a file, so `ls` treats them as untrusted in
 every output. A control character in a name (which could otherwise drive the
@@ -258,6 +271,7 @@ gdrives export <sheet-url> -o output.xlsx   # Google Sheet -> .xlsx
 gdrives export <sheet-url> -o output.csv    # Google Sheet -> .csv (first tab only)
 gdrives export <slides-url> -o output.pptx  # Google Slides -> .pptx
 gdrives export <sheet-url> -o output.csv --newline lf  # Rewrite the row endings to LF
+gdrives export <sheet-url> -o output.csv --newline lf --newline-cells  # And the line breaks inside cells
 ```
 
 Drive sends a sheet's CSV with CRLF row endings, so a file that is committed is
@@ -269,9 +283,14 @@ any other value. The rewrite works on the bytes, so an export that is not valid
 UTF-8 is neither corrupted nor refused. A line ending is CRLF, LF, or a lone CR
 (Drive sends none). In a CSV file a line break inside a quoted cell is part of
 the cell's value and is kept as the cell holds it: only the row endings change,
-and which cells are quoted, and every other byte, stay as they were. From code,
-`export_file(service, file_id, output_path, newline=None)` takes the same
-value, and `gdrives.export.set_line_endings(content, extension, newline)`
+and which cells are quoted, and every other byte, stay as they were.
+`--newline-cells` rewrites the line breaks inside the quoted cells of a `.csv`
+export as well, so the file holds one line ending throughout. That changes the
+values of those cells, so it is asked for and never the default, and it is
+refused without `--newline` and with any other format. From code,
+`export_file(service, file_id, output_path, newline=None, newline_cells=False)`
+takes the same values, and
+`gdrives.export.set_line_endings(content, extension, newline, cells=False)`
 rewrites bytes already in hand. The names are those of `newline` on the sheets
 side (`gdrives.local.NEWLINES`).
 
@@ -293,7 +312,13 @@ the commands do not make. The same holds for the `spreadsheet` of a config
 target, in `sheets-sync`, `sheets-pull`, `sheets-push`, and `sheets-links`. From
 code, `gdrives.resolve.resolve_spreadsheet_id(source, service=None)` resolves a
 source and makes the check, and `check_spreadsheet(file)` checks a file the
-caller resolved itself.
+caller resolved itself. `walk_entry(service, folder_id, segments,
+allow_files=True)` walks a path from any folder and returns the ID with the
+listing entry it came from, which `check_spreadsheet` takes, so the type costs
+no `files.get`. The refusal is a `NotSpreadsheetError`, a `ValueError` that
+carries the file's `name`, its `mime_type`, and whether it is `convertible`, and
+`hint=` on either function replaces the sentence that names `sheets-create
+--from`, for a caller that converts a workbook with a command of its own.
 
 ```bash
 gdrives sheets-get <sheet-url> "Sheet1!A1:C10"          # Print a range (aligned columns)
@@ -439,11 +464,13 @@ a sheet column outside the projection alone. A `schema` column's `present: true`
 makes it a problem for the header to lack it, its `strict: true` narrows a
 `bool` or `date` column to its one exact form (`TRUE`/`FALSE`, `YYYY-MM-DD`),
 and a `str` column's `pattern` is a regular expression a non-blank cell must
-match in full.
+match in full, with a `pattern_hint` to say what the cell should be in the
+message (`'x' is not a member page link`).
 
 Every command previews by default and writes only with `--apply`. The report
 goes to stdout, a preview that `--apply` would change ends with `Preview only;
-rerun with --apply to write.` on stderr (`to save the base.` when the base is all it would write), and the exit code is 0 when in sync or applied, 1 for an
+rerun with --apply to write.` on stderr (`to save the base.` when the base is
+all it would write; `pending_hint(report)` returns the line), and the exit code is 0 when in sync or applied, 1 for an
 error, and 2 when conflicts, row flags, or held sheet values are left for a
 person. A preview uses
 the read-only scope; `--apply` first prints the credential it will use to
@@ -462,7 +489,8 @@ a spreadsheet or the tabs of a target, and with `--apply` fixes them (in
 code, `sweep_url_links` and `format_sweep`). To audit a tab,
 `linked_cells(..., detail=True)` also returns each link cell's `text` and
 whether its link is a `HYPERLINK` formula's (`formula`), and `styled_cells`
-finds the cells underlined or coloured as a link is that hold none.
+finds the cells underlined or coloured as a link is that hold none, or with
+`own_colors=True` any cell that sets a text colour of its own. Both take `rows`.
 `clear_link_format(..., style=True)` clears the underline and the text colour
 with the link; a cell whose link comes from a `HYPERLINK` formula loses the
 link and keeps the formula, which then shows its label as plain text, unless
@@ -494,7 +522,8 @@ name is checked before the first request. See
 
 `gdrives.sheets.transforms:trim_cells` is a stock `transform` for the cleaning
 most sheets need: it strips each cell and collapses runs of whitespace inside
-a line, keeping line breaks. Name it in `hooks`, or pass `transform=trim_cells`.
+a line, keeping line breaks. Name it in `hooks`, or pass `transform=trim_cells`;
+`trim_cell` does the same to one cell.
 Whitespace a collaborator typed stays on the sheet, since only the sheet's side
 of the merge is cleaned. See
 [a stock transform](docs/sheets-sync.md#a-stock-transform).
@@ -517,7 +546,8 @@ tab it would contradict (a `link_urls` default on a pull tab, say). See
 A tab's `schema` may name a schema written in Python instead of giving one,
 as `"module:attribute"`: `"schema": "clubtools.schema:MEMBERS"`, a mapping of
 column name to `ColumnSchema`, or a function given the tab's title that
-returns one. It is imported as a hook is, when a run starts and never when
+returns one. With a key, `"clubtools.schema:SCHEMAS[members]"`, it names an
+entry of a registry, so tabs of different titles share a schema. It is imported as a hook is, when a run starts and never when
 the config is read, so **running a command on the config runs that module**,
 a preview included. The schema found is checked as a `schema` object in the
 config is, before the first request. See
@@ -805,7 +835,11 @@ uv run ruff check . && uv run pyrefly check
 ```
 
 The unit tests run against fake Drive, Sheets, and Docs services, so they need no
-credentials, and they must keep line and branch coverage at 100%.
+credentials, and they must keep line and branch coverage at 100%. The Sheets
+fakes are part of the package, as `gdrives.testing`, for the tests of code that
+calls `gdrives.sheets` (see
+[Testing a caller](docs/sheets-sync.md#testing-a-caller)); the live tests pin
+what they model against the API.
 
 ### Live integration tests
 

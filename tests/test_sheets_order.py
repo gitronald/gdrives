@@ -11,7 +11,6 @@ import random
 
 import pytest
 from googleapiclient.errors import HttpError
-from helpers import FakeSheetGrid, http_error
 
 from gdrives.sheets import (
     ReadBackError,
@@ -20,6 +19,7 @@ from gdrives.sheets import (
     reorder_rows,
 )
 from gdrives.sheets.order import _Blank, _increasing, _plan_moves
+from gdrives.testing import FakeSheetGrid, http_error
 
 READ = "values.get"
 GRID = "spreadsheets.get"

@@ -1397,6 +1397,132 @@ class TestAnnounceCredentials:
         assert capsys.readouterr().err == f"Credential: {info}\n"
 
 
+class TestAnnouncingARefresh:
+    """``refresh=False`` leaves a refresh that is coming unannounced."""
+
+    REFRESH = auth.CredentialInfo(kind="oauth", refresh=True, source=Path("t.json"))
+
+    @pytest.fixture
+    def described(self, monkeypatch):
+        state = MagicMock()
+        state.info = self.REFRESH
+        monkeypatch.setattr(
+            auth, "describe_credentials", lambda scopes=None, *, force=False: state.info
+        )
+        monkeypatch.setattr(
+            auth, "authenticate", lambda scopes=None, *, force=False: "creds"
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build", lambda api, version, credentials: api
+        )
+        return state
+
+    def test_a_refresh_is_announced_by_default(self, described, capsys):
+        with auth.announcing_credentials():
+            auth.build_drive_service()
+        assert capsys.readouterr().err == f"Credential: {self.REFRESH}\n"
+
+    def test_a_refresh_is_not_announced_when_asked_not_to(self, described, capsys):
+        with auth.announcing_credentials(refresh=False):
+            auth.build_drive_service()
+            auth.announce_credentials(auth.SHEETS_WRITE_SCOPES)
+        assert capsys.readouterr() == ("", "")
+
+    @pytest.mark.parametrize(
+        "info",
+        [
+            auth.CredentialInfo(kind="oauth", consent=True, source=Path("c.json")),
+            auth.CredentialInfo(kind="adc", consent_skipped=True),
+        ],
+    )
+    def test_a_consent_and_a_fallback_still_are(self, described, capsys, info):
+        described.info = info
+        with auth.announcing_credentials(refresh=False):
+            auth.build_drive_service()
+        assert capsys.readouterr().err == auth.credential_line(info) + "\n"
+
+    def test_always_still_prints_the_line_once(self, described, capsys):
+        with auth.announcing_credentials(refresh=False):
+            auth.build_sheets_service(auth.SHEETS_WRITE_SCOPES)
+            auth.announce_credentials(auth.SHEETS_WRITE_SCOPES, always=True)
+            auth.announce_credentials(auth.SHEETS_WRITE_SCOPES, always=True)
+        assert capsys.readouterr().err == f"Credential: {self.REFRESH}\n"
+
+    def test_outside_a_block_the_call_announces_a_refresh(self, described, capsys):
+        auth.announce_credentials()
+        assert capsys.readouterr().err == f"Credential: {self.REFRESH}\n"
+
+
+class TestARefusedRefresh:
+    """A refresh Google refuses is said inside a block, with what is used instead."""
+
+    @pytest.fixture
+    def refused(self, oauth):
+        """The one cached token's refresh is refused, and no terminal is there."""
+        grant(oauth.dir / "gdrives_token.json", auth.SCOPES)
+        oauth.tokens["gdrives_token.json"] = dead_token()
+        oauth.line = (
+            f"Credential: the refresh of OAuth token "
+            f"{oauth.dir / 'gdrives_token.json'} was refused\n"
+        )
+        return oauth
+
+    @pytest.mark.parametrize("refresh", [True, False])
+    def test_a_service_account_used_in_its_place_is_named(
+        self, refused, monkeypatch, capsys, refresh
+    ):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        key = refused.dir / "service_account.json"
+        key.write_text('{"client_email": "sa@example.com"}')
+        monkeypatch.setattr(
+            "google.oauth2.service_account.Credentials.from_service_account_file",
+            lambda path, scopes=None: "sa creds",
+        )
+        with auth.announcing_credentials(refresh=refresh):
+            assert auth.authenticate() == "sa creds"
+        assert capsys.readouterr().err == (
+            refused.line + f"Credential: service account sa@example.com (key {key}), "
+            "used in its place\n"
+        )
+
+    def test_adc_used_in_its_place_is_named(self, refused, monkeypatch, capsys):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: "adc creds")
+        with auth.announcing_credentials():
+            assert auth.authenticate() == "adc creds"
+        assert capsys.readouterr().err == (
+            refused.line
+            + "Credential: Application Default Credentials, used in its place\n"
+        )
+
+    def test_a_consent_that_follows_speaks_for_itself(self, refused, capsys):
+        with auth.announcing_credentials(refresh=False):
+            assert auth.authenticate() is refused.consented
+        assert capsys.readouterr().err == refused.line
+
+    def test_a_fallback_with_no_refusal_is_not_named_here(
+        self, oauth, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: "adc creds")
+        (oauth.dir / "service_account.json").write_text("{}")
+        monkeypatch.setattr(
+            "google.oauth2.service_account.Credentials.from_service_account_file",
+            lambda path, scopes=None: "sa creds",
+        )
+        with auth.announcing_credentials():
+            assert auth.authenticate() == "sa creds"
+            (oauth.dir / "service_account.json").unlink()
+            assert auth.authenticate() == "adc creds"
+        assert capsys.readouterr().err == ""
+
+    def test_a_library_caller_hears_nothing(self, refused, monkeypatch, capsys):
+        monkeypatch.setattr(auth, "_is_interactive", lambda: False)
+        monkeypatch.setattr(auth, "authenticate_adc", lambda scopes=None: "adc creds")
+        assert auth.authenticate() == "adc creds"
+        assert capsys.readouterr() == ("", "")
+
+
 # -- CredentialInfo's new fields: oauth_client, terminal, consent_skipped, --
 # -- service_account, and passed_over --
 

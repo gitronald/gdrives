@@ -6,7 +6,7 @@ delegates (run/ls/resolve/build_drive_service) are patched at their source.
 """
 
 import json
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,6 +18,7 @@ from httplib2 import ServerNotFoundError
 from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
 from typer.testing import CliRunner
 
+import gdrives
 from gdrives import cli
 from gdrives.files import IncompleteSearchError
 from gdrives.resolve import DrivePathError
@@ -45,6 +46,16 @@ class TestVersion:
         assert result.exit_code == 0
         assert result.output == f"gdrives {version('gdrives')}\n"
 
+    def test_the_package_holds_the_installed_version(self):
+        assert gdrives.__version__ == version("gdrives")
+
+    def test_a_package_with_no_metadata_has_the_unknown_version(self, monkeypatch):
+        def missing(name):
+            raise PackageNotFoundError(name)
+
+        monkeypatch.setattr(gdrives, "version", missing)
+        assert gdrives._installed_version() == gdrives.UNKNOWN_VERSION == "0+unknown"
+
     def test_help_keeps_the_app_description_and_lists_the_option(self):
         result = CliRunner().invoke(cli.app, ["--help"])
         assert result.exit_code == 0
@@ -57,7 +68,7 @@ class TestExport:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.run",
-            lambda source, output, newline=None: rec.update(s=source, o=output),
+            lambda source, output, **options: rec.update(s=source, o=output),
         )
         cli.export("https://docs.google.com/document/d/X/edit", "out.docx")
         assert rec == {
@@ -69,16 +80,40 @@ class TestExport:
         rec = {}
         monkeypatch.setattr(
             "gdrives.export.run",
-            lambda source, output, newline: rec.update(n=newline),
+            lambda source, output, **options: rec.update(options),
         )
         result = CliRunner().invoke(
             cli.app, ["export", "SHEET", "-o", "out.csv", "--newline", "lf"]
         )
         assert result.exit_code == 0
-        assert rec == {"n": "lf"}
+        assert rec == {"newline": "lf", "newline_cells": False}
+
+    def test_newline_cells_is_passed_on(self, monkeypatch):
+        rec = {}
+        monkeypatch.setattr(
+            "gdrives.export.run",
+            lambda source, output, **options: rec.update(options),
+        )
+        result = CliRunner().invoke(
+            cli.app,
+            ["export", "SHEET", "-o", "out.csv", "--newline", "lf", "--newline-cells"],
+        )
+        assert result.exit_code == 0
+        assert rec == {"newline": "lf", "newline_cells": True}
+
+    def test_newline_cells_without_a_newline_exits_1(self, monkeypatch, capsys):
+        def build():
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        result = CliRunner().invoke(
+            cli.app, ["export", "SHEET", "-o", "out.csv", "--newline-cells"]
+        )
+        assert result.exit_code == 1
+        assert "newline_cells needs a newline" in result.output
 
     def test_value_error_exits_1(self, monkeypatch, capsys):
-        def boom(source, output, newline=None):
+        def boom(source, output, **options):
             raise ValueError("Unsupported output extension '.bad'")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -96,7 +131,7 @@ class TestExport:
             status = 404
             reason = "Not Found"
 
-        def boom(source, output, newline=None):
+        def boom(source, output, **options):
             raise HttpError(FakeResp(), b"")
 
         monkeypatch.setattr("gdrives.export.run", boom)
@@ -195,6 +230,34 @@ class TestLs:
         assert rec["k"]["shared_with_me"] is True
         assert rec["k"]["save_as"] == ["map.md"]
         assert rec["k"]["service"] is service
+
+    def test_newline_is_passed_on(self, monkeypatch, service):
+        rec = {}
+        monkeypatch.setattr("gdrives.listing.ls", lambda *a, **k: rec.update(a=a, k=k))
+        cli.ls(shared_with_me=True, save_as=["data.csv"], newline="lf")
+        assert rec["k"]["newline"] == "lf"
+        monkeypatch.setattr("gdrives.resolve.resolve_path", lambda p, svc: "FID")
+        cli.ls(path="My Drive", save_as=["data.csv"], newline="crlf")
+        assert rec["a"] == ("FID",) and rec["k"]["newline"] == "crlf"
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"newline": "lf"}, "newline applies to a saved listing"),
+            ({"newline": "cr", "save_as": ["data.csv"]}, "newline must be one of"),
+        ],
+    )
+    def test_a_newline_is_checked_before_authenticating(
+        self, monkeypatch, capsys, options, message
+    ):
+        def build():
+            raise AssertionError("authenticated")
+
+        monkeypatch.setattr("gdrives.auth.build_drive_service", build)
+        with pytest.raises(SystemExit) as exc:
+            cli.ls(path="My Drive", **options)
+        assert exc.value.code == 1
+        assert message in capsys.readouterr().err
 
     def test_shared_with_path_resolves(self, monkeypatch, service):
         rec = {}
@@ -648,7 +711,7 @@ class TestDocsCreate:
         assert rec == {"t": "Notes", "tf": "body.txt"}
 
     def test_http_error_exits_1(self, monkeypatch, capsys):
-        from helpers import http_error
+        from gdrives.testing import http_error
 
         def boom(*a, **k):
             raise http_error(403, "Forbidden")
@@ -1157,7 +1220,7 @@ class TestSheetsCreate:
         assert rec["tabs"] == ()
 
     def test_http_error_exits_1(self, monkeypatch, capsys):
-        from helpers import http_error
+        from gdrives.testing import http_error
 
         def boom(*a, **k):
             raise http_error(403, "Forbidden")

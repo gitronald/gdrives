@@ -11,7 +11,7 @@ edited is never pushed and never trips the guard.
 from datetime import date
 
 import pytest
-from helpers import FakeSheetGrid, local_file
+from helpers import local_file
 
 from gdrives.sheets import (
     CONFIG_NAME,
@@ -27,6 +27,7 @@ from gdrives.sheets import (
     sync_tab,
     write_values_csv,
 )
+from gdrives.testing import FakeSheetGrid
 
 HEADER = ["id", "name", "amt"]
 READS = {"spreadsheets.get", "values.get", "values.batchGet"}

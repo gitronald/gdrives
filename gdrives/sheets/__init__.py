@@ -46,8 +46,9 @@ pull_values`` works regardless of which submodule defines a name:
   over a spreadsheet's tabs
 - ``sync``: keep a tab and a local file in step (``plan_tab``, ``apply_tab``,
   ``pull_tab``, ``pull_records``, ``push_tab``, ``push_rows``, ``pull_all_tabs``,
-  ``run_target``) and report it
-- ``transforms``: stock ``transform`` hooks (``trim_cells``)
+  ``run_target``) and report it (``format_report``, ``pending_hint``)
+- ``transforms``: stock ``transform`` hooks (``trim_cells``), and
+  ``trim_cell`` for one cell
 - ``commands``: the ``run_*`` CLI entry points
 """
 
@@ -120,6 +121,7 @@ from gdrives.sheets.config import (
     LOCAL_EXTENSIONS,
     MODES,
     ON_INVALID,
+    SCHEMA_REF_FORMS,
     TARGET_DEFAULTS,
     Config,
     ConfigError,
@@ -128,6 +130,7 @@ from gdrives.sheets.config import (
     find_config,
     load_config,
     parse_config,
+    schema_ref_parts,
 )
 from gdrives.sheets.create import (
     SOURCE_MIMES,
@@ -226,6 +229,7 @@ from gdrives.sheets.sync import (
     TabReport,
     apply_tab,
     format_report,
+    pending_hint,
     plan_tab,
     pull_all_tabs,
     pull_records,
@@ -242,7 +246,7 @@ from gdrives.sheets.table import (
     pull_serials,
     read_tab,
 )
-from gdrives.sheets.transforms import trim_cells
+from gdrives.sheets.transforms import trim_cell, trim_cells
 from gdrives.sheets.typed import (
     NUMBER_FORMAT_FIELD,
     dated_cells,
@@ -342,6 +346,7 @@ __all__ = [
     "Replacement",
     "RowFlag",
     "SCHEMA_COLUMNS",
+    "SCHEMA_REF_FORMS",
     "SERIAL_NUMBER",
     "SERIAL_TYPES",
     "SIDES",
@@ -421,6 +426,7 @@ __all__ = [
     "parse_config",
     "parse_pairs",
     "parse_tab",
+    "pending_hint",
     "place_columns",
     "plan_tab",
     "print_retry",
@@ -461,6 +467,7 @@ __all__ = [
     "retry_notices",
     "run_update",
     "run_widths",
+    "schema_ref_parts",
     "serial_to_cell",
     "set_by_match",
     "set_column_widths",
@@ -477,6 +484,7 @@ __all__ = [
     "tab_listing",
     "tab_sheet_ids",
     "to_cell",
+    "trim_cell",
     "trim_cells",
     "update_values",
     "url_link_problems",
