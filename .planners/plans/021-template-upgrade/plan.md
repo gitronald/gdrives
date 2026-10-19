@@ -59,3 +59,4 @@ the git hooks from the main checkout so none points into `.worktrees/`.
   - PR: pending
 - **2026-10-18T17:40:53-07:00** — Applied the v0.10.0..v0.11.2 delta in the worktree; all checks green (ruff, pyrefly, pre-commit --all-files, pytest with coverage). Locked ruff 0.16.10, pre-commit rev to match. Git hooks re-installed from the main checkout; none points into `.worktrees/`.
 - **2026-10-18T17:41:12-07:00** — PR opened: https://github.com/gitronald/gdrives/pull/70
+- **2026-10-18T17:44:39-07:00** — CI green on the PR. Review gate: one review over the combined diff of the five repos upgraded in this pass (lockfiles left out); the same delta in each, plus each repo's own lines kept. No findings. Review not posted to the PR.
