@@ -5,7 +5,7 @@ status: active
 branch: feature/template-upgrade
 created: 2026-10-18T17:33:15-07:00
 concluded:
-pr:
+pr: https://github.com/gitronald/gdrives/pull/70
 ---
 
 # Upgrade to proj-template v0.11.2
@@ -58,3 +58,4 @@ the git hooks from the main checkout so none points into `.worktrees/`.
   - Worktree: `.worktrees/template-upgrade`
   - PR: pending
 - **2026-10-18T17:40:53-07:00** — Applied the v0.10.0..v0.11.2 delta in the worktree; all checks green (ruff, pyrefly, pre-commit --all-files, pytest with coverage). Locked ruff 0.16.10, pre-commit rev to match. Git hooks re-installed from the main checkout; none points into `.worktrees/`.
+- **2026-10-18T17:41:12-07:00** — PR opened: https://github.com/gitronald/gdrives/pull/70
