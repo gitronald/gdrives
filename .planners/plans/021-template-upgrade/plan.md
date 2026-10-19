@@ -1,11 +1,11 @@
 ---
 id: 21
 slug: template-upgrade
-status: active
+status: done
 branch: feature/template-upgrade
 created: 2026-10-18T17:33:15-07:00
-concluded:
-pr:
+concluded: 2026-10-18T17:40:20-07:00
+pr: https://github.com/gitronald/gdrives/pull/70
 ---
 
 # Upgrade to proj-template v0.11.2
@@ -57,3 +57,12 @@ the git hooks from the main checkout so none points into `.worktrees/`.
   - Base: `dev` at `5cebc22`
   - Worktree: `.worktrees/template-upgrade`
   - PR: pending
+- **2026-10-18T17:40:53-07:00** — Applied the v0.10.0..v0.11.2 delta in the worktree; all checks green (ruff, pyrefly, pre-commit --all-files, pytest with coverage). Locked ruff 0.16.10, pre-commit rev to match. Git hooks re-installed from the main checkout; none points into `.worktrees/`.
+- **2026-10-18T17:41:12-07:00** — PR opened: https://github.com/gitronald/gdrives/pull/70
+- **2026-10-18T17:44:39-07:00** — CI green on the PR. Review gate: one review over the combined diff of the five repos upgraded in this pass (lockfiles left out); the same delta in each, plus each repo's own lines kept. No findings. Review not posted to the PR.
+
+## Retrospective
+
+- Every template-managed file still matched v0.10.0, so the change was the v0.10.0..v0.11.2 delta, edited in place line by line, not a re-copy; the repo's own lines outside it never came up.
+- The ruff pin keeps the repo's floor and gains the template's `<0.17` cap; the pre-commit rev follows the locked ruff (0.16.10).
+- `.claude/` is gitignored, so the hook lands in the main checkout after the merge; the branch carries none of it.
