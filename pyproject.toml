@@ -26,7 +26,7 @@ gdrives = "gdrives.cli:app"
 # consumers: build backends translate only [project], so this never reaches the
 # wheel or the PyPI metadata. Read it to audit template drift across repos.
 [tool.proj-template]
-version = "0.10.0"
+version = "0.11.2"
 
 [build-system]
 requires = ["hatchling"]
