@@ -1,8 +1,8 @@
 ---
 id: 21
 slug: template-upgrade
-status: draft
-branch:
+status: active
+branch: feature/template-upgrade
 created: 2026-10-18T17:33:15-07:00
 concluded:
 pr:
@@ -49,3 +49,11 @@ not added: the repo uses Dependabot.
 `pre-commit install --hook-type pre-commit --hook-type post-merge` and
 `pre-commit run --all-files`; `pytest` with its coverage gate. Then re-install
 the git hooks from the main checkout so none points into `.worktrees/`.
+
+## Log
+
+- **2026-10-18T17:33:53-07:00** — Activated.
+  - Branch: `feature/template-upgrade`
+  - Base: `dev` at `5cebc22`
+  - Worktree: `.worktrees/template-upgrade`
+  - PR: pending
