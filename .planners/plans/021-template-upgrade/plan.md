@@ -57,3 +57,4 @@ the git hooks from the main checkout so none points into `.worktrees/`.
   - Base: `dev` at `5cebc22`
   - Worktree: `.worktrees/template-upgrade`
   - PR: pending
+- **2026-10-18T17:40:53-07:00** — Applied the v0.10.0..v0.11.2 delta in the worktree; all checks green (ruff, pyrefly, pre-commit --all-files, pytest with coverage). Locked ruff 0.16.10, pre-commit rev to match. Git hooks re-installed from the main checkout; none points into `.worktrees/`.
