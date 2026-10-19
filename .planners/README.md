@@ -2,6 +2,7 @@
 
 | # | Plan | Status | Concluded | PR |
 |---|---|---|---|---|
+| 021 | [Upgrade to proj-template v0.11.2](plans/021-template-upgrade/plan.md) | draft | — | — |
 | 004 | [Narrow the mv command's OAuth scope to drive.metadata](plans/004-narrow-mv-drive-scope/plan.md) | draft | — | — |
 | 020 | [Publish the preview hint and the test fakes, and tighten small schema, link, and export edges](plans/020-caller-seams-and-fakes/plan.md) | done | 2026-09-29 13:23 PT | [#65](https://github.com/gitronald/gdrives/pull/65) |
 | 019 | [Remove the glue callers still write around gdrives.sheets](plans/019-caller-glue-followups/plan.md) | done | 2026-09-29 09:50 PT | [#63](https://github.com/gitronald/gdrives/pull/63) |
