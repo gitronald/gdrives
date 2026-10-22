@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "google-api-python-client",
     "google-auth-oauthlib",
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.4",
     "typer",
 ]
 readme = "README.md"
