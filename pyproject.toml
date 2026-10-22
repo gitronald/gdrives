@@ -23,7 +23,7 @@ gdrives = "gdrives.cli:app"
 
 # proj-template release stamp, set by proj-init.sh and install-template; inert to consumers.
 [tool.proj-template]
-version = "0.11.2"
+version = "0.11.7"
 
 [build-system]
 requires = ["hatchling"]
