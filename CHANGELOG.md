@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `gdrives` requires `python-dotenv` 1.2.4 or later, where it took 1.2.3.
+- The development tooling follows proj-template 0.11.7: ruff 0.17, held to the minor of the pre-commit hook (now `ruff-check`), pyrefly 1.3.2, newer pins of the actions the test and publish workflows run, and every locked dependency at its newest release past a cooldown. The package's own code is unchanged.
+
 ## [0.16.0] - 2026-09-30
 
 ### Added
