@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-26
+
 ### Changed
 
 - `gdrives` requires `python-dotenv` 1.2.4 or later, where it took 1.2.3.
