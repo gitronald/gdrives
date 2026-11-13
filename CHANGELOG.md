@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The development tooling follows repotemplates 0.15.0: the ruff pre-commit hook moves to v0.17.3, the test and publish workflows pin a newer `setup-uv` action, and the template stamp and links take the template's new name. The locked `oauthlib` (4.0.1) and `pyasn1` (0.6.5) are brought up to the releases that carry security fixes. The package's own code is unchanged.
+
 ## [0.16.1] - 2026-10-26
 
 ### Changed
